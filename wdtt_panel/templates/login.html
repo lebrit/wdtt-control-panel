@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WDTT Control</title>
+  <link rel="stylesheet" href="{{BASE}}static/app.css">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <div class="brand-mark">W</div>
+    <p class="eyebrow">PRIVATE NETWORK CONTROL</p>
+    <h1>WDTT Control</h1>
+    <p class="muted">Управление доступами, состоянием сервера и журналами.</p>
+    <form method="post" action="{{BASE}}login" class="login-form">
+      <label>Логин<input name="username" autocomplete="username" required autofocus></label>
+      <label>Пароль<input name="password" type="password" autocomplete="current-password" required></label>
+      <p class="form-error">{{ERROR}}</p>
+      <button type="submit" class="primary">Войти</button>
+    </form>
+  </main>
+</body>
+</html>

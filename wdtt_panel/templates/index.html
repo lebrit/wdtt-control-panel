@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{CSRF}}">
+  <meta name="base-path" content="{{BASE}}">
+  <meta name="public-host" content="{{PUBLIC_HOST}}">
+  <meta name="https-port" content="{{HTTPS_PORT}}">
+  <title>WDTT Control</title>
+  <link rel="stylesheet" href="{{BASE}}static/app.css">
+</head>
+<body>
+  <div id="toast" class="toast" hidden></div>
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark small">W</span><div><strong>WDTT</strong><small>CONTROL</small></div></div>
+    <nav>
+      <button class="nav-item active" data-tab="dashboard">Обзор</button>
+      <button class="nav-item" data-tab="users">Пользователи</button>
+      <button class="nav-item" data-tab="logs">Журналы</button>
+      <button class="nav-item" data-tab="system">Система</button>
+    </nav>
+    <div class="sidebar-footer">
+      <span class="status-dot" id="sidebar-dot"></span><span id="sidebar-status">Проверка...</span>
+      <form method="post" action="{{BASE}}logout" id="logout-form"><button>Выйти, {{USER}}</button></form>
+    </div>
+  </aside>
+
+  <main class="content">
+    <header class="topbar">
+      <div><p class="eyebrow">SERVER CONSOLE</p><h1 id="page-title">Обзор</h1></div>
+      <div class="top-actions"><span class="host-pill">{{PUBLIC_HOST}}</span><button id="refresh" class="secondary">Обновить</button></div>
+    </header>
+
+    <section class="tab active" id="tab-dashboard">
+      <div class="hero-grid">
+        <article class="hero-card">
+          <div><p class="eyebrow">WDTT SERVICE</p><h2 id="service-label">Загрузка</h2><p class="muted" id="service-detail">Получение состояния сервера</p></div>
+          <div class="service-orbit"><span id="service-dot" class="status-dot large"></span></div>
+        </article>
+        <article class="metric-card"><p>Активные соединения</p><strong id="active-conns">0</strong><small id="total-conns">0 всего</small></article>
+        <article class="metric-card"><p>Пользователи</p><strong id="user-count">0</strong><small id="device-count">0 устройств</small></article>
+        <article class="metric-card"><p>Трафик</p><strong id="traffic-total">0 GB</strong><small id="traffic-split">↑0 / ↓0</small></article>
+      </div>
+      <div class="two-column">
+        <article class="panel-card">
+          <div class="section-head"><div><p class="eyebrow">24 HOURS</p><h2>Активность</h2></div></div>
+          <canvas id="activity-chart" width="900" height="280"></canvas>
+        </article>
+        <article class="panel-card health-card">
+          <div class="section-head"><div><p class="eyebrow">HEALTH CHECK</p><h2>Диагностика</h2></div></div>
+          <div id="health-list" class="health-list"></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="tab" id="tab-users">
+      <div class="section-head"><div><p class="eyebrow">ACCESS DATABASE</p><h2>Пользователи WDTT</h2><p class="muted">Изменения перезапускают WDTT на несколько секунд.</p></div><button id="new-user" class="primary">Создать пользователя</button></div>
+      <article class="panel-card table-card">
+        <div class="table-toolbar"><input id="user-search" placeholder="Поиск по паролю, устройству или IP"><span id="user-limit">0 / 10</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Доступ</th><th>Статус</th><th>Истекает</th><th>Устройство</th><th>Трафик</th><th></th></tr></thead><tbody id="users-body"></tbody></table></div>
+      </article>
+    </section>
+
+    <section class="tab" id="tab-logs">
+      <div class="section-head"><div><p class="eyebrow">SYSTEMD JOURNAL</p><h2>Журнал WDTT</h2></div><div class="inline-actions"><select id="log-filter"><option value="">Все события</option><option value="[СТАТ]">Статистика</option><option value="[WG]">WireGuard</option><option value="[WRAP]">WRAP</option><option value="[DTLS]">DTLS</option><option value="Отказ">Отказы</option></select><button id="load-logs" class="secondary">Обновить</button></div></div>
+      <article class="log-view"><pre id="logs-output">Загрузка журнала...</pre></article>
+    </section>
+
+    <section class="tab" id="tab-system">
+      <div class="system-grid">
+        <article class="panel-card">
+          <p class="eyebrow">SERVICE CONTROL</p><h2>Управление WDTT</h2><p class="muted">Остановка разрывает активные туннели. Перезапуск обычно занимает несколько секунд.</p>
+          <div class="button-row"><button data-service="start" class="primary">Запустить</button><button data-service="restart" class="secondary">Перезапустить</button><button data-service="stop" class="danger">Остановить</button></div>
+        </article>
+        <article class="panel-card">
+          <p class="eyebrow">TLS CERTIFICATE</p><h2>Сертификат панели</h2><div id="certificate-info" class="detail-list"></div>
+        </article>
+        <article class="panel-card wide">
+          <div class="section-head"><div><p class="eyebrow">RECOVERY</p><h2>Резервные копии</h2></div><button id="load-backups" class="secondary">Обновить</button></div>
+          <div id="backups-list" class="backup-list"></div>
+        </article>
+        <article class="panel-card wide">
+          <p class="eyebrow">AUDIT TRAIL</p><h2>Действия в панели</h2><div class="table-wrap"><table><thead><tr><th>Время</th><th>Администратор</th><th>IP</th><th>Действие</th><th>Результат</th></tr></thead><tbody id="audit-body"></tbody></table></div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="user-dialog">
+    <form method="dialog" id="user-form">
+      <div class="dialog-head"><div><p class="eyebrow">WDTT ACCESS</p><h2 id="dialog-title">Новый пользователь</h2></div><button value="cancel" class="icon-button">×</button></div>
+      <input type="hidden" id="current-password">
+      <div class="form-grid">
+        <label class="wide">Пароль<input id="edit-password" pattern="[A-Za-z0-9._~-]{8,64}" placeholder="Оставьте пустым для автогенерации"></label>
+        <label class="wide">VK-хеши<input id="edit-hashes" required placeholder="До 4 хешей через запятую"></label>
+        <label>Срок, дней<input id="edit-days" type="number" min="1" max="3650" value="30"></label>
+        <label>Порты<input id="edit-ports" value="56000,56001,9000" required></label>
+        <label class="checkbox wide"><input id="edit-unlimited" type="checkbox"> Бессрочный доступ</label>
+        <label class="checkbox wide"><input id="edit-disabled" type="checkbox"> Деактивировать</label>
+      </div>
+      <div class="dialog-actions"><button value="cancel" class="secondary">Отмена</button><button id="save-user" value="default" class="primary">Сохранить</button></div>
+    </form>
+  </dialog>
+
+  <script src="{{BASE}}static/app.js" defer></script>
+</body>
+</html>

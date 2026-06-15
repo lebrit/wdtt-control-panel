@@ -1,0 +1,485 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PANEL_VERSION="0.1.0"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_DIR="/opt/wdtt-panel"
+CONFIG_DIR="/etc/wdtt-panel"
+STATE_DIR="/var/lib/wdtt-panel"
+PRIVATE_STATE_DIR="/var/lib/wdtt-panel-private"
+CONFIG_FILE="$CONFIG_DIR/config.json"
+NGINX_FILE="/etc/nginx/conf.d/wdtt-panel.conf"
+PANEL_SERVICE="wdtt-panel.service"
+ADMIN_WRAPPER="/usr/local/sbin/wdtt-panel-admin"
+SUDOERS_FILE="/etc/sudoers.d/wdtt-panel"
+LOG_FILE="/var/log/wdtt-panel-install.log"
+
+PANEL_USER="${PANEL_USER:-admin}"
+PANEL_PASSWORD="${PANEL_PASSWORD:-}"
+PANEL_PATH="${PANEL_PATH:-}"
+PANEL_HOST="${PANEL_HOST:-}"
+PANEL_HTTPS_PORT="${PANEL_HTTPS_PORT:-8443}"
+PANEL_LISTEN_PORT="${PANEL_LISTEN_PORT:-8787}"
+PANEL_EMAIL="${PANEL_EMAIL:-}"
+INSTALL_WDTT="${INSTALL_WDTT:-auto}"
+WDTT_MAIN_PASSWORD="${WDTT_MAIN_PASSWORD:-}"
+WDTT_REF="${WDTT_REF:-main}"
+GO_VERSION="${GO_VERSION:-1.25.0}"
+
+log() { printf '[wdtt-panel] %s\n' "$*" | tee -a "$LOG_FILE"; }
+die() { log "ERROR: $*"; exit 1; }
+command_exists() { command -v "$1" >/dev/null 2>&1; }
+random_token() { python3 -c "import secrets; print(secrets.token_urlsafe(${1:-24}))"; }
+random_password() { python3 -c 'import secrets,string; a=string.ascii_letters+string.digits+"._~-"; print("".join(secrets.choice(a) for _ in range(24)))'; }
+
+require_root() {
+  [ "$(id -u)" -eq 0 ] || die "Запустите установщик от root: sudo bash install.sh"
+  mkdir -p "$(dirname "$LOG_FILE")"
+  touch "$LOG_FILE"
+}
+
+detect_os() {
+  [ -r /etc/os-release ] || die "Не найден /etc/os-release"
+  . /etc/os-release
+  OS_ID="${ID:-unknown}"
+  case "$OS_ID" in
+    ubuntu|debian|linuxmint|pop) PKG="apt" ;;
+    fedora|rhel|centos|rocky|almalinux|oracle) command_exists dnf && PKG="dnf" || PKG="yum" ;;
+    arch|manjaro|endeavouros) PKG="pacman" ;;
+    *) die "Неподдерживаемый дистрибутив: $OS_ID" ;;
+  esac
+  log "ОС: ${PRETTY_NAME:-$OS_ID}"
+  if command_exists nginx; then NGINX_WAS_INSTALLED=1; else NGINX_WAS_INSTALLED=0; fi
+}
+
+install_packages() {
+  log "Установка системных зависимостей"
+  case "$PKG" in
+    apt)
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -y >>"$LOG_FILE" 2>&1
+      apt-get install -y -qq python3 python3-venv python3-pip nginx sudo curl ca-certificates openssl iproute2 iptables unzip >>"$LOG_FILE" 2>&1
+      ;;
+    dnf|yum)
+      "$PKG" install -y python3 python3-pip nginx sudo curl ca-certificates openssl iproute iptables unzip tar gzip >>"$LOG_FILE" 2>&1
+      ;;
+    pacman)
+      pacman -Sy --noconfirm --needed python python-pip nginx sudo curl ca-certificates openssl iproute2 iptables unzip tar gzip >>"$LOG_FILE" 2>&1
+      ;;
+  esac
+}
+
+validate_inputs() {
+  [[ "$PANEL_HTTPS_PORT" =~ ^[0-9]+$ ]] && [ "$PANEL_HTTPS_PORT" -ge 1 ] && [ "$PANEL_HTTPS_PORT" -le 65535 ] || die "Некорректный PANEL_HTTPS_PORT"
+  [ "$PANEL_HTTPS_PORT" -ne 80 ] || die "PANEL_HTTPS_PORT=80 зарезервирован для ACME; выберите другой порт"
+  [[ "$PANEL_LISTEN_PORT" =~ ^[0-9]+$ ]] && [ "$PANEL_LISTEN_PORT" -ge 1024 ] && [ "$PANEL_LISTEN_PORT" -le 65535 ] || die "Некорректный PANEL_LISTEN_PORT"
+  [ "$PANEL_HTTPS_PORT" != "$PANEL_LISTEN_PORT" ] || die "Внешний и внутренний порты панели должны отличаться"
+  [[ "$PANEL_USER" =~ ^[A-Za-z0-9_.-]{3,32}$ ]] || die "Некорректный PANEL_USER"
+  [[ "$WDTT_REF" =~ ^[A-Za-z0-9._-]+$ ]] || die "Некорректный WDTT_REF"
+  [[ "$GO_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Некорректный GO_VERSION"
+}
+
+validate_port_availability() {
+  local listeners
+  listeners="$(ss -ltnp "( sport = :$PANEL_LISTEN_PORT )" 2>/dev/null || true)"
+  if grep -q LISTEN <<<"$listeners" && ! systemctl is-active --quiet "$PANEL_SERVICE"; then
+    die "Внутренний порт $PANEL_LISTEN_PORT уже занят"
+  fi
+  listeners="$(ss -ltnp "( sport = :$PANEL_HTTPS_PORT )" 2>/dev/null || true)"
+  if grep -q LISTEN <<<"$listeners" && ! grep -qi nginx <<<"$listeners"; then
+    die "Внешний порт $PANEL_HTTPS_PORT занят не Nginx; задайте PANEL_HTTPS_PORT"
+  fi
+}
+
+discover_host() {
+  if [ -z "$PANEL_HOST" ]; then
+    PANEL_HOST="$(curl -4fsS --max-time 8 https://api.ipify.org 2>/dev/null || true)"
+  fi
+  if [ -z "$PANEL_HOST" ] && [ -t 0 ]; then
+    read -r -p "Домен или публичный IPv4 панели: " PANEL_HOST
+  fi
+  [ -n "$PANEL_HOST" ] || die "Укажите PANEL_HOST=panel.example.com или PANEL_HOST=203.0.113.10"
+  [[ "$PANEL_HOST" != *:* ]] || die "Автоматическая настройка IPv6 пока не поддерживается; используйте домен или IPv4"
+  PANEL_HOST="$(python3 - "$PANEL_HOST" <<'PY'
+import ipaddress, re, sys
+value = sys.argv[1].strip().rstrip(".").lower()
+try:
+    address = ipaddress.ip_address(value)
+    if address.version != 4:
+        raise ValueError
+    print(value)
+    raise SystemExit
+except ValueError:
+    pass
+labels = value.split(".")
+pattern = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+if len(labels) < 2 or len(value) > 253 or not all(pattern.fullmatch(label) for label in labels):
+    raise SystemExit(2)
+print(value)
+PY
+)" || die "Некорректный PANEL_HOST"
+}
+
+prepare_secrets() {
+  [ -n "$PANEL_PASSWORD" ] || PANEL_PASSWORD="$(random_password)"
+  [ "${#PANEL_PASSWORD}" -ge 12 ] || die "PANEL_PASSWORD должен содержать не менее 12 символов"
+  [ -n "$PANEL_PATH" ] || PANEL_PATH="$(random_token 18)"
+  PANEL_PATH="/${PANEL_PATH#/}"
+  PANEL_PATH="${PANEL_PATH%/}/"
+  [[ "$PANEL_PATH" =~ ^/[A-Za-z0-9_-]{16,80}/$ ]] || die "PANEL_PATH должен быть случайным путем из 16-80 символов"
+  SESSION_SECRET="$(random_token 48)"
+  if [ -n "$WDTT_MAIN_PASSWORD" ]; then
+    [[ "$WDTT_MAIN_PASSWORD" =~ ^[A-Za-z0-9._~-]{12,64}$ ]] || die "WDTT_MAIN_PASSWORD: 12-64 безопасных символа без пробелов и двоеточия"
+  fi
+}
+
+wdtt_installed() {
+  systemctl cat wdtt.service >/dev/null 2>&1 || [ -x /usr/local/bin/wdtt-server ]
+}
+
+install_clean_wdtt() {
+  case "$INSTALL_WDTT" in
+    0|false|no) log "Установка WDTT отключена"; return ;;
+    auto) wdtt_installed && { log "Обнаружен существующий WDTT, его файлы не изменяются"; return; } ;;
+    1|true|yes) wdtt_installed && { log "Обнаружен существующий WDTT, повторный деплой пропущен"; return; } ;;
+    *) die "INSTALL_WDTT должен быть auto, yes или no" ;;
+  esac
+
+  log "Чистый сервер: сборка неизмененного WDTT из официального репозитория"
+  [ -n "$WDTT_MAIN_PASSWORD" ] || WDTT_MAIN_PASSWORD="$(random_password)"
+  BUILD_DIR="$(mktemp -d)"
+  trap 'rm -rf "${BUILD_DIR:-}"' RETURN
+
+  case "$(uname -m)" in
+    x86_64|amd64) GO_ARCH="amd64" ;;
+    aarch64|arm64) GO_ARCH="arm64" ;;
+    *) die "Сборка WDTT поддержана для amd64 и arm64" ;;
+  esac
+
+  GO_TARBALL="go${GO_VERSION}.linux-${GO_ARCH}.tar.gz"
+  curl -fsSL "https://go.dev/dl/${GO_TARBALL}" -o "$BUILD_DIR/$GO_TARBALL"
+  curl -fsSL "https://go.dev/dl/${GO_TARBALL}.sha256" -o "$BUILD_DIR/$GO_TARBALL.sha256"
+  printf '%s  %s\n' "$(tr -d '[:space:]' < "$BUILD_DIR/$GO_TARBALL.sha256")" "$BUILD_DIR/$GO_TARBALL" | sha256sum -c - >>"$LOG_FILE"
+  tar -xzf "$BUILD_DIR/$GO_TARBALL" -C "$BUILD_DIR"
+
+  curl -fsSL "https://github.com/amurcanov/proxy-turn-vk-android/archive/refs/heads/${WDTT_REF}.zip" -o "$BUILD_DIR/wdtt.zip"
+  unzip -q "$BUILD_DIR/wdtt.zip" -d "$BUILD_DIR/source"
+  WDTT_SOURCE="$(find "$BUILD_DIR/source" -mindepth 1 -maxdepth 1 -type d | head -1)"
+  [ -f "$WDTT_SOURCE/server.go" ] || die "В архиве WDTT не найден server.go"
+  (
+    cd "$WDTT_SOURCE"
+    PATH="$BUILD_DIR/go/bin:$PATH" CGO_ENABLED=0 "$BUILD_DIR/go/bin/go" build -trimpath -ldflags='-s -w' -o /tmp/wdtt-server ./server.go
+  ) >>"$LOG_FILE" 2>&1
+  chmod 0755 /tmp/wdtt-server
+  WDTT_ARGS="-password $WDTT_MAIN_PASSWORD" bash "$WDTT_SOURCE/app/src/main/assets/deploy.sh" install >>"$LOG_FILE" 2>&1
+  log "WDTT установлен официальным deploy.sh"
+}
+
+install_panel_files() {
+  [ -d "$SCRIPT_DIR/wdtt_panel" ] || die "Каталог wdtt_panel не найден рядом с install.sh"
+  id -u wdtt-panel >/dev/null 2>&1 || useradd --system --home-dir "$STATE_DIR" --create-home --shell /usr/sbin/nologin wdtt-panel
+  install -d -m 0755 "$INSTALL_DIR" "$CONFIG_DIR"
+  install -d -o wdtt-panel -g wdtt-panel -m 0750 "$STATE_DIR"
+  install -d -o root -g root -m 0700 "$PRIVATE_STATE_DIR" "$PRIVATE_STATE_DIR/backups"
+  install -d -m 0755 "$STATE_DIR/acme"
+  rm -rf "$INSTALL_DIR/wdtt_panel"
+  cp -a "$SCRIPT_DIR/wdtt_panel" "$INSTALL_DIR/wdtt_panel"
+  chown -R root:root "$INSTALL_DIR/wdtt_panel"
+  find "$INSTALL_DIR/wdtt_panel" -type d -exec chmod 0755 {} +
+  find "$INSTALL_DIR/wdtt_panel" -type f -exec chmod 0644 {} +
+
+  cat > "$ADMIN_WRAPPER" <<'EOF'
+#!/bin/sh
+cd /opt/wdtt-panel || exit 1
+exec /usr/bin/python3 -m wdtt_panel.admin
+EOF
+  chown root:root "$ADMIN_WRAPPER"
+  chmod 0755 "$ADMIN_WRAPPER"
+
+  printf 'wdtt-panel ALL=(root) NOPASSWD: %s\n' "$ADMIN_WRAPPER" > "$SUDOERS_FILE"
+  chown root:root "$SUDOERS_FILE"
+  chmod 0440 "$SUDOERS_FILE"
+  visudo -cf "$SUDOERS_FILE" >>"$LOG_FILE"
+}
+
+write_panel_config() {
+  PASSWORD_HASH="$(PYTHONPATH="$INSTALL_DIR" python3 -c 'import sys; from wdtt_panel.security import hash_password; print(hash_password(sys.argv[1]))' "$PANEL_PASSWORD")"
+  python3 - "$CONFIG_FILE" "$PANEL_VERSION" "$PANEL_USER" "$PASSWORD_HASH" "$SESSION_SECRET" "$PANEL_PATH" "$PANEL_HOST" "$PANEL_HTTPS_PORT" "$PANEL_LISTEN_PORT" "$CERTIFICATE_PATH" "$TLS_MODE" <<'PY'
+import json, os, sys
+path, version, username, password_hash, session_secret, base_path, public_host, https_port, listen_port, certificate_path, tls_mode = sys.argv[1:]
+data = {
+    "version": version,
+    "username": username,
+    "password_hash": password_hash,
+    "session_secret": session_secret,
+    "base_path": base_path,
+    "public_host": public_host,
+    "https_port": int(https_port),
+    "listen_host": "127.0.0.1",
+    "listen_port": int(listen_port),
+    "certificate_path": certificate_path,
+    "tls_mode": tls_mode,
+}
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    json.dump(data, handle, ensure_ascii=False, indent=2)
+    handle.write("\n")
+os.chmod(tmp, 0o640)
+os.replace(tmp, path)
+PY
+  chown root:wdtt-panel "$CONFIG_FILE"
+  chmod 0640 "$CONFIG_FILE"
+}
+
+write_panel_service() {
+  cat > "/etc/systemd/system/$PANEL_SERVICE" <<EOF
+[Unit]
+Description=WDTT Web Control Panel
+After=network.target wdtt.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wdtt-panel
+Group=wdtt-panel
+WorkingDirectory=$INSTALL_DIR
+ExecStart=/usr/bin/python3 -m wdtt_panel.app
+Restart=on-failure
+RestartSec=3
+UMask=0027
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=$STATE_DIR $PRIVATE_STATE_DIR -/etc/wdtt
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now "$PANEL_SERVICE" >>"$LOG_FILE" 2>&1
+}
+
+port_80_available_for_nginx() {
+  local listeners
+  listeners="$(ss -ltnp '( sport = :80 )' 2>/dev/null || true)"
+  ! grep -q LISTEN <<<"$listeners" && return 0
+  grep -qi nginx <<<"$listeners"
+}
+
+write_acme_nginx() {
+  cat > "$NGINX_FILE" <<EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $PANEL_HOST;
+    location ^~ /.well-known/acme-challenge/ { root $STATE_DIR/acme; }
+    location / { return 404; }
+}
+EOF
+  nginx -t >>"$LOG_FILE" 2>&1
+  systemctl enable --now nginx >>"$LOG_FILE" 2>&1
+  systemctl reload nginx >>"$LOG_FILE" 2>&1
+}
+
+install_certbot() {
+  if [ ! -x "$INSTALL_DIR/certbot/bin/certbot" ]; then
+    python3 -m venv "$INSTALL_DIR/certbot" >>"$LOG_FILE" 2>&1 || return 1
+    "$INSTALL_DIR/certbot/bin/pip" install --upgrade pip >>"$LOG_FILE" 2>&1 || return 1
+    "$INSTALL_DIR/certbot/bin/pip" install 'certbot>=5.4,<6' >>"$LOG_FILE" 2>&1 || return 1
+  fi
+}
+
+request_certificate() {
+  CERTIFICATE_PATH=""
+  TLS_MODE="self-signed"
+  port_80_available_for_nginx || { log "Порт 80 занят не Nginx: публичный сертификат пропущен"; return 1; }
+  write_acme_nginx || return 1
+  install_certbot || return 1
+  CERTBOT=("$INSTALL_DIR/certbot/bin/certbot" certonly --non-interactive --agree-tos --webroot --webroot-path "$STATE_DIR/acme")
+  if [ -n "$PANEL_EMAIL" ]; then CERTBOT+=(--email "$PANEL_EMAIL"); else CERTBOT+=(--register-unsafely-without-email); fi
+  if [[ "$PANEL_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    CERTBOT+=(--preferred-profile shortlived --ip-address "$PANEL_HOST" --cert-name "$PANEL_HOST")
+  else
+    CERTBOT+=(-d "$PANEL_HOST")
+  fi
+  if "${CERTBOT[@]}" >>"$LOG_FILE" 2>&1; then
+    CERTIFICATE_PATH="/etc/letsencrypt/live/$PANEL_HOST/fullchain.pem"
+    PRIVATE_KEY_PATH="/etc/letsencrypt/live/$PANEL_HOST/privkey.pem"
+    [ -f "$CERTIFICATE_PATH" ] && [ -f "$PRIVATE_KEY_PATH" ] || return 1
+    TLS_MODE="letsencrypt"
+    return 0
+  fi
+  return 1
+}
+
+create_self_signed_certificate() {
+  install -d -m 0700 "$CONFIG_DIR/tls"
+  CERTIFICATE_PATH="$CONFIG_DIR/tls/fullchain.pem"
+  PRIVATE_KEY_PATH="$CONFIG_DIR/tls/privkey.pem"
+  if [[ "$PANEL_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then SAN="IP:$PANEL_HOST"; else SAN="DNS:$PANEL_HOST"; fi
+  openssl req -x509 -newkey rsa:3072 -sha256 -days 365 -nodes \
+    -keyout "$PRIVATE_KEY_PATH" -out "$CERTIFICATE_PATH" \
+    -subj "/CN=$PANEL_HOST" -addext "subjectAltName=$SAN" >>"$LOG_FILE" 2>&1
+  chmod 0600 "$PRIVATE_KEY_PATH"
+  chmod 0644 "$CERTIFICATE_PATH"
+  TLS_MODE="self-signed"
+}
+
+write_final_nginx() {
+  HTTP_BLOCK=""
+  HTTP_ENABLED=0
+  if port_80_available_for_nginx; then
+    HTTP_ENABLED=1
+    HTTP_BLOCK="server {
+    listen 80;
+    listen [::]:80;
+    server_name $PANEL_HOST;
+    location ^~ /.well-known/acme-challenge/ { root $STATE_DIR/acme; }
+    location / { return 302 https://$PANEL_HOST:$PANEL_HTTPS_PORT$PANEL_PATH; }
+}"
+  fi
+  cat > "$NGINX_FILE" <<EOF
+$HTTP_BLOCK
+server {
+    listen $PANEL_HTTPS_PORT ssl;
+    listen [::]:$PANEL_HTTPS_PORT ssl;
+    server_name $PANEL_HOST;
+
+    ssl_certificate $CERTIFICATE_PATH;
+    ssl_certificate_key $PRIVATE_KEY_PATH;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:WDTTTLS:10m;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    location = ${PANEL_PATH%/} { return 302 $PANEL_PATH; }
+    location ^~ $PANEL_PATH {
+        proxy_pass http://127.0.0.1:$PANEL_LISTEN_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 75s;
+        client_max_body_size 512k;
+    }
+    location / { return 404; }
+}
+EOF
+  nginx -t >>"$LOG_FILE" 2>&1 || die "Ошибка конфигурации Nginx, см. $LOG_FILE"
+  systemctl enable --now nginx >>"$LOG_FILE" 2>&1
+  systemctl reload nginx >>"$LOG_FILE" 2>&1
+}
+
+write_renew_timer() {
+  [ "$TLS_MODE" = "letsencrypt" ] || return 0
+  cat > /etc/systemd/system/wdtt-panel-cert-renew.service <<EOF
+[Unit]
+Description=Renew WDTT Panel TLS certificate
+
+[Service]
+Type=oneshot
+ExecStart=$INSTALL_DIR/certbot/bin/certbot renew --quiet --deploy-hook "systemctl reload nginx"
+EOF
+  cat > /etc/systemd/system/wdtt-panel-cert-renew.timer <<'EOF'
+[Unit]
+Description=Frequent renewal check for WDTT Panel certificates
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=12h
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now wdtt-panel-cert-renew.timer >>"$LOG_FILE" 2>&1
+}
+
+open_firewall() {
+  if command_exists ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
+    [ "${HTTP_ENABLED:-0}" = "1" ] && ufw allow 80/tcp comment 'WDTT Panel ACME' >/dev/null || true
+    ufw allow "$PANEL_HTTPS_PORT/tcp" comment 'WDTT Panel HTTPS' >/dev/null || true
+  elif command_exists firewall-cmd && systemctl is-active --quiet firewalld; then
+    [ "${HTTP_ENABLED:-0}" = "1" ] && firewall-cmd --permanent --add-port=80/tcp >/dev/null || true
+    firewall-cmd --permanent --add-port="$PANEL_HTTPS_PORT/tcp" >/dev/null || true
+    firewall-cmd --reload >/dev/null || true
+  elif command_exists iptables; then
+    iptables -C INPUT -p tcp --dport "$PANEL_HTTPS_PORT" -m comment --comment WDTT_PANEL -j ACCEPT 2>/dev/null || \
+      iptables -I INPUT -p tcp --dport "$PANEL_HTTPS_PORT" -m comment --comment WDTT_PANEL -j ACCEPT || true
+    if [ "${HTTP_ENABLED:-0}" = "1" ]; then
+      iptables -C INPUT -p tcp --dport 80 -m comment --comment WDTT_PANEL -j ACCEPT 2>/dev/null || \
+        iptables -I INPUT -p tcp --dport 80 -m comment --comment WDTT_PANEL -j ACCEPT || true
+    fi
+  fi
+}
+
+status_panel() {
+  systemctl --no-pager --full status "$PANEL_SERVICE" || true
+  [ -r "$CONFIG_FILE" ] && python3 - "$CONFIG_FILE" <<'PY'
+import json, sys
+d=json.load(open(sys.argv[1], encoding="utf-8"))
+print(f"URL: https://{d['public_host']}:{d['https_port']}{d['base_path']}")
+print(f"TLS: {d.get('tls_mode', 'unknown')}")
+PY
+}
+
+uninstall_panel() {
+  log "Удаление только web-панели; WDTT не затрагивается"
+  systemctl disable --now "$PANEL_SERVICE" wdtt-panel-cert-renew.timer 2>/dev/null || true
+  rm -f "/etc/systemd/system/$PANEL_SERVICE" /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer
+  rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE"
+  rm -rf "$INSTALL_DIR" "$CONFIG_DIR"
+  systemctl daemon-reload
+  nginx -t >/dev/null 2>&1 && systemctl reload nginx || true
+  log "Панель удалена. Аудит оставлен в $STATE_DIR, резервные копии в $PRIVATE_STATE_DIR"
+}
+
+install_panel() {
+  require_root
+  detect_os
+  install_packages
+  if [ "$NGINX_WAS_INSTALLED" = "0" ] && ! port_80_available_for_nginx; then
+    rm -f /etc/nginx/sites-enabled/default
+  fi
+  validate_inputs
+  validate_port_availability
+  discover_host
+  prepare_secrets
+  install_clean_wdtt
+  install_panel_files
+
+  if request_certificate; then
+    log "Получен публично доверенный сертификат Let's Encrypt"
+  else
+    log "Let's Encrypt недоступен, создается автоматический self-signed сертификат"
+    create_self_signed_certificate
+  fi
+
+  write_panel_config
+  write_panel_service
+  write_final_nginx
+  write_renew_timer
+  open_firewall
+  systemctl restart "$PANEL_SERVICE"
+
+  printf '\n'
+  log "Установка завершена"
+  printf 'URL: https://%s:%s%s\n' "$PANEL_HOST" "$PANEL_HTTPS_PORT" "$PANEL_PATH"
+  printf 'Login: %s\n' "$PANEL_USER"
+  printf 'Password: %s\n' "$PANEL_PASSWORD"
+  printf 'TLS: %s\n' "$TLS_MODE"
+  if [ -n "$WDTT_MAIN_PASSWORD" ]; then printf 'WDTT main password: %s\n' "$WDTT_MAIN_PASSWORD"; fi
+  printf 'Install log: %s\n' "$LOG_FILE"
+}
+
+case "${1:-install}" in
+  install|--install|-i) install_panel ;;
+  status|--status|-s) require_root; status_panel ;;
+  uninstall|--uninstall|-u) require_root; uninstall_panel ;;
+  *) die "Использование: $0 [install|status|uninstall]" ;;
+esac

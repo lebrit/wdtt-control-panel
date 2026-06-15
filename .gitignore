@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+smoke.out
+smoke.err
+source.zip
+shellcheck.zip
+upstream/
+.tools/
+mingit.zip
+gh.zip
+gh_checksums.txt
