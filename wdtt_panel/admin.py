@@ -9,6 +9,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
@@ -28,9 +30,15 @@ from .core import (
 DB_FILE = Path(os.environ.get("WDTT_DB_FILE", "/etc/wdtt/passwords.json"))
 STATS_FILE = Path(os.environ.get("WDTT_STATS_FILE", "/etc/wdtt/server.log"))
 BACKUP_DIR = Path(os.environ.get("WDTT_BACKUP_DIR", "/var/lib/wdtt-panel-private/backups"))
+LOCK_FILE = Path(os.environ.get("WDTT_LOCK_FILE", "/var/lib/wdtt-panel-private/admin.lock"))
 SERVICE = os.environ.get("WDTT_SERVICE", "wdtt.service")
 SKIP_SYSTEMD = os.environ.get("WDTT_SKIP_SYSTEMD") == "1"
 MAX_INPUT = 1024 * 1024
+PANEL_UPDATE_COMMAND = Path(os.environ.get("WDTT_PANEL_UPDATE_COMMAND", "/usr/local/sbin/wdtt-panel-update"))
+PANEL_VERSION_URL = os.environ.get(
+    "WDTT_PANEL_VERSION_URL",
+    "https://raw.githubusercontent.com/lebrit/wdtt-control-panel/main/install.sh",
+)
 
 
 class AdminError(RuntimeError):
@@ -210,6 +218,53 @@ def create_user(payload: dict[str, Any]) -> dict[str, Any]:
     return mutate_database("create", apply)
 
 
+def create_users_bulk(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        count = int(payload.get("count", 1))
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Количество пользователей должно быть числом") from exc
+    if not 1 <= count <= MAX_USERS:
+        raise ValidationError(f"Можно создать от 1 до {MAX_USERS} пользователей")
+
+    hashes = normalize_hashes(str(payload.get("vk_hash") or "")).split(",")
+    hash_mode = str(payload.get("hash_mode") or "shared")
+    if hash_mode not in {"shared", "rotate"}:
+        raise ValidationError("Некорректный режим назначения VK-хешей")
+    expires_at = parse_expiration(payload)
+    ports = validate_ports(str(payload.get("ports") or "56000,56001,9000"))
+    is_deactivated = bool(payload.get("is_deactivated", False))
+
+    def apply(data: dict[str, Any]) -> dict[str, Any]:
+        purge_expired(data)
+        available = MAX_USERS - len(data["passwords"])
+        if count > available:
+            raise ValidationError(f"Доступно мест: {available}; запрошено пользователей: {count}")
+
+        created: list[dict[str, Any]] = []
+        reserved = set(data["passwords"])
+        reserved.add(str(data.get("main_password") or ""))
+        for index in range(count):
+            password = generate_password()
+            while password in reserved:
+                password = generate_password()
+            reserved.add(password)
+            assigned_hashes = hashes if hash_mode == "shared" else [hashes[index % len(hashes)]]
+            entry = {
+                "device_id": "",
+                "expires_at": expires_at,
+                "down_bytes": 0,
+                "up_bytes": 0,
+                "vk_hash": ",".join(assigned_hashes),
+                "ports": ports,
+                "is_deactivated": is_deactivated,
+            }
+            data["passwords"][password] = entry
+            created.append(user_view(password, entry, data["devices"]).as_dict())
+        return {"users": created, "count": len(created)}
+
+    return mutate_database("bulk-create", apply)
+
+
 def update_user(payload: dict[str, Any]) -> dict[str, Any]:
     current = validate_password(str(payload.get("current_password") or ""))
     replacement_raw = str(payload.get("password") or current).strip()
@@ -291,6 +346,16 @@ def list_backups() -> dict[str, Any]:
     return {"backups": items}
 
 
+def create_manual_backup(payload: dict[str, Any]) -> dict[str, Any]:
+    load_database()
+    name = create_backup("manual")
+    if not name:
+        raise ValidationError("База WDTT еще не создана")
+    path = BACKUP_DIR / name
+    stat = path.stat()
+    return {"name": name, "size": stat.st_size, "created_at": int(stat.st_mtime)}
+
+
 def restore_backup(payload: dict[str, Any]) -> dict[str, Any]:
     name = str(payload.get("name") or "")
     if not re.fullmatch(r"passwords-[A-Za-z0-9_-]+\.json", name):
@@ -312,6 +377,55 @@ def restore_backup(payload: dict[str, Any]) -> dict[str, Any]:
         return {"restored": name}
 
     return mutate_database("before-restore", apply)
+
+
+def version_parts(value: str) -> tuple[int, ...]:
+    if not re.fullmatch(r"\d+(?:\.\d+){1,3}", value):
+        raise ValidationError(f"Некорректная версия панели: {value}")
+    parts = tuple(int(part) for part in value.split("."))
+    return parts + (0,) * (4 - len(parts))
+
+
+def panel_version(payload: dict[str, Any]) -> dict[str, Any]:
+    current = str(payload.get("current_version") or "0.0.0")
+    version_parts(current)
+    request = urllib.request.Request(PANEL_VERSION_URL, headers={"User-Agent": "wdtt-control-panel"})
+    try:
+        with urllib.request.urlopen(request, timeout=6) as response:
+            source = response.read(128 * 1024).decode("utf-8", "replace")
+        match = re.search(r'^PANEL_VERSION="([0-9.]+)"', source, re.MULTILINE)
+        if not match:
+            raise ValueError("PANEL_VERSION не найден")
+        latest = match.group(1)
+        return {
+            "current": current,
+            "latest": latest,
+            "update_available": version_parts(latest) > version_parts(current),
+        }
+    except (OSError, ValueError, urllib.error.URLError) as exc:
+        return {"current": current, "latest": "", "update_available": False, "error": str(exc)}
+
+
+def start_panel_update(payload: dict[str, Any]) -> dict[str, Any]:
+    if not PANEL_UPDATE_COMMAND.exists():
+        raise AdminError(f"Команда обновления не найдена: {PANEL_UPDATE_COMMAND}")
+    if SKIP_SYSTEMD:
+        return {"scheduled": True, "state": "test"}
+    unit = f"wdtt-panel-self-update-{int(time.time())}"
+    result = run(
+        [
+            "systemd-run",
+            "--quiet",
+            "--collect",
+            f"--unit={unit}",
+            "--on-active=3s",
+            str(PANEL_UPDATE_COMMAND),
+        ],
+        timeout=20,
+    )
+    if result.returncode != 0:
+        raise AdminError(result.stderr.strip() or "Не удалось запланировать обновление панели")
+    return {"scheduled": True, "unit": unit}
 
 
 def read_stats() -> dict[str, Any]:
@@ -391,6 +505,7 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "overview": overview,
     "users.list": lambda payload: list_users(),
     "users.create": create_user,
+    "users.create_bulk": create_users_bulk,
     "users.update": update_user,
     "users.delete": delete_user,
     "users.unbind": unbind_user,
@@ -398,7 +513,10 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "service.action": lambda payload: service_action(str(payload.get("service_action") or "")),
     "logs": journal_logs,
     "backups.list": lambda payload: list_backups(),
+    "backups.create": create_manual_backup,
     "backups.restore": restore_backup,
+    "panel.version": panel_version,
+    "panel.update": start_panel_update,
 }
 
 
@@ -425,9 +543,8 @@ def main() -> int:
         if os.name == "posix":
             import fcntl
 
-            lock_path = Path("/run/lock/wdtt-panel-admin.lock")
-            lock_path.parent.mkdir(parents=True, exist_ok=True)
-            with lock_path.open("a", encoding="utf-8") as lock:
+            LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with LOCK_FILE.open("a", encoding="utf-8") as lock:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
                 result = dispatch(request)
         else:

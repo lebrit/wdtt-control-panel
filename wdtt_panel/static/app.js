@@ -5,6 +5,7 @@
   const BASE = meta("base-path");
   const CSRF = meta("csrf-token");
   const PUBLIC_HOST = meta("public-host");
+  const PANEL_VERSION = meta("panel-version");
   const state = { overview: null, users: [], logs: [], editing: null };
 
   const $ = (selector) => document.querySelector(selector);
@@ -205,6 +206,47 @@
     finally { setBusy(button, false); }
   }
 
+  function openBulkUserDialog() {
+    const remaining = Math.max(0, 10 - state.users.length);
+    if (!remaining) { toast("Достигнут лимит 10 пользователей", true); return; }
+    $("#bulk-count").max = remaining;
+    $("#bulk-count").value = Math.min(2, remaining);
+    $("#bulk-user-dialog").showModal();
+  }
+
+  async function saveBulkUsers(event) {
+    event.preventDefault();
+    if (event.submitter?.value === "cancel") { $("#bulk-user-dialog").close(); return; }
+    const button = $("#save-bulk-users");
+    setBusy(button, true);
+    const payload = {
+      count: Number($("#bulk-count").value),
+      vk_hash: $("#bulk-hashes").value,
+      hash_mode: $("#bulk-hash-mode").value,
+      ports: $("#bulk-ports").value,
+      days: Number($("#bulk-days").value),
+      unlimited: $("#bulk-unlimited").checked,
+      is_deactivated: $("#bulk-disabled").checked,
+    };
+    try {
+      const result = await api("users/create-bulk", { method: "POST", body: payload });
+      const users = result.users || [];
+      $("#bulk-result-links").value = users.map(quickLink).join("\n");
+      $("#bulk-user-dialog").close();
+      $("#bulk-result-dialog").showModal();
+      toast(`Создано пользователей: ${users.length}`);
+      await Promise.all([loadUsers(), loadOverview()]);
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function copyBulkLinks() {
+    try {
+      await navigator.clipboard.writeText($("#bulk-result-links").value);
+      toast("Все ссылки wdtt:// скопированы");
+    } catch (error) { toast(`Не удалось скопировать: ${error.message}`, true); }
+  }
+
   async function userAction(route, password, confirmText) {
     if (confirmText && !confirm(confirmText)) return;
     try {
@@ -251,6 +293,53 @@
     } catch (error) { toast(error.message, true); }
   }
 
+  async function createBackup() {
+    const button = $("#create-backup");
+    setBusy(button, true);
+    try {
+      const result = await api("backups/create", { method: "POST" });
+      toast(`Backup создан: ${result.name}`);
+      await loadBackups();
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function loadPanelVersion() {
+    const info = $("#panel-version-info");
+    const updateButton = $("#update-panel");
+    try {
+      const result = await api("panel/version");
+      const latest = result.latest || "недоступна";
+      info.innerHTML = [
+        `<div class="detail-row"><span>Установлена</span><strong>v${escapeHtml(result.current || PANEL_VERSION)}</strong></div>`,
+        `<div class="detail-row"><span>На GitHub</span><strong>${result.latest ? `v${escapeHtml(latest)}` : escapeHtml(latest)}</strong></div>`,
+        result.error ? `<div class="detail-row"><span>Проверка</span><strong>${escapeHtml(result.error)}</strong></div>` : "",
+      ].join("");
+      updateButton.hidden = !result.update_available;
+      updateButton.textContent = result.update_available ? `Обновить до v${result.latest}` : "Обновить панель";
+      $("#panel-version-pill").textContent = result.update_available
+        ? `v${result.current} → v${result.latest}`
+        : `v${result.current || PANEL_VERSION}`;
+    } catch (error) {
+      info.innerHTML = `<p class="muted">Не удалось проверить GitHub: ${escapeHtml(error.message)}</p>`;
+      updateButton.hidden = true;
+    }
+  }
+
+  async function updatePanel() {
+    const button = $("#update-panel");
+    if (!confirm("Обновить панель до новой версии? Web-панель перезапустится, WDTT продолжит работу.")) return;
+    setBusy(button, true);
+    try {
+      await api("panel/update", { method: "POST" });
+      toast("Обновление запущено. Панель перезагрузится автоматически.");
+      setTimeout(() => location.reload(), 15000);
+    } catch (error) {
+      toast(error.message, true);
+      setBusy(button, false);
+    }
+  }
+
   async function loadAudit() {
     const result = await api("audit");
     $("#audit-body").innerHTML = (result.items || []).map((item) => `<tr><td>${escapeHtml(formatDate(item[0]))}</td><td>${escapeHtml(item[1])}</td><td class="mono">${escapeHtml(item[2])}</td><td>${escapeHtml(item[3])}</td><td><span class="badge ${item[4] === "ok" ? "ok" : "bad"}">${escapeHtml(item[4])}</span></td></tr>`).join("");
@@ -271,11 +360,14 @@
       $$(".tab").forEach((tab) => tab.classList.toggle("active", tab.id === `tab-${button.dataset.tab}`));
       $("#page-title").textContent = button.textContent;
       if (button.dataset.tab === "logs") loadLogs();
-      if (button.dataset.tab === "system") { loadBackups(); loadAudit(); }
+      if (button.dataset.tab === "system") { loadBackups(); loadAudit(); loadPanelVersion(); }
     }));
     $("#refresh").addEventListener("click", () => Promise.all([loadOverview(), loadUsers()]).catch((error) => toast(error.message, true)));
     $("#new-user").addEventListener("click", () => openUserDialog());
+    $("#bulk-users").addEventListener("click", openBulkUserDialog);
     $("#user-form").addEventListener("submit", saveUser);
+    $("#bulk-user-form").addEventListener("submit", saveBulkUsers);
+    $("#copy-bulk-links").addEventListener("click", copyBulkLinks);
     $("#user-search").addEventListener("input", renderUsers);
     $("#users-body").addEventListener("click", async (event) => {
       const button = event.target.closest("button"); if (!button) return;
@@ -294,6 +386,8 @@
     $("#log-filter").addEventListener("change", renderLogs);
     $$('[data-service]').forEach((button) => button.addEventListener("click", () => serviceAction(button.dataset.service, button)));
     $("#load-backups").addEventListener("click", loadBackups);
+    $("#create-backup").addEventListener("click", createBackup);
+    $("#update-panel").addEventListener("click", updatePanel);
     $("#backups-list").addEventListener("click", (event) => { const button = event.target.closest("[data-restore]"); if (button) restoreBackup(button.dataset.restore); });
     $("#logout-form").addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -304,6 +398,6 @@
   }
 
   bindEvents();
-  Promise.all([loadOverview(), loadUsers()]).catch((error) => toast(error.message, true));
+  Promise.all([loadOverview(), loadUsers(), loadPanelVersion()]).catch((error) => toast(error.message, true));
   setInterval(() => loadOverview().catch(() => {}), 10000);
 })();

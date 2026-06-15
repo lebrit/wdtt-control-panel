@@ -15,7 +15,7 @@
 }
 * { box-sizing: border-box; }
 body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 70% -20%, #16283a 0, transparent 38%), var(--bg); color: var(--text); }
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
 .sidebar { position: fixed; inset: 0 auto 0 0; width: var(--sidebar); padding: 28px 18px; border-right: 1px solid var(--line); background: rgba(8, 12, 19, .94); display: flex; flex-direction: column; backdrop-filter: blur(18px); }
 .brand { display: flex; align-items: center; gap: 12px; padding: 0 8px 34px; }
@@ -74,6 +74,8 @@ button:disabled { opacity: .5; cursor: wait; }
 .table-toolbar { display: flex; justify-content: space-between; gap: 15px; padding: 15px 18px; border-bottom: 1px solid var(--line); color: var(--muted); }
 input, select { width: 100%; min-height: 41px; padding: 0 12px; border: 1px solid #28364a; border-radius: 9px; color: var(--text); background: #0a1019; outline: none; }
 input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(89,225,194,.08); }
+textarea { width: 100%; min-height: 240px; padding: 12px; resize: vertical; border: 1px solid #28364a; border-radius: 9px; color: var(--text); background: #0a1019; outline: none; line-height: 1.55; }
+textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(89,225,194,.08); }
 .table-toolbar input { width: min(380px, 70%); }
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -101,7 +103,7 @@ dialog::backdrop { background: rgba(1,4,8,.78); backdrop-filter: blur(4px); }
 .icon-button { font-size: 23px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
 .form-grid label { color: var(--muted); font-size: 12px; }
-.form-grid input { margin-top: 7px; }
+.form-grid input, .form-grid select { margin-top: 7px; }
 .form-grid .wide { grid-column: 1 / -1; }
 .checkbox { display: flex; align-items: center; gap: 8px; }
 .checkbox input { width: 18px; min-height: 18px; margin: 0; }

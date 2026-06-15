@@ -43,6 +43,27 @@ elif action == "users.list":
         "main_password_present": True,
         "limit": 10,
     }
+elif action == "users.create_bulk":
+    payload = request.get("payload") or {}
+    count = int(payload.get("count") or 1)
+    hashes = [item for item in str(payload.get("vk_hash") or "demo_hash").replace(",", " ").split() if item]
+    shared = payload.get("hash_mode") != "rotate"
+    result = {
+        "count": count,
+        "users": [
+            {
+                "password": f"BulkDemo{index + 1:02d}Pass",
+                "vk_hash": ",".join(hashes) if shared else hashes[index % len(hashes)],
+                "ports": str(payload.get("ports") or "56000,56001,9000"),
+                "expires_at": 0,
+                "is_deactivated": False,
+                "device_id": "",
+                "down_bytes": 0,
+                "up_bytes": 0,
+            }
+            for index in range(count)
+        ],
+    }
 elif action == "logs":
     result = {
         "lines": [
@@ -53,6 +74,12 @@ elif action == "logs":
     }
 elif action == "backups.list":
     result = {"backups": [{"name": "passwords-20260615-080000-auto.json", "size": 2048, "created_at": 1781510400}]}
+elif action == "backups.create":
+    result = {"name": "passwords-20260615-090000-manual.json", "size": 3072, "created_at": 1781514000}
+elif action == "panel.version":
+    result = {"current": "0.4.0", "latest": "0.5.0", "update_available": True}
+elif action == "panel.update":
+    result = {"scheduled": True, "state": "test"}
 else:
     result = {}
 print(json.dumps({"ok": True, "result": result}))

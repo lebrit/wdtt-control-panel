@@ -191,6 +191,7 @@ class Panel:
             "overview": "overview",
             "users": "users.list",
             "users/create": "users.create",
+            "users/create-bulk": "users.create_bulk",
             "users/update": "users.update",
             "users/delete": "users.delete",
             "users/unbind": "users.unbind",
@@ -198,7 +199,10 @@ class Panel:
             "service": "service.action",
             "logs": "logs",
             "backups": "backups.list",
+            "backups/create": "backups.create",
             "backups/restore": "backups.restore",
+            "panel/version": "panel.version",
+            "panel/update": "panel.update",
         }
         if route == "history" and method == "GET":
             return self.json_response(start_response, 200, self.history())
@@ -207,7 +211,7 @@ class Panel:
         action = mapping.get(route)
         if action is None:
             return self.json_response(start_response, 404, {"error": "API endpoint не найден"})
-        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list"}:
+        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "panel.version"}:
             return self.json_response(start_response, 405, {"error": "Требуется POST"})
         if method == "POST" and action in {"overview", "users.list", "backups.list"}:
             return self.json_response(start_response, 405, {"error": "Требуется GET"})
@@ -216,6 +220,8 @@ class Panel:
         if action == "logs":
             query = parse_qs(str(environ.get("QUERY_STRING") or ""))
             payload["limit"] = query.get("limit", [300])[0]
+        if action == "panel.version":
+            payload["current_version"] = str(self.config.get("version") or "0.0.0")
         result = self.admin(action, payload)
         status = 200 if result.get("ok") else 400
         if result.get("ok") and action == "overview":
@@ -324,6 +330,7 @@ class Panel:
             "{{USER}}": escape_html(str(session.get("u") or "")),
             "{{PUBLIC_HOST}}": escape_html(str(self.config["public_host"])),
             "{{HTTPS_PORT}}": str(self.config.get("https_port") or 443),
+            "{{VERSION}}": escape_html(str(self.config.get("version") or "0.0.0")),
         }
         for source, target in replacements.items():
             html = html.replace(source, target)

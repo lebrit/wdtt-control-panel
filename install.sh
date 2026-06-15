@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.1.0"
+PANEL_VERSION="0.4.0"
+PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
+PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="/opt/wdtt-panel"
 CONFIG_DIR="/etc/wdtt-panel"
@@ -12,6 +14,10 @@ NGINX_FILE="/etc/nginx/conf.d/wdtt-panel.conf"
 PANEL_SERVICE="wdtt-panel.service"
 ADMIN_WRAPPER="/usr/local/sbin/wdtt-panel-admin"
 SUDOERS_FILE="/etc/sudoers.d/wdtt-panel"
+UPDATE_WRAPPER="/usr/local/sbin/wdtt-panel-update"
+UNINSTALL_WRAPPER="/usr/local/sbin/wdtt-panel-uninstall"
+STATUS_WRAPPER="/usr/local/sbin/wdtt-panel-status"
+MANAGER_WRAPPER="/usr/local/sbin/wdtt-panel"
 LOG_FILE="/var/log/wdtt-panel-install.log"
 
 PANEL_USER="${PANEL_USER:-admin}"
@@ -133,6 +139,40 @@ prepare_secrets() {
   fi
 }
 
+load_panel_config() {
+  [ -r "$CONFIG_FILE" ] || die "Панель не установлена: $CONFIG_FILE не найден"
+  mapfile -t PANEL_CONFIG_VALUES < <(python3 - "$CONFIG_FILE" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+for key, default in (
+    ("username", "admin"),
+    ("base_path", "/"),
+    ("public_host", ""),
+    ("https_port", 8443),
+    ("listen_port", 8787),
+    ("certificate_path", ""),
+    ("tls_mode", "self-signed"),
+    ("certificate_email", ""),
+):
+    print(d.get(key, default))
+PY
+  )
+  [ "${#PANEL_CONFIG_VALUES[@]}" -eq 8 ] || die "Не удалось прочитать конфигурацию панели"
+  PANEL_USER="${PANEL_CONFIG_VALUES[0]}"
+  PANEL_PATH="${PANEL_CONFIG_VALUES[1]}"
+  PANEL_HOST="${PANEL_CONFIG_VALUES[2]}"
+  PANEL_HTTPS_PORT="${PANEL_CONFIG_VALUES[3]}"
+  PANEL_LISTEN_PORT="${PANEL_CONFIG_VALUES[4]}"
+  CERTIFICATE_PATH="${PANEL_CONFIG_VALUES[5]}"
+  TLS_MODE="${PANEL_CONFIG_VALUES[6]}"
+  PANEL_EMAIL="${PANEL_CONFIG_VALUES[7]}"
+  if [ "$TLS_MODE" = "letsencrypt" ]; then
+    PRIVATE_KEY_PATH="/etc/letsencrypt/live/$PANEL_HOST/privkey.pem"
+  else
+    PRIVATE_KEY_PATH="$CONFIG_DIR/tls/privkey.pem"
+  fi
+}
+
 wdtt_installed() {
   systemctl cat wdtt.service >/dev/null 2>&1 || [ -x /usr/local/bin/wdtt-server ]
 }
@@ -184,6 +224,10 @@ install_panel_files() {
   install -d -m 0755 "$STATE_DIR/acme"
   rm -rf "$INSTALL_DIR/wdtt_panel"
   cp -a "$SCRIPT_DIR/wdtt_panel" "$INSTALL_DIR/wdtt_panel"
+  install -m 0755 "$SCRIPT_DIR/install.sh" "$INSTALL_DIR/install.sh"
+  install -m 0755 "$SCRIPT_DIR/bootstrap.sh" "$INSTALL_DIR/bootstrap.sh"
+  install -m 0755 "$SCRIPT_DIR/update.sh" "$INSTALL_DIR/update.sh"
+  install -m 0755 "$SCRIPT_DIR/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
   chown -R root:root "$INSTALL_DIR/wdtt_panel"
   find "$INSTALL_DIR/wdtt_panel" -type d -exec chmod 0755 {} +
   find "$INSTALL_DIR/wdtt_panel" -type f -exec chmod 0644 {} +
@@ -202,11 +246,22 @@ EOF
   visudo -cf "$SUDOERS_FILE" >>"$LOG_FILE"
 }
 
+write_maintenance_scripts() {
+  ln -sfn "$INSTALL_DIR/bootstrap.sh" "$MANAGER_WRAPPER"
+  ln -sfn "$INSTALL_DIR/update.sh" "$UPDATE_WRAPPER"
+  ln -sfn "$INSTALL_DIR/uninstall.sh" "$UNINSTALL_WRAPPER"
+  cat > "$STATUS_WRAPPER" <<EOF
+#!/bin/sh
+exec /bin/bash $INSTALL_DIR/install.sh status
+EOF
+  chmod 0755 "$STATUS_WRAPPER"
+}
+
 write_panel_config() {
   PASSWORD_HASH="$(PYTHONPATH="$INSTALL_DIR" python3 -c 'import sys; from wdtt_panel.security import hash_password; print(hash_password(sys.argv[1]))' "$PANEL_PASSWORD")"
-  python3 - "$CONFIG_FILE" "$PANEL_VERSION" "$PANEL_USER" "$PASSWORD_HASH" "$SESSION_SECRET" "$PANEL_PATH" "$PANEL_HOST" "$PANEL_HTTPS_PORT" "$PANEL_LISTEN_PORT" "$CERTIFICATE_PATH" "$TLS_MODE" <<'PY'
+  python3 - "$CONFIG_FILE" "$PANEL_VERSION" "$PANEL_USER" "$PASSWORD_HASH" "$SESSION_SECRET" "$PANEL_PATH" "$PANEL_HOST" "$PANEL_HTTPS_PORT" "$PANEL_LISTEN_PORT" "$CERTIFICATE_PATH" "$TLS_MODE" "$PANEL_EMAIL" <<'PY'
 import json, os, sys
-path, version, username, password_hash, session_secret, base_path, public_host, https_port, listen_port, certificate_path, tls_mode = sys.argv[1:]
+path, version, username, password_hash, session_secret, base_path, public_host, https_port, listen_port, certificate_path, tls_mode, certificate_email = sys.argv[1:]
 data = {
     "version": version,
     "username": username,
@@ -219,7 +274,31 @@ data = {
     "listen_port": int(listen_port),
     "certificate_path": certificate_path,
     "tls_mode": tls_mode,
+    "certificate_email": certificate_email,
 }
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    json.dump(data, handle, ensure_ascii=False, indent=2)
+    handle.write("\n")
+os.chmod(tmp, 0o640)
+os.replace(tmp, path)
+PY
+  chown root:wdtt-panel "$CONFIG_FILE"
+  chmod 0640 "$CONFIG_FILE"
+}
+
+update_panel_config_metadata() {
+  python3 - "$CONFIG_FILE" "$PANEL_VERSION" "${CERTIFICATE_PATH:-}" "${TLS_MODE:-}" "${PANEL_EMAIL:-}" <<'PY'
+import json, os, sys
+path, version, certificate_path, tls_mode, certificate_email = sys.argv[1:]
+data = json.load(open(path, encoding="utf-8"))
+data["version"] = version
+if certificate_path:
+    data["certificate_path"] = certificate_path
+if tls_mode:
+    data["tls_mode"] = tls_mode
+if certificate_email:
+    data["certificate_email"] = certificate_email
 tmp = path + ".tmp"
 with open(tmp, "w", encoding="utf-8") as handle:
     json.dump(data, handle, ensure_ascii=False, indent=2)
@@ -296,6 +375,10 @@ request_certificate() {
   TLS_MODE="self-signed"
   port_80_available_for_nginx || { log "Порт 80 занят не Nginx: публичный сертификат пропущен"; return 1; }
   write_acme_nginx || return 1
+  run_certbot_request
+}
+
+run_certbot_request() {
   install_certbot || return 1
   CERTBOT=("$INSTALL_DIR/certbot/bin/certbot" certonly --non-interactive --agree-tos --webroot --webroot-path "$STATE_DIR/acme")
   if [ -n "$PANEL_EMAIL" ]; then CERTBOT+=(--email "$PANEL_EMAIL"); else CERTBOT+=(--register-unsafely-without-email); fi
@@ -312,6 +395,13 @@ request_certificate() {
     return 0
   fi
   return 1
+}
+
+try_upgrade_certificate() {
+  port_80_available_for_nginx || return 1
+  [ -r "$NGINX_FILE" ] || return 1
+  grep -q '/.well-known/acme-challenge/' "$NGINX_FILE" || return 1
+  run_certbot_request
 }
 
 create_self_signed_certificate() {
@@ -374,14 +464,15 @@ EOF
 }
 
 write_renew_timer() {
-  [ "$TLS_MODE" = "letsencrypt" ] || return 0
   cat > /etc/systemd/system/wdtt-panel-cert-renew.service <<EOF
 [Unit]
 Description=Renew WDTT Panel TLS certificate
+After=network-online.target nginx.service
+Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=$INSTALL_DIR/certbot/bin/certbot renew --quiet --deploy-hook "systemctl reload nginx"
+ExecStart=/bin/bash $INSTALL_DIR/install.sh renew-cert
 EOF
   cat > /etc/systemd/system/wdtt-panel-cert-renew.timer <<'EOF'
 [Unit]
@@ -398,6 +489,36 @@ WantedBy=timers.target
 EOF
   systemctl daemon-reload
   systemctl enable --now wdtt-panel-cert-renew.timer >>"$LOG_FILE" 2>&1
+}
+
+renew_certificates() {
+  require_root
+  load_panel_config
+
+  if [ "$TLS_MODE" = "letsencrypt" ]; then
+    install_certbot || die "Не удалось подготовить Certbot"
+    "$INSTALL_DIR/certbot/bin/certbot" renew --quiet --deploy-hook "systemctl reload nginx" >>"$LOG_FILE" 2>&1 || \
+      die "Не удалось проверить или обновить сертификат Let's Encrypt"
+    log "Проверка сертификата Let's Encrypt завершена"
+    return 0
+  fi
+
+  if try_upgrade_certificate; then
+    update_panel_config_metadata
+    write_final_nginx
+    log "Self-signed сертификат заменен публичным сертификатом Let's Encrypt"
+    return 0
+  fi
+
+  if [ -r "$CERTIFICATE_PATH" ] && openssl x509 -checkend 2592000 -noout -in "$CERTIFICATE_PATH" >/dev/null 2>&1; then
+    log "Self-signed сертификат действителен более 30 дней; замена не требуется"
+    return 0
+  fi
+
+  create_self_signed_certificate
+  update_panel_config_metadata
+  write_final_nginx
+  log "Self-signed сертификат автоматически обновлен"
 }
 
 open_firewall() {
@@ -423,20 +544,57 @@ status_panel() {
   [ -r "$CONFIG_FILE" ] && python3 - "$CONFIG_FILE" <<'PY'
 import json, sys
 d=json.load(open(sys.argv[1], encoding="utf-8"))
+print(f"Version: {d.get('version', 'unknown')}")
 print(f"URL: https://{d['public_host']}:{d['https_port']}{d['base_path']}")
 print(f"TLS: {d.get('tls_mode', 'unknown')}")
 PY
 }
 
+remove_firewall_rule() {
+  local port="$1"
+  [ -n "$port" ] || return 0
+  if command_exists ufw; then
+    ufw --force delete allow "$port/tcp" >/dev/null 2>&1 || true
+  fi
+  if command_exists firewall-cmd && systemctl is-active --quiet firewalld; then
+    firewall-cmd --permanent --remove-port="$port/tcp" >/dev/null 2>&1 || true
+    firewall-cmd --reload >/dev/null 2>&1 || true
+  fi
+  if command_exists iptables; then
+    while iptables -C INPUT -p tcp --dport "$port" -m comment --comment WDTT_PANEL -j ACCEPT 2>/dev/null; do
+      iptables -D INPUT -p tcp --dport "$port" -m comment --comment WDTT_PANEL -j ACCEPT || break
+    done
+  fi
+}
+
 uninstall_panel() {
+  local panel_port=""
+  if [ -r "$CONFIG_FILE" ]; then
+    panel_port="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("https_port", ""))' "$CONFIG_FILE" 2>/dev/null || true)"
+  fi
   log "Удаление только web-панели; WDTT не затрагивается"
-  systemctl disable --now "$PANEL_SERVICE" wdtt-panel-cert-renew.timer 2>/dev/null || true
+  systemctl disable --now "$PANEL_SERVICE" wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service 2>/dev/null || true
   rm -f "/etc/systemd/system/$PANEL_SERVICE" /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer
-  rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE"
+  rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER"
   rm -rf "$INSTALL_DIR" "$CONFIG_DIR"
+  remove_firewall_rule "$panel_port"
   systemctl daemon-reload
   nginx -t >/dev/null 2>&1 && systemctl reload nginx || true
   log "Панель удалена. Аудит оставлен в $STATE_DIR, резервные копии в $PRIVATE_STATE_DIR"
+}
+
+update_panel() {
+  require_root
+  load_panel_config
+  log "Обновление панели до версии $PANEL_VERSION"
+  install_panel_files
+  write_maintenance_scripts
+  update_panel_config_metadata
+  write_panel_service
+  write_renew_timer
+  systemctl restart "$PANEL_SERVICE"
+  log "Панель обновлена; адрес, пароль, сертификаты и данные сохранены"
+  status_panel
 }
 
 install_panel() {
@@ -452,6 +610,7 @@ install_panel() {
   prepare_secrets
   install_clean_wdtt
   install_panel_files
+  write_maintenance_scripts
 
   if request_certificate; then
     log "Получен публично доверенный сертификат Let's Encrypt"
@@ -479,7 +638,9 @@ install_panel() {
 
 case "${1:-install}" in
   install|--install|-i) install_panel ;;
+  update|--update) update_panel ;;
+  renew-cert|--renew-cert) renew_certificates ;;
   status|--status|-s) require_root; status_panel ;;
   uninstall|--uninstall|-u) require_root; uninstall_panel ;;
-  *) die "Использование: $0 [install|status|uninstall]" ;;
+  *) die "Использование: $0 [install|update|renew-cert|status|uninstall]" ;;
 esac
