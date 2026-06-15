@@ -23,7 +23,7 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = Path(os.environ.get("WDTT_PANEL_CONFIG", "/etc/wdtt-panel/config.json"))
 STATE_DB = Path(os.environ.get("WDTT_PANEL_STATE", "/var/lib/wdtt-panel/panel.db"))
 ADMIN_COMMAND = os.environ.get("WDTT_PANEL_ADMIN", "/usr/bin/sudo -n /usr/local/sbin/wdtt-panel-admin").split()
-MAX_BODY = 256 * 1024
+MAX_BODY = 90 * 1024 * 1024
 
 
 class ThreadingServer(ThreadingMixIn, WSGIServer):
@@ -201,8 +201,19 @@ class Panel:
             "backups": "backups.list",
             "backups/create": "backups.create",
             "backups/restore": "backups.restore",
+            "backups/export": "backups.export",
+            "backups/import": "backups.import",
             "panel/version": "panel.version",
             "panel/update": "panel.update",
+            "certificate/export": "certificate.export",
+            "certificate/renew": "certificate.renew",
+            "cascade": "cascade.status",
+            "cascade/save": "cascade.save",
+            "cascade/install": "cascade.install",
+            "cascade/warp": "cascade.warp",
+            "geofiles/upload": "geofiles.upload",
+            "geofiles/refresh": "geofiles.refresh",
+            "geofiles/refresh-all": "geofiles.refresh_auto",
         }
         if route == "history" and method == "GET":
             return self.json_response(start_response, 200, self.history())
@@ -211,17 +222,27 @@ class Panel:
         action = mapping.get(route)
         if action is None:
             return self.json_response(start_response, 404, {"error": "API endpoint не найден"})
-        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "panel.version"}:
+        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "backups.export", "panel.version", "certificate.export", "cascade.status"}:
             return self.json_response(start_response, 405, {"error": "Требуется POST"})
         if method == "POST" and action in {"overview", "users.list", "backups.list"}:
             return self.json_response(start_response, 405, {"error": "Требуется GET"})
         if action == "overview":
             payload["certificate_path"] = str(self.config.get("certificate_path") or "")
+            payload["tls_mode"] = str(self.config.get("tls_mode") or "unknown")
+            payload["public_host"] = str(self.config.get("public_host") or "")
+            payload["https_port"] = int(self.config.get("https_port") or 443)
         if action == "logs":
             query = parse_qs(str(environ.get("QUERY_STRING") or ""))
             payload["limit"] = query.get("limit", [300])[0]
         if action == "panel.version":
             payload["current_version"] = str(self.config.get("version") or "0.0.0")
+        if action == "backups.export":
+            query = parse_qs(str(environ.get("QUERY_STRING") or ""))
+            payload["name"] = query.get("name", [""])[0]
+        if action == "certificate.export":
+            payload["certificate_path"] = str(self.config.get("certificate_path") or "")
+        if route == "geofiles/refresh-all":
+            payload["force"] = True
         result = self.admin(action, payload)
         status = 200 if result.get("ok") else 400
         if result.get("ok") and action == "overview":
@@ -239,7 +260,7 @@ class Panel:
                 input=request,
                 text=True,
                 capture_output=True,
-                timeout=60,
+                timeout=240 if action.startswith(("cascade.", "geofiles.")) else 60,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return {"ok": False, "error": f"Root-helper недоступен: {exc}"}

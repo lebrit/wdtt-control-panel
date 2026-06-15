@@ -10,7 +10,9 @@ if action == "overview":
         "stats": {"active": 2, "total": 5, "up_gb": "0.10", "down_gb": "0.20"},
         "users": 1,
         "devices": 1,
-        "certificate": {"exists": True, "expires_at": 1798761600, "days_left": 200.0},
+        "system": {"cpu_percent": 18.4, "memory": {"total": 2147483648, "used": 805306368, "percent": 37.5}, "load_average": [0.25, 0.2, 0.1]},
+        "disk": {"total": 21474836480, "used": 5368709120, "free": 16106127360, "percent": 25.0},
+        "certificate": {"exists": True, "expires_at": 1798761600, "days_left": 200.0, "mode": "self-signed", "local_tls_ok": True, "listening": True},
     }
 elif action == "users.list":
     result = {
@@ -41,6 +43,7 @@ elif action == "users.list":
             },
         ],
         "main_password_present": True,
+        "admins": [{"password": "Главный пароль", "role": "admin", "device_id": "admin-device", "device": {"device_id": "admin-device", "ip": "10.66.66.1"}, "connected": True, "expires_at": 0, "down_bytes": 0, "up_bytes": 0, "vk_hash": "Администратор WDTT", "is_deactivated": False, "expired": False}],
         "limit": 10,
     }
 elif action == "users.create_bulk":
@@ -77,9 +80,21 @@ elif action == "backups.list":
 elif action == "backups.create":
     result = {"name": "passwords-20260615-090000-manual.json", "size": 3072, "created_at": 1781514000}
 elif action == "panel.version":
-    result = {"current": "0.4.0", "latest": "0.5.0", "update_available": True}
+    result = {"current": "0.5.0", "latest": "0.5.0", "update_available": False}
 elif action == "panel.update":
     result = {"scheduled": True, "state": "test"}
+elif action == "cascade.status":
+    result = {"settings": {"enabled": False, "vless_uri": "", "default_outbound": "direct", "rules": [], "geofiles": []}, "active": False, "installed": False, "version": "", "warp_ready": False, "logs": [], "builtin_rule_sets": ["ru-sites", "ru-ip", "ru-blocked-sites", "ru-blocked-ip", "ai-services"]}
+elif action in {"cascade.save", "cascade.install", "cascade.warp", "certificate.renew"}:
+    result = {"scheduled": True, "state": "test"}
+elif action == "certificate.export":
+    result = {"name": "wdtt-panel-certificate.pem", "content": "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n"}
+elif action == "backups.export":
+    result = {"name": "passwords-demo.json", "content": '{"passwords":{},"devices":{}}'}
+elif action == "backups.import":
+    result = {"name": "passwords-uploaded.json", "size": 32, "created_at": 1781514000}
+elif action.startswith("geofiles."):
+    result = {"refreshed": [], "errors": []}
 else:
     result = {}
 print(json.dumps({"ok": True, "result": result}))

@@ -18,6 +18,7 @@
     <nav>
       <button class="nav-item active" data-tab="dashboard">Обзор</button>
       <button class="nav-item" data-tab="users">Пользователи</button>
+      <button class="nav-item" data-tab="cascade">Каскад</button>
       <button class="nav-item" data-tab="logs">Журналы</button>
       <button class="nav-item" data-tab="system">Система</button>
     </nav>
@@ -42,6 +43,9 @@
         <article class="metric-card"><p>Активные соединения</p><strong id="active-conns">0</strong><small id="total-conns">0 всего</small></article>
         <article class="metric-card"><p>Пользователи</p><strong id="user-count">0</strong><small id="device-count">0 устройств</small></article>
         <article class="metric-card"><p>Трафик</p><strong id="traffic-total">0 GB</strong><small id="traffic-split">↑0 / ↓0</small></article>
+        <article class="metric-card"><p>Процессор</p><strong id="cpu-load">0%</strong><small id="system-load">load 0.00</small></article>
+        <article class="metric-card"><p>Оперативная память</p><strong id="memory-load">0%</strong><small id="memory-detail">0 / 0</small></article>
+        <article class="metric-card"><p>Диск</p><strong id="disk-load">0%</strong><small id="disk-detail">0 / 0</small></article>
       </div>
       <div class="two-column">
         <article class="panel-card">
@@ -51,7 +55,46 @@
         <article class="panel-card health-card">
           <div class="section-head"><div><p class="eyebrow">HEALTH CHECK</p><h2>Диагностика</h2></div></div>
           <div id="health-list" class="health-list"></div>
+          <p id="interface-error" class="diagnostic-error" hidden></p>
         </article>
+      </div>
+    </section>
+
+    <section class="tab" id="tab-cascade">
+      <div class="section-head"><div><p class="eyebrow">ADVANCED ROUTING</p><h2>Каскад и маршрутизация</h2><p class="muted">Правила применяются сверху вниз. Исходный WDTT не изменяется.</p></div><div class="inline-actions"><button id="install-cascade" class="secondary">Установить компоненты</button><button id="save-cascade" class="primary">Сохранить и применить</button></div></div>
+      <div class="system-grid">
+        <article class="panel-card">
+          <div class="section-head"><div><p class="eyebrow">OUTBOUND</p><h2>Выходные подключения</h2></div><span id="cascade-status" class="badge warn">не настроен</span></div>
+          <label class="field-label">VLESS-ссылка<textarea id="cascade-vless" class="compact-textarea mono" placeholder="vless://UUID@server:443?... "></textarea></label>
+          <div class="form-grid compact-grid">
+            <label>Маршрут по умолчанию<select id="cascade-default"><option value="direct">Напрямую</option><option value="vless">VLESS</option><option value="warp">WARP</option></select></label>
+            <label class="checkbox cascade-toggle"><input id="cascade-enabled" type="checkbox"> Включить каскад</label>
+          </div>
+          <div class="button-row"><button id="create-warp" class="secondary">Создать WARP</button><span id="warp-status" class="muted">WARP не настроен</span></div>
+        </article>
+        <article class="panel-card">
+          <p class="eyebrow">PRESETS</p><h2>Готовые наборы</h2><p class="muted">Добавляются как обычные правила и затем могут быть переставлены или изменены.</p>
+          <div class="preset-grid"><button class="secondary" data-preset="ru-sites">RU-сайты</button><button class="secondary" data-preset="ru-ip">RU-IP</button><button class="secondary" data-preset="ru-blocked-sites">Заблокированные сайты РФ</button><button class="secondary" data-preset="ru-blocked-ip">Заблокированные IP РФ</button><button class="secondary" data-preset="ai-services">Сервисы ИИ</button></div>
+        </article>
+        <article class="panel-card wide">
+          <div class="section-head"><div><p class="eyebrow">PRIORITY RULES</p><h2>Тонкая маршрутизация</h2></div><button id="add-route-rule" class="secondary">Добавить правило</button></div>
+          <div id="route-rules" class="route-rules"></div>
+        </article>
+        <article class="panel-card wide">
+          <div class="section-head"><div><p class="eyebrow">GEOFILES</p><h2>GeoFiles и Rule Sets</h2><p class="muted">SRS используется напрямую. Для geosite.dat/geoip.dat укажите категорию, например RU.</p></div><button id="refresh-all-geofiles" class="secondary">Обновить сейчас</button></div>
+          <div class="geofile-form">
+            <input id="geofile-file" type="file" accept=".srs,.dat,.db">
+            <select id="geofile-kind"><option value="srs">SRS</option><option value="geosite">geosite.dat</option><option value="geoip">geoip.dat</option></select>
+            <input id="geofile-tag" placeholder="Tag правила">
+            <input id="geofile-category" placeholder="Категория для .dat: RU">
+            <input id="geofile-url" placeholder="URL для обновлений (необязательно)">
+            <select id="geofile-interval"><option value="6h">Каждые 6 часов</option><option value="12h">Каждые 12 часов</option><option value="1d" selected>Раз в сутки</option><option value="7d">Раз в неделю</option></select>
+            <label class="checkbox"><input id="geofile-auto" type="checkbox"> Автообновление</label>
+            <button id="upload-geofile" class="primary">Загрузить GeoFile</button>
+          </div>
+          <div id="geofiles-list" class="backup-list"></div>
+        </article>
+        <article class="panel-card wide"><p class="eyebrow">CASCADE LOG</p><h2>Журнал маршрутизации</h2><pre id="cascade-log" class="inline-log">Нет данных.</pre></article>
       </div>
     </section>
 
@@ -75,14 +118,14 @@
           <div class="button-row"><button data-service="start" class="primary">Запустить</button><button data-service="restart" class="secondary">Перезапустить</button><button data-service="stop" class="danger">Остановить</button></div>
         </article>
         <article class="panel-card">
-          <p class="eyebrow">TLS CERTIFICATE</p><h2>Сертификат панели</h2><div id="certificate-info" class="detail-list"></div>
+          <p class="eyebrow">TLS CERTIFICATE</p><h2>Сертификат панели</h2><div id="certificate-info" class="detail-list"></div><div class="button-row"><button id="renew-certificate" class="secondary">Проверить/обновить</button><button id="download-certificate" class="secondary">Скачать сертификат</button></div>
         </article>
         <article class="panel-card wide">
           <div class="section-head"><div><p class="eyebrow">PANEL UPDATE</p><h2>Версия панели</h2></div><button id="update-panel" class="primary" hidden>Обновить панель</button></div>
           <div id="panel-version-info" class="detail-list"><p class="muted">Проверка версии GitHub...</p></div>
         </article>
         <article class="panel-card wide">
-          <div class="section-head"><div><p class="eyebrow">RECOVERY</p><h2>Резервные копии WDTT</h2><p class="muted">Полная база пользователей, устройств, статистики и настроек.</p></div><div class="inline-actions"><button id="create-backup" class="primary">Создать backup</button><button id="load-backups" class="secondary">Обновить список</button></div></div>
+          <div class="section-head"><div><p class="eyebrow">RECOVERY</p><h2>Резервные копии WDTT</h2><p class="muted">Полная база пользователей, устройств, статистики и настроек.</p></div><div class="inline-actions"><input id="backup-upload" type="file" accept=".json" hidden><button id="upload-backup" class="secondary">Загрузить с компьютера</button><button id="create-backup" class="primary">Создать backup</button><button id="load-backups" class="secondary">Обновить список</button></div></div>
           <div id="backups-list" class="backup-list"></div>
         </article>
         <article class="panel-card wide">

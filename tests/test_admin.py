@@ -1,4 +1,5 @@
 import json
+import base64
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,10 +15,18 @@ class AdminDatabaseTests(unittest.TestCase):
         self.db_file = root / "etc" / "passwords.json"
         self.backups = root / "backups"
         self.lock_file = root / "admin.lock"
+        self.cascade_settings = root / "cascade.json"
+        self.cascade_config = root / "sing-box.json"
+        self.warp_dir = root / "warp"
+        self.geofiles_dir = root / "geofiles"
         self.patchers = [
             mock.patch.object(admin, "DB_FILE", self.db_file),
             mock.patch.object(admin, "BACKUP_DIR", self.backups),
             mock.patch.object(admin, "LOCK_FILE", self.lock_file),
+            mock.patch.object(admin, "CASCADE_SETTINGS", self.cascade_settings),
+            mock.patch.object(admin, "CASCADE_CONFIG", self.cascade_config),
+            mock.patch.object(admin, "WARP_DIR", self.warp_dir),
+            mock.patch.object(admin, "GEOFILES_DIR", self.geofiles_dir),
             mock.patch.object(admin, "SKIP_SYSTEMD", True),
         ]
         for patcher in self.patchers:
@@ -147,6 +156,50 @@ class AdminDatabaseTests(unittest.TestCase):
     def test_version_comparison_normalizes_short_versions(self):
         self.assertEqual(admin.version_parts("1.2"), admin.version_parts("1.2.0"))
         self.assertGreater(admin.version_parts("1.2.1"), admin.version_parts("1.2"))
+
+    def test_backup_can_be_exported_and_uploaded(self):
+        backup = admin.create_manual_backup({})
+        exported = admin.export_backup({"name": backup["name"]})
+        uploaded = admin.import_backup({"name": "local.json", "content": exported["content"]})
+        self.assertTrue((self.backups / uploaded["name"]).is_file())
+        self.assertEqual(json.loads(exported["content"])["passwords"], {})
+
+    def test_admin_device_is_listed_separately(self):
+        data = admin.load_database()
+        data["devices"]["admin-phone"] = {"device_id": "admin-phone", "ip": "10.66.66.2", "pub_key": "admin-public"}
+        admin.save_database(data)
+        with mock.patch.object(admin, "wireguard_handshakes", return_value={}), mock.patch.object(admin, "active_tunnel_ips", return_value={"10.66.66.2"}):
+            result = admin.list_users()
+        self.assertEqual(result["admins"][0]["role"], "admin")
+        self.assertTrue(result["admins"][0]["connected"])
+
+    def test_vless_and_priority_rules_generate_sing_box_config(self):
+        settings = admin.default_cascade_settings()
+        settings["vless_uri"] = "vless://11111111-1111-4111-8111-111111111111@example.com:443?security=tls&type=ws&path=%2Fws"
+        settings["default_outbound"] = "vless"
+        settings["rules"] = [
+            {"type": "builtin", "values": "ru-sites", "outbound": "direct", "enabled": True},
+            {"type": "domain", "values": "openai.com,example.org", "outbound": "vless", "enabled": True},
+            {"type": "ip", "values": "1.1.1.1,8.8.8.0/24", "outbound": "direct", "enabled": True},
+        ]
+        config = admin.build_cascade_config(settings)
+        self.assertEqual(config["route"]["final"], "cascade-vless")
+        self.assertEqual(config["route"]["rules"][2]["rule_set"], ["ru-sites"])
+        self.assertIn("1.1.1.1/32", config["route"]["rules"][4]["ip_cidr"])
+
+    def test_srs_geofile_upload_is_private_and_routable(self):
+        item = admin.upload_geofile(
+            {
+                "name": "custom.srs",
+                "tag": "custom-sites",
+                "kind": "srs",
+                "content": base64.b64encode(b"test-srs").decode("ascii"),
+                "auto_update": False,
+            }
+        )
+        self.assertTrue(Path(item["path"]).is_file())
+        config = json.loads(self.cascade_config.read_text(encoding="utf-8"))
+        self.assertEqual(config["route"]["rule_set"][-1]["tag"], "custom-sites")
 
 
 if __name__ == "__main__":

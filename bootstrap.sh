@@ -4,8 +4,9 @@ set -Eeuo pipefail
 REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 BRANCH="${WDTT_PANEL_BRANCH:-main}"
 ARCHIVE_URL="https://github.com/${REPOSITORY}/archive/refs/heads/${BRANCH}.tar.gz"
-WORK_DIR="$(mktemp -d)"
+WORK_DIR=""
 ACTION=""
+INTERACTIVE=0
 
 usage() {
   cat <<EOF
@@ -29,6 +30,7 @@ EOF
 
 choose_action() {
   if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+    INTERACTIVE=0
     ACTION="install"
     return 0
   fi
@@ -52,10 +54,10 @@ EOF
     5)
       printf 'Удалить web-панель? WDTT и его пользователи останутся [y/N]: ' >/dev/tty
       IFS= read -r confirm </dev/tty || true
-      case "$confirm" in y|Y|yes|YES|да|Да|ДА) ACTION="uninstall" ;; *) echo 'Отменено.' >/dev/tty; exit 0 ;; esac
+      case "$confirm" in y|Y|yes|YES|да|Да|ДА) ACTION="uninstall" ;; *) echo 'Отменено.' >/dev/tty; ACTION="" ;; esac
       ;;
-    0) exit 0 ;;
-    *) echo 'Неизвестный пункт меню.' >/dev/tty; exit 2 ;;
+    0) ACTION="exit" ;;
+    *) echo 'Неизвестный пункт меню.' >/dev/tty; ACTION="" ;;
   esac
 }
 
@@ -140,10 +142,10 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-[ -n "$ACTION" ] || choose_action
+[ -n "$ACTION" ] || { INTERACTIVE=1; choose_action; }
 
 cleanup() {
-  rm -rf "$WORK_DIR"
+  [ -z "$WORK_DIR" ] || rm -rf "$WORK_DIR"
 }
 trap cleanup EXIT
 
@@ -161,25 +163,46 @@ command -v tar >/dev/null 2>&1 || {
   exit 1
 }
 
-if [ "$ACTION" = "install" ]; then
-  prompt_install_options
-fi
+run_action() {
+  [ "$ACTION" != "exit" ] || return 10
+  [ -n "$ACTION" ] || return 0
+  if [ "$ACTION" = "install" ]; then
+    prompt_install_options
+  fi
 
-export PANEL_HOST="${PANEL_HOST:-}"
-export PANEL_USER="${PANEL_USER:-admin}"
-export PANEL_PASSWORD="${PANEL_PASSWORD:-}"
-export PANEL_EMAIL="${PANEL_EMAIL:-}"
-export PANEL_HTTPS_PORT="${PANEL_HTTPS_PORT:-8443}"
-export PANEL_PATH="${PANEL_PATH:-}"
-export INSTALL_WDTT="${INSTALL_WDTT:-auto}"
-export WDTT_MAIN_PASSWORD="${WDTT_MAIN_PASSWORD:-}"
+  export PANEL_HOST="${PANEL_HOST:-}"
+  export PANEL_USER="${PANEL_USER:-admin}"
+  export PANEL_PASSWORD="${PANEL_PASSWORD:-}"
+  export PANEL_EMAIL="${PANEL_EMAIL:-}"
+  export PANEL_HTTPS_PORT="${PANEL_HTTPS_PORT:-8443}"
+  export PANEL_PATH="${PANEL_PATH:-}"
+  export INSTALL_WDTT="${INSTALL_WDTT:-auto}"
+  export WDTT_MAIN_PASSWORD="${WDTT_MAIN_PASSWORD:-}"
 
-echo "[wdtt-panel] Downloading ${REPOSITORY}@${BRANCH}"
-curl -fsSL --retry 3 "$ARCHIVE_URL" | tar -xz -C "$WORK_DIR"
-SOURCE_DIR="$(find "$WORK_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
-[ -f "$SOURCE_DIR/install.sh" ] || {
-  echo "Invalid project archive: install.sh not found" >&2
-  exit 1
+  cleanup
+  WORK_DIR="$(mktemp -d)"
+  echo "[wdtt-panel] Downloading ${REPOSITORY}@${BRANCH}"
+  curl -fsSL --retry 3 "$ARCHIVE_URL" | tar -xz -C "$WORK_DIR"
+  SOURCE_DIR="$(find "$WORK_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  [ -f "$SOURCE_DIR/install.sh" ] || {
+    echo "Invalid project archive: install.sh not found" >&2
+    return 1
+  }
+  bash "$SOURCE_DIR/install.sh" "$ACTION"
 }
 
-exec bash "$SOURCE_DIR/install.sh" "$ACTION"
+if [ "$INTERACTIVE" = "1" ]; then
+  while true; do
+    if run_action; then
+      :
+    else
+      code=$?
+      [ "$code" -eq 10 ] && exit 0
+      echo "Действие завершилось с ошибкой ($code)." >/dev/tty
+    fi
+    ACTION=""
+    choose_action
+  done
+fi
+
+run_action

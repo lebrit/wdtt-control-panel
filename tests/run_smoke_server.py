@@ -20,7 +20,7 @@ config.write_text(
             "password_hash": hash_password("Panel-password-12345"),
             "session_secret": "browser-smoke-session-secret",
             "base_path": "/private-panel-path/",
-            "public_host": "203.0.113.10",
+            "public_host": "panel.example.com",
             "https_port": 8443,
             "listen_host": "127.0.0.1",
             "listen_port": 8877,

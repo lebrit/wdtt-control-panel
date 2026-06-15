@@ -6,7 +6,7 @@
   const CSRF = meta("csrf-token");
   const PUBLIC_HOST = meta("public-host");
   const PANEL_VERSION = meta("panel-version");
-  const state = { overview: null, users: [], logs: [], editing: null };
+  const state = { overview: null, users: [], logs: [], editing: null, cascade: null, routeRules: [], geofiles: [] };
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -73,22 +73,36 @@
     const up = Number(stats.up_gb || 0), down = Number(stats.down_gb || 0);
     $("#traffic-total").textContent = `${(up + down).toFixed(2)} GB`;
     $("#traffic-split").textContent = `↑${up.toFixed(2)} / ↓${down.toFixed(2)}`;
+    const system = overview.system || {}, memory = system.memory || {}, disk = overview.disk || {};
+    $("#cpu-load").textContent = `${Number(system.cpu_percent || 0).toFixed(1)}%`;
+    $("#system-load").textContent = `load ${Number((system.load_average || [0])[0]).toFixed(2)}`;
+    $("#memory-load").textContent = `${Number(memory.percent || 0).toFixed(1)}%`;
+    $("#memory-detail").textContent = `${formatBytes(memory.used)} / ${formatBytes(memory.total)}`;
+    $("#disk-load").textContent = `${Number(disk.percent || 0).toFixed(1)}%`;
+    $("#disk-detail").textContent = `${formatBytes(disk.used)} / ${formatBytes(disk.total)}`;
     $("#health-list").innerHTML = [
       healthRow("systemd unit", service.exists, service.exists ? "найден" : "не найден"),
       healthRow("wdtt-server", service.binary, service.binary ? "установлен" : "отсутствует"),
       healthRow("Интерфейс wdtt0", service.interface, service.interface ? "поднят" : "не активен"),
       healthRow("IPv4 forwarding", String(service.ip_forward) === "1", String(service.ip_forward) === "1" ? "включен" : "выключен"),
     ].join("");
+    const interfaceError = $("#interface-error");
+    interfaceError.textContent = service.interface_error || "";
+    interfaceError.hidden = !service.interface_error;
     renderCertificate(overview.certificate || {});
     await loadHistory();
   }
 
   function renderCertificate(cert) {
     const rows = [];
+    rows.push(`<div class="detail-row"><span>Режим</span><strong>${escapeHtml(cert.mode || "неизвестно")}</strong></div>`);
     rows.push(`<div class="detail-row"><span>Файл</span><strong>${cert.exists ? "найден" : "не найден"}</strong></div>`);
+    rows.push(`<div class="detail-row"><span>HTTPS локально</span><strong>${cert.local_tls_ok ? "работает" : "не отвечает"}</strong></div>`);
+    rows.push(`<div class="detail-row"><span>Порт</span><strong>${cert.listening ? "слушается" : "не слушается"}</strong></div>`);
     if (cert.expires_at) rows.push(`<div class="detail-row"><span>Истекает</span><strong>${escapeHtml(formatDate(cert.expires_at))}</strong></div>`);
     if (cert.days_left !== undefined && cert.days_left !== null) rows.push(`<div class="detail-row"><span>Осталось</span><strong>${escapeHtml(cert.days_left)} дней</strong></div>`);
     if (cert.error) rows.push(`<div class="detail-row"><span>Ошибка</span><strong>${escapeHtml(cert.error)}</strong></div>`);
+    if (cert.mode === "self-signed") rows.push(`<p class="muted">Self-signed сертификат шифрует соединение, но браузер покажет предупреждение, пока сертификат не добавлен в доверенные.</p>`);
     $("#certificate-info").innerHTML = rows.join("") || `<p class="muted">Данные сертификата недоступны.</p>`;
   }
 
@@ -134,15 +148,16 @@
 
   async function loadUsers() {
     const result = await api("users");
-    state.users = result.users || [];
-    $("#user-limit").textContent = `${state.users.length} / ${result.limit || 10}`;
+    state.users = [...(result.admins || []), ...(result.users || [])];
+    $("#user-limit").textContent = `${(result.users || []).length} / ${result.limit || 10}`;
     renderUsers();
   }
 
   function userStatus(user) {
+    if (user.connected) return ["ok", "подключен"];
     if (user.expired) return ["bad", "истек"];
     if (user.is_deactivated) return ["warn", "выключен"];
-    if (user.device_id) return ["ok", "привязан"];
+    if (user.device_id) return ["warn", "не в сети"];
     return ["ok", "свободен"];
   }
 
@@ -159,11 +174,12 @@
         <td>${escapeHtml(formatDate(user.expires_at))}</td>
         <td class="mono">${device}</td><td>${escapeHtml(traffic)}</td>
         <td><div class="row-actions">
-          <button data-copy="${escapeHtml(user.password)}" title="Скопировать wdtt:// ссылку">Ссылка</button>
+          ${user.role === "admin" ? "" : `<button data-copy="${escapeHtml(user.password)}" title="Скопировать wdtt:// ссылку">Ссылка</button>`}
+          ${user.role === "admin" ? "" : `
           <button data-edit="${escapeHtml(user.password)}">Изменить</button>
           ${user.device_id ? `<button data-unbind="${escapeHtml(user.password)}">Отвязать</button>` : ""}
           <button data-reset="${escapeHtml(user.password)}">Сброс трафика</button>
-          <button data-delete="${escapeHtml(user.password)}">Удалить</button>
+          <button data-delete="${escapeHtml(user.password)}">Удалить</button>`}
         </div></td></tr>`;
     }).join("") || `<tr><td colspan="6" class="muted">Пользователи не найдены.</td></tr>`;
   }
@@ -289,7 +305,7 @@
   async function loadBackups() {
     try {
       const result = await api("backups");
-      $("#backups-list").innerHTML = (result.backups || []).map((item) => `<div class="backup-row"><span><strong>${escapeHtml(item.name)}</strong><br><small>${escapeHtml(formatDate(item.created_at))} · ${formatBytes(item.size)}</small></span><button class="secondary" data-restore="${escapeHtml(item.name)}">Восстановить</button></div>`).join("") || `<p class="muted">Резервные копии появятся перед первым изменением базы.</p>`;
+      $("#backups-list").innerHTML = (result.backups || []).map((item) => `<div class="backup-row"><span><strong>${escapeHtml(item.name)}</strong><br><small>${escapeHtml(formatDate(item.created_at))} · ${formatBytes(item.size)}</small></span><div class="row-actions"><button data-download-backup="${escapeHtml(item.name)}">Скачать</button><button data-restore="${escapeHtml(item.name)}">Восстановить</button></div></div>`).join("") || `<p class="muted">Резервные копии появятся перед первым изменением базы.</p>`;
     } catch (error) { toast(error.message, true); }
   }
 
@@ -354,12 +370,153 @@
     } catch (error) { toast(error.message, true); }
   }
 
+  function downloadText(name, content, type = "application/json") {
+    const url = URL.createObjectURL(new Blob([content], { type }));
+    const link = document.createElement("a");
+    link.href = url; link.download = name; document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function downloadBackup(name) {
+    try {
+      const result = await api(`backups/export?name=${encodeURIComponent(name)}`);
+      downloadText(result.name, result.content);
+    } catch (error) { toast(error.message, true); }
+  }
+
+  async function uploadBackup(file) {
+    if (!file) return;
+    try {
+      const result = await api("backups/import", { method: "POST", body: { name: file.name, content: await file.text() } });
+      toast(`Backup загружен: ${result.name}`);
+      await loadBackups();
+    } catch (error) { toast(error.message, true); }
+  }
+
+  async function renewCertificate() {
+    const button = $("#renew-certificate"); setBusy(button, true);
+    try { await api("certificate/renew", { method: "POST" }); toast("Проверка сертификата запущена"); setTimeout(loadOverview, 7000); }
+    catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function downloadCertificate() {
+    try {
+      const result = await api("certificate/export");
+      downloadText(result.name, result.content, "application/x-pem-file");
+    } catch (error) { toast(error.message, true); }
+  }
+
+  const routeTypeOptions = [
+    ["domain", "Домены"], ["ip", "IP/CIDR"], ["port", "Порты"], ["protocol", "Протокол"],
+    ["source_user", "Пользователи"], ["builtin", "Готовый набор"], ["geofile", "GeoFile"],
+  ];
+  const routeTargetOptions = [["direct", "Напрямую"], ["vless", "VLESS"], ["warp", "WARP"], ["block", "Блокировать"]];
+
+  function optionList(options, current) {
+    return options.map(([value, label]) => `<option value="${value}" ${value === current ? "selected" : ""}>${label}</option>`).join("");
+  }
+
+  function renderRouteRules() {
+    $("#route-rules").innerHTML = state.routeRules.map((rule, index) => `<div class="route-rule" data-rule-index="${index}">
+      <div class="route-order"><button data-rule-up="${index}" ${index === 0 ? "disabled" : ""}>↑</button><button data-rule-down="${index}" ${index === state.routeRules.length - 1 ? "disabled" : ""}>↓</button></div>
+      <select data-rule-field="type">${optionList(routeTypeOptions, rule.type || "domain")}</select>
+      <textarea data-rule-field="values" placeholder="Значения через запятую или с новой строки">${escapeHtml(Array.isArray(rule.values) ? rule.values.join("\n") : (rule.values || ""))}</textarea>
+      <select class="route-target" data-rule-field="outbound">${optionList(routeTargetOptions, rule.outbound || "direct")}</select>
+      <div class="row-actions"><label class="checkbox"><input data-rule-field="enabled" type="checkbox" ${rule.enabled === false ? "" : "checked"}> Вкл.</label><button data-rule-remove="${index}">Удалить</button></div>
+    </div>`).join("") || `<p class="muted">Правил нет. Весь трафик идет по маршруту по умолчанию.</p>`;
+  }
+
+  function renderGeofiles() {
+    $("#geofiles-list").innerHTML = state.geofiles.map((item) => `<div class="backup-row"><span><strong>${escapeHtml(item.tag)}</strong><br><small>${escapeHtml(item.kind || "srs")} · ${item.auto_update ? `авто ${escapeHtml(item.update_interval || "1d")}` : "вручную"} · ${escapeHtml(formatDate(item.updated_at))}</small></span><button data-refresh-geofile="${escapeHtml(item.tag)}" ${item.url ? "" : "disabled"}>Обновить</button></div>`).join("") || `<p class="muted">Пользовательские GeoFiles не загружены.</p>`;
+  }
+
+  async function loadCascade() {
+    try {
+      const result = await api("cascade");
+      state.cascade = result;
+      const settings = result.settings || {};
+      state.routeRules = settings.rules || [];
+      state.geofiles = settings.geofiles || [];
+      $("#cascade-vless").value = settings.vless_uri || "";
+      $("#cascade-default").value = settings.default_outbound || "direct";
+      $("#cascade-enabled").checked = Boolean(settings.enabled);
+      $("#cascade-status").className = `badge ${result.active ? "ok" : (settings.enabled ? "bad" : "warn")}`;
+      $("#cascade-status").textContent = result.active ? "работает" : (settings.enabled ? "ошибка" : "выключен");
+      $("#warp-status").textContent = result.warp_ready ? "WARP готов" : "WARP не настроен";
+      $("#install-cascade").textContent = result.installed ? (result.version || "Компоненты установлены") : "Установить компоненты";
+      $("#cascade-log").textContent = (result.logs || []).join("\n") || "Нет записей.";
+      renderRouteRules(); renderGeofiles();
+    } catch (error) { toast(error.message, true); }
+  }
+
+  async function saveCascade() {
+    const button = $("#save-cascade"); setBusy(button, true);
+    try {
+      await api("cascade/save", { method: "POST", body: {
+        enabled: $("#cascade-enabled").checked,
+        vless_uri: $("#cascade-vless").value.trim(),
+        default_outbound: $("#cascade-default").value,
+        rules: state.routeRules,
+        geofiles: state.geofiles,
+      }});
+      toast("Маршрутизация сохранена и применена"); await loadCascade();
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  function addRouteRule(type = "domain", values = "", outbound = "vless") {
+    state.routeRules.push({ enabled: true, type, values, outbound }); renderRouteRules();
+  }
+
+  async function installCascade() {
+    const button = $("#install-cascade"); setBusy(button, true);
+    try { await api("cascade/install", { method: "POST" }); toast("Установка sing-box, WARP и GeoFile-конвертера запущена"); setTimeout(loadCascade, 15000); }
+    catch (error) { toast(error.message, true); setBusy(button, false); }
+  }
+
+  async function createWarp() {
+    const button = $("#create-warp"); setBusy(button, true);
+    try { await api("cascade/warp", { method: "POST" }); toast("Профиль WARP создан"); await loadCascade(); }
+    catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer); let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 32768) binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
+    return btoa(binary);
+  }
+
+  async function uploadGeofile() {
+    const file = $("#geofile-file").files[0];
+    if (!file) { toast("Выберите GeoFile", true); return; }
+    const button = $("#upload-geofile"); setBusy(button, true);
+    try {
+      const item = await api("geofiles/upload", { method: "POST", body: {
+        name: file.name, content: arrayBufferToBase64(await file.arrayBuffer()), kind: $("#geofile-kind").value,
+        tag: $("#geofile-tag").value.trim(), category: $("#geofile-category").value.trim(),
+        url: $("#geofile-url").value.trim(), auto_update: $("#geofile-auto").checked,
+        update_interval: $("#geofile-interval").value,
+      }});
+      state.geofiles = state.geofiles.filter((entry) => entry.tag !== item.tag); state.geofiles.push(item);
+      renderGeofiles(); toast(`GeoFile ${item.tag} загружен`);
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function refreshGeofile(tag) {
+    try { await api("geofiles/refresh", { method: "POST", body: { tag } }); toast(`GeoFile ${tag} обновлен`); await loadCascade(); }
+    catch (error) { toast(error.message, true); }
+  }
+
   function bindEvents() {
     $$(".nav-item").forEach((button) => button.addEventListener("click", () => {
       $$(".nav-item").forEach((item) => item.classList.toggle("active", item === button));
       $$(".tab").forEach((tab) => tab.classList.toggle("active", tab.id === `tab-${button.dataset.tab}`));
       $("#page-title").textContent = button.textContent;
       if (button.dataset.tab === "logs") loadLogs();
+      if (button.dataset.tab === "cascade") loadCascade();
       if (button.dataset.tab === "system") { loadBackups(); loadAudit(); loadPanelVersion(); }
     }));
     $("#refresh").addEventListener("click", () => Promise.all([loadOverview(), loadUsers()]).catch((error) => toast(error.message, true)));
@@ -388,7 +545,40 @@
     $("#load-backups").addEventListener("click", loadBackups);
     $("#create-backup").addEventListener("click", createBackup);
     $("#update-panel").addEventListener("click", updatePanel);
-    $("#backups-list").addEventListener("click", (event) => { const button = event.target.closest("[data-restore]"); if (button) restoreBackup(button.dataset.restore); });
+    $("#renew-certificate").addEventListener("click", renewCertificate);
+    $("#download-certificate").addEventListener("click", downloadCertificate);
+    $("#upload-backup").addEventListener("click", () => $("#backup-upload").click());
+    $("#backup-upload").addEventListener("change", (event) => uploadBackup(event.target.files[0]));
+    $("#backups-list").addEventListener("click", (event) => {
+      const restore = event.target.closest("[data-restore]"); if (restore) restoreBackup(restore.dataset.restore);
+      const download = event.target.closest("[data-download-backup]"); if (download) downloadBackup(download.dataset.downloadBackup);
+    });
+    $("#save-cascade").addEventListener("click", saveCascade);
+    $("#install-cascade").addEventListener("click", installCascade);
+    $("#create-warp").addEventListener("click", createWarp);
+    $("#add-route-rule").addEventListener("click", () => addRouteRule());
+    $("#upload-geofile").addEventListener("click", uploadGeofile);
+    $("#refresh-all-geofiles").addEventListener("click", async () => {
+      try { const result = await api("geofiles/refresh-all", { method: "POST" }); toast(`Обновлено GeoFiles: ${(result.refreshed || []).length}`); await loadCascade(); }
+      catch (error) { toast(error.message, true); }
+    });
+    $("#geofiles-list").addEventListener("click", (event) => { const button = event.target.closest("[data-refresh-geofile]"); if (button) refreshGeofile(button.dataset.refreshGeofile); });
+    $$("[data-preset]").forEach((button) => button.addEventListener("click", () => {
+      const target = ["ru-sites", "ru-ip"].includes(button.dataset.preset) ? "direct" : "vless";
+      addRouteRule("builtin", button.dataset.preset, target);
+    }));
+    $("#route-rules").addEventListener("input", (event) => {
+      const row = event.target.closest("[data-rule-index]"); const field = event.target.dataset.ruleField;
+      if (!row || !field) return;
+      const rule = state.routeRules[Number(row.dataset.ruleIndex)]; rule[field] = event.target.type === "checkbox" ? event.target.checked : event.target.value;
+    });
+    $("#route-rules").addEventListener("click", (event) => {
+      const up = event.target.closest("[data-rule-up]"), down = event.target.closest("[data-rule-down]"), remove = event.target.closest("[data-rule-remove]");
+      if (up) { const i = Number(up.dataset.ruleUp); [state.routeRules[i - 1], state.routeRules[i]] = [state.routeRules[i], state.routeRules[i - 1]]; renderRouteRules(); }
+      if (down) { const i = Number(down.dataset.ruleDown); [state.routeRules[i + 1], state.routeRules[i]] = [state.routeRules[i], state.routeRules[i + 1]]; renderRouteRules(); }
+      if (remove) { state.routeRules.splice(Number(remove.dataset.ruleRemove), 1); renderRouteRules(); }
+    });
+    $$("dialog button[value='cancel']").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
     $("#logout-form").addEventListener("submit", async (event) => {
       event.preventDefault();
       await fetch(`${BASE}logout`, { method: "POST", headers: { "X-CSRF-Token": CSRF } });

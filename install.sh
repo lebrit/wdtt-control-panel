@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.4.0"
+PANEL_VERSION="0.5.0"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,7 +17,11 @@ SUDOERS_FILE="/etc/sudoers.d/wdtt-panel"
 UPDATE_WRAPPER="/usr/local/sbin/wdtt-panel-update"
 UNINSTALL_WRAPPER="/usr/local/sbin/wdtt-panel-uninstall"
 STATUS_WRAPPER="/usr/local/sbin/wdtt-panel-status"
+GEOFILES_UPDATE_WRAPPER="/usr/local/sbin/wdtt-panel-geofiles-update"
 MANAGER_WRAPPER="/usr/local/sbin/wdtt-panel"
+MANAGER_ALIAS_ONE="/usr/local/sbin/wddt-panel"
+MANAGER_ALIAS_TWO="/usr/local/sbin/wdtt-pane"
+CASCADE_SERVICE="wdtt-cascade.service"
 LOG_FILE="/var/log/wdtt-panel-install.log"
 
 PANEL_USER="${PANEL_USER:-admin}"
@@ -64,13 +68,13 @@ install_packages() {
     apt)
       export DEBIAN_FRONTEND=noninteractive
       apt-get update -y >>"$LOG_FILE" 2>&1
-      apt-get install -y -qq python3 python3-venv python3-pip nginx sudo curl ca-certificates openssl iproute2 iptables unzip >>"$LOG_FILE" 2>&1
+      apt-get install -y -qq python3 python3-venv python3-pip nginx sudo curl ca-certificates openssl iproute2 iptables conntrack unzip >>"$LOG_FILE" 2>&1
       ;;
     dnf|yum)
-      "$PKG" install -y python3 python3-pip nginx sudo curl ca-certificates openssl iproute iptables unzip tar gzip >>"$LOG_FILE" 2>&1
+      "$PKG" install -y python3 python3-pip nginx sudo curl ca-certificates openssl iproute iptables conntrack-tools unzip tar gzip >>"$LOG_FILE" 2>&1
       ;;
     pacman)
-      pacman -Sy --noconfirm --needed python python-pip nginx sudo curl ca-certificates openssl iproute2 iptables unzip tar gzip >>"$LOG_FILE" 2>&1
+      pacman -Sy --noconfirm --needed python python-pip nginx sudo curl ca-certificates openssl iproute2 iptables conntrack-tools unzip tar gzip >>"$LOG_FILE" 2>&1
       ;;
   esac
 }
@@ -104,7 +108,7 @@ discover_host() {
   if [ -z "$PANEL_HOST" ] && [ -t 0 ]; then
     read -r -p "Домен или публичный IPv4 панели: " PANEL_HOST
   fi
-  [ -n "$PANEL_HOST" ] || die "Укажите PANEL_HOST=panel.example.com или PANEL_HOST=203.0.113.10"
+  [ -n "$PANEL_HOST" ] || die "Укажите домен или публичный IPv4 через интерактивный установщик"
   [[ "$PANEL_HOST" != *:* ]] || die "Автоматическая настройка IPv6 пока не поддерживается; используйте домен или IPv4"
   PANEL_HOST="$(python3 - "$PANEL_HOST" <<'PY'
 import ipaddress, re, sys
@@ -248,6 +252,8 @@ EOF
 
 write_maintenance_scripts() {
   ln -sfn "$INSTALL_DIR/bootstrap.sh" "$MANAGER_WRAPPER"
+  ln -sfn "$INSTALL_DIR/bootstrap.sh" "$MANAGER_ALIAS_ONE"
+  ln -sfn "$INSTALL_DIR/bootstrap.sh" "$MANAGER_ALIAS_TWO"
   ln -sfn "$INSTALL_DIR/update.sh" "$UPDATE_WRAPPER"
   ln -sfn "$INSTALL_DIR/uninstall.sh" "$UNINSTALL_WRAPPER"
   cat > "$STATUS_WRAPPER" <<EOF
@@ -255,6 +261,126 @@ write_maintenance_scripts() {
 exec /bin/bash $INSTALL_DIR/install.sh status
 EOF
   chmod 0755 "$STATUS_WRAPPER"
+  cat > "$GEOFILES_UPDATE_WRAPPER" <<EOF
+#!/bin/sh
+printf '%s\n' '{"action":"geofiles.refresh_auto","payload":{}}' | $ADMIN_WRAPPER
+EOF
+  chmod 0755 "$GEOFILES_UPDATE_WRAPPER"
+}
+
+write_cascade_services() {
+  cat > "/etc/systemd/system/$CASCADE_SERVICE" <<EOF
+[Unit]
+Description=WDTT Cascade Routing (sing-box)
+After=network-online.target wdtt.service
+Wants=network-online.target wdtt.service
+ConditionPathExists=$PRIVATE_STATE_DIR/sing-box.json
+
+[Service]
+Type=simple
+User=root
+ExecStartPre=/usr/local/bin/sing-box check -c $PRIVATE_STATE_DIR/sing-box.json
+ExecStart=/usr/local/bin/sing-box run -c $PRIVATE_STATE_DIR/sing-box.json
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=$PRIVATE_STATE_DIR /run
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  cat > /etc/systemd/system/wdtt-panel-geofiles-update.service <<EOF
+[Unit]
+Description=Update WDTT Panel GeoFiles
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$GEOFILES_UPDATE_WRAPPER
+EOF
+  cat > /etc/systemd/system/wdtt-panel-geofiles-update.timer <<'EOF'
+[Unit]
+Description=Automatic WDTT Panel GeoFiles updates
+
+[Timer]
+OnBootSec=20min
+OnUnitActiveSec=1h
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now wdtt-panel-geofiles-update.timer >>"$LOG_FILE" 2>&1
+}
+
+github_asset_url() {
+  local repository="$1" pattern="$2"
+  python3 - "$repository" "$pattern" <<'PY'
+import json, re, sys, urllib.request
+repo, pattern = sys.argv[1:]
+request = urllib.request.Request(
+    f"https://api.github.com/repos/{repo}/releases/latest",
+    headers={"User-Agent": "wdtt-control-panel"},
+)
+with urllib.request.urlopen(request, timeout=30) as response:
+    release = json.load(response)
+for asset in release.get("assets", []):
+    if re.search(pattern, asset.get("name", "")):
+        print(asset["browser_download_url"])
+        raise SystemExit
+raise SystemExit(2)
+PY
+}
+
+install_cascade_runtime() {
+  require_root
+  local machine runtime_arch work sing_url wgcf_url go_arch go_tarball
+  machine="$(uname -m)"
+  case "$machine" in
+    x86_64|amd64) runtime_arch="amd64"; go_arch="amd64" ;;
+    aarch64|arm64) runtime_arch="arm64"; go_arch="arm64" ;;
+    *) die "Компоненты каскада поддержаны для amd64 и arm64" ;;
+  esac
+  work="$(mktemp -d)"
+  trap 'rm -rf "${work:-}"' RETURN
+
+  log "Установка sing-box для каскадной маршрутизации"
+  sing_url="$(github_asset_url SagerNet/sing-box "linux-${runtime_arch}\\.tar\\.gz$")" || die "Не найден релиз sing-box"
+  curl -fsSL --retry 3 "$sing_url" -o "$work/sing-box.tar.gz"
+  tar -xzf "$work/sing-box.tar.gz" -C "$work"
+  install -m 0755 "$(find "$work" -type f -name sing-box | head -1)" /usr/local/bin/sing-box
+
+  log "Установка генератора профиля Cloudflare WARP"
+  wgcf_url="$(github_asset_url ViRb3/wgcf "linux_${runtime_arch}$")" || die "Не найден релиз wgcf"
+  curl -fsSL --retry 3 "$wgcf_url" -o /usr/local/bin/wgcf
+  chmod 0755 /usr/local/bin/wgcf
+
+  if ! command_exists geodat2srs; then
+    log "Сборка конвертера GeoFiles (.dat -> .srs)"
+    if command_exists go; then
+      GOBIN=/usr/local/bin go install github.com/runetfreedom/geodat2srs@latest >>"$LOG_FILE" 2>&1
+    else
+      go_tarball="go${GO_VERSION}.linux-${go_arch}.tar.gz"
+      curl -fsSL "https://go.dev/dl/$go_tarball" -o "$work/$go_tarball"
+      tar -xzf "$work/$go_tarball" -C "$work"
+      GOBIN=/usr/local/bin "$work/go/bin/go" install github.com/runetfreedom/geodat2srs@latest >>"$LOG_FILE" 2>&1
+    fi
+  fi
+  write_cascade_services
+  if [ -r "$PRIVATE_STATE_DIR/cascade.json" ] && python3 -c 'import json,sys; raise SystemExit(0 if json.load(open(sys.argv[1])).get("enabled") else 1)' "$PRIVATE_STATE_DIR/cascade.json"; then
+    systemctl enable --now "$CASCADE_SERVICE"
+  fi
+  log "Компоненты каскада установлены"
+  /usr/local/bin/sing-box version | head -1
 }
 
 write_panel_config() {
@@ -453,7 +579,7 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
         proxy_read_timeout 75s;
-        client_max_body_size 512k;
+        client_max_body_size 90m;
     }
     location / { return 404; }
 }
@@ -548,6 +674,12 @@ print(f"Version: {d.get('version', 'unknown')}")
 print(f"URL: https://{d['public_host']}:{d['https_port']}{d['base_path']}")
 print(f"TLS: {d.get('tls_mode', 'unknown')}")
 PY
+  if [ -n "${PANEL_HTTPS_PORT:-}" ] && curl -kfsS --max-time 5 "https://127.0.0.1:$PANEL_HTTPS_PORT$PANEL_PATH" >/dev/null 2>&1; then
+    echo "HTTPS local check: OK"
+  else
+    echo "HTTPS local check: FAILED (проверьте nginx и journalctl -u nginx)"
+  fi
+  [ "${TLS_MODE:-}" != "self-signed" ] || echo "Browser trust: self-signed требует ручного доверия; шифрование при этом работает"
 }
 
 remove_firewall_rule() {
@@ -575,7 +707,9 @@ uninstall_panel() {
   log "Удаление только web-панели; WDTT не затрагивается"
   systemctl disable --now "$PANEL_SERVICE" wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service 2>/dev/null || true
   rm -f "/etc/systemd/system/$PANEL_SERVICE" /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer
-  rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER"
+  systemctl disable --now "$CASCADE_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service 2>/dev/null || true
+  rm -f "/etc/systemd/system/$CASCADE_SERVICE" /etc/systemd/system/wdtt-panel-geofiles-update.service /etc/systemd/system/wdtt-panel-geofiles-update.timer
+  rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" "$MANAGER_ALIAS_ONE" "$MANAGER_ALIAS_TWO" "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$GEOFILES_UPDATE_WRAPPER"
   rm -rf "$INSTALL_DIR" "$CONFIG_DIR"
   remove_firewall_rule "$panel_port"
   systemctl daemon-reload
@@ -591,7 +725,9 @@ update_panel() {
   write_maintenance_scripts
   update_panel_config_metadata
   write_panel_service
+  write_final_nginx
   write_renew_timer
+  write_cascade_services
   systemctl restart "$PANEL_SERVICE"
   log "Панель обновлена; адрес, пароль, сертификаты и данные сохранены"
   status_panel
@@ -623,6 +759,7 @@ install_panel() {
   write_panel_service
   write_final_nginx
   write_renew_timer
+  write_cascade_services
   open_firewall
   systemctl restart "$PANEL_SERVICE"
 
@@ -642,5 +779,6 @@ case "${1:-install}" in
   renew-cert|--renew-cert) renew_certificates ;;
   status|--status|-s) require_root; status_panel ;;
   uninstall|--uninstall|-u) require_root; uninstall_panel ;;
-  *) die "Использование: $0 [install|update|renew-cert|status|uninstall]" ;;
+  install-cascade-runtime) install_cascade_runtime ;;
+  *) die "Использование: $0 [install|update|renew-cert|status|uninstall|install-cascade-runtime]" ;;
 esac

@@ -1,18 +1,25 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import configparser
+import ipaddress
 import json
 import os
 import re
 import shutil
+import socket
 import ssl
 import subprocess
 import sys
 import tempfile
 import time
+import uuid
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from .core import (
     MAX_USERS,
@@ -33,25 +40,63 @@ BACKUP_DIR = Path(os.environ.get("WDTT_BACKUP_DIR", "/var/lib/wdtt-panel-private
 LOCK_FILE = Path(os.environ.get("WDTT_LOCK_FILE", "/var/lib/wdtt-panel-private/admin.lock"))
 SERVICE = os.environ.get("WDTT_SERVICE", "wdtt.service")
 SKIP_SYSTEMD = os.environ.get("WDTT_SKIP_SYSTEMD") == "1"
-MAX_INPUT = 1024 * 1024
+MAX_INPUT = 90 * 1024 * 1024
 PANEL_UPDATE_COMMAND = Path(os.environ.get("WDTT_PANEL_UPDATE_COMMAND", "/usr/local/sbin/wdtt-panel-update"))
+PANEL_RENEW_COMMAND = Path(os.environ.get("WDTT_PANEL_RENEW_COMMAND", "/opt/wdtt-panel/install.sh"))
 PANEL_VERSION_URL = os.environ.get(
     "WDTT_PANEL_VERSION_URL",
     "https://raw.githubusercontent.com/lebrit/wdtt-control-panel/main/install.sh",
 )
+CASCADE_SETTINGS = Path(
+    os.environ.get("WDTT_CASCADE_SETTINGS", "/var/lib/wdtt-panel-private/cascade.json")
+)
+CASCADE_CONFIG = Path(
+    os.environ.get("WDTT_CASCADE_CONFIG", "/var/lib/wdtt-panel-private/sing-box.json")
+)
+WARP_DIR = Path(os.environ.get("WDTT_WARP_DIR", "/var/lib/wdtt-panel-private/warp"))
+GEOFILES_DIR = Path(
+    os.environ.get("WDTT_GEOFILES_DIR", "/var/lib/wdtt-panel-private/geofiles")
+)
+CASCADE_SERVICE = os.environ.get("WDTT_CASCADE_SERVICE", "wdtt-cascade.service")
+CASCADE_INSTALL_COMMAND = Path(
+    os.environ.get("WDTT_CASCADE_INSTALL_COMMAND", "/opt/wdtt-panel/install.sh")
+)
+RU_SITE_RULESET = (
+    "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ru.srs"
+)
+RU_IP_RULESET = "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-ru.srs"
+BUILTIN_RULESETS = {
+    "ru-sites": RU_SITE_RULESET,
+    "ru-ip": RU_IP_RULESET,
+    "ru-blocked-sites": (
+        "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/"
+        "sing-box/rule-set-geosite/geosite-ru-blocked-all.srs"
+    ),
+    "ru-blocked-ip": (
+        "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/"
+        "sing-box/rule-set-geoip/geoip-ru-blocked.srs"
+    ),
+    "ai-services": (
+        "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/"
+        "geosite-category-ai-!cn.srs"
+    ),
+}
 
 
 class AdminError(RuntimeError):
     pass
 
 
-def run(command: list[str], timeout: int = 20, check: bool = False) -> subprocess.CompletedProcess[str]:
+def run(
+    command: list[str], timeout: int = 20, check: bool = False, cwd: Path | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
         text=True,
         capture_output=True,
         timeout=timeout,
         check=check,
+        cwd=cwd,
     )
 
 
@@ -178,16 +223,102 @@ def purge_expired(data: dict[str, Any]) -> int:
 
 def list_users() -> dict[str, Any]:
     data = load_database()
+    handshakes = wireguard_handshakes()
+    active_ips = active_tunnel_ips()
     users = [
-        user_view(password, entry if isinstance(entry, dict) else {}, data["devices"]).as_dict()
+        connected_user_view(
+            user_view(password, entry if isinstance(entry, dict) else {}, data["devices"]).as_dict(),
+            handshakes,
+            active_ips,
+        )
         for password, entry in data["passwords"].items()
     ]
     users.sort(key=lambda item: (item["expired"], item["is_deactivated"], item["password"]))
+    user_devices = {
+        str(entry.get("device_id") or "")
+        for entry in data["passwords"].values()
+        if isinstance(entry, dict) and entry.get("device_id")
+    }
+    admins = []
+    for device_id, device in data["devices"].items():
+        if device_id in user_devices or not isinstance(device, dict):
+            continue
+        public_key = str(device.get("pub_key") or device.get("PubKey") or "")
+        last_handshake = int(handshakes.get(public_key) or 0)
+        admins.append(
+            {
+                "password": "Главный пароль",
+                "role": "admin",
+                "device_id": device_id,
+                "device": device,
+                "connected": str(device.get("ip") or "") in active_ips or handshake_is_active(last_handshake),
+                "last_handshake": last_handshake,
+                "down_bytes": 0,
+                "up_bytes": 0,
+                "expires_at": 0,
+                "vk_hash": "Администратор WDTT",
+                "ports": "",
+                "is_deactivated": False,
+                "expired": False,
+            }
+        )
     return {
         "users": users,
+        "admins": admins,
         "main_password_present": bool(data.get("main_password")),
         "limit": MAX_USERS,
     }
+
+
+def wireguard_handshakes() -> dict[str, int]:
+    if SKIP_SYSTEMD or not shutil.which("wg"):
+        return {}
+    result = run(["wg", "show", "wdtt0", "dump"], timeout=10)
+    if result.returncode != 0:
+        return {}
+    handshakes: dict[str, int] = {}
+    for index, line in enumerate(result.stdout.splitlines()):
+        fields = line.split("\t")
+        if index == 0 or len(fields) < 5:
+            continue
+        try:
+            handshakes[fields[0]] = int(fields[4])
+        except ValueError:
+            continue
+    return handshakes
+
+
+def active_tunnel_ips() -> set[str]:
+    if SKIP_SYSTEMD:
+        return set()
+    content = ""
+    for path in (Path("/proc/net/nf_conntrack"), Path("/proc/net/ip_conntrack")):
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+            break
+        except OSError:
+            continue
+    if not content and shutil.which("conntrack"):
+        result = run(["conntrack", "-L"], timeout=15)
+        if result.returncode in {0, 1}:
+            content = result.stdout
+    return set(re.findall(r"(?:src|dst)=(10\.66\.66\.\d+)", content))
+
+
+def handshake_is_active(stamp: int, window: int = 180) -> bool:
+    return stamp > 0 and time.time() - stamp <= window
+
+
+def connected_user_view(
+    user: dict[str, Any], handshakes: dict[str, int], active_ips: set[str]
+) -> dict[str, Any]:
+    device = user.get("device") or {}
+    public_key = str(device.get("pub_key") or device.get("PubKey") or "")
+    last_handshake = int(handshakes.get(public_key) or 0)
+    user["connected"] = str(device.get("ip") or "") in active_ips or handshake_is_active(last_handshake)
+    user["last_handshake"] = last_handshake
+    user["role"] = "user"
+    return user
 
 
 def create_user(payload: dict[str, Any]) -> dict[str, Any]:
@@ -379,6 +510,46 @@ def restore_backup(payload: dict[str, Any]) -> dict[str, Any]:
     return mutate_database("before-restore", apply)
 
 
+def export_backup(payload: dict[str, Any]) -> dict[str, Any]:
+    name = validate_backup_name(str(payload.get("name") or ""))
+    source = BACKUP_DIR / name
+    if not source.is_file():
+        raise ValidationError("Резервная копия не найдена")
+    return {"name": name, "content": source.read_text(encoding="utf-8")}
+
+
+def import_backup(payload: dict[str, Any]) -> dict[str, Any]:
+    content = str(payload.get("content") or "")
+    if not content or len(content.encode("utf-8")) > 3 * 1024 * 1024:
+        raise ValidationError("Файл backup пустой или превышает 3 МБ")
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValidationError(f"Файл backup содержит неверный JSON: {exc}") from exc
+    validate_database_payload(data)
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1_000_000:06d}"
+    name = f"passwords-{stamp}-uploaded.json"
+    destination = BACKUP_DIR / name
+    destination.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.chmod(destination, 0o600)
+    prune_backups()
+    return {"name": name, "size": destination.stat().st_size, "created_at": int(time.time())}
+
+
+def validate_backup_name(name: str) -> str:
+    if not re.fullmatch(r"passwords-[A-Za-z0-9_-]+\.json", name):
+        raise ValidationError("Некорректное имя резервной копии")
+    return name
+
+
+def validate_database_payload(data: Any) -> None:
+    if not isinstance(data, dict):
+        raise ValidationError("Резервная копия должна содержать JSON-объект")
+    if not isinstance(data.get("passwords"), dict) or not isinstance(data.get("devices", {}), dict):
+        raise ValidationError("В backup отсутствуют корректные passwords/devices")
+
+
 def version_parts(value: str) -> tuple[int, ...]:
     if not re.fullmatch(r"\d+(?:\.\d+){1,3}", value):
         raise ValidationError(f"Некорректная версия панели: {value}")
@@ -428,6 +599,26 @@ def start_panel_update(payload: dict[str, Any]) -> dict[str, Any]:
     return {"scheduled": True, "unit": unit}
 
 
+def schedule_certificate_renew(payload: dict[str, Any]) -> dict[str, Any]:
+    if SKIP_SYSTEMD:
+        return {"scheduled": True, "state": "test"}
+    unit = f"wdtt-panel-cert-refresh-{int(time.time())}"
+    result = run(
+        ["systemd-run", "--quiet", "--collect", f"--unit={unit}", "--on-active=2s", str(PANEL_RENEW_COMMAND), "renew-cert"],
+        timeout=20,
+    )
+    if result.returncode != 0:
+        raise AdminError(result.stderr.strip() or "Не удалось запланировать обновление сертификата")
+    return {"scheduled": True, "unit": unit}
+
+
+def export_certificate(payload: dict[str, Any]) -> dict[str, Any]:
+    path = Path(str(payload.get("certificate_path") or ""))
+    if not path.is_file():
+        raise ValidationError("Файл сертификата не найден")
+    return {"name": "wdtt-panel-certificate.pem", "content": path.read_text(encoding="utf-8")}
+
+
 def read_stats() -> dict[str, Any]:
     try:
         data = json.loads(STATS_FILE.read_text(encoding="utf-8"))
@@ -473,6 +664,528 @@ def certificate_info(path: str) -> dict[str, Any]:
         return {"path": path, "exists": True, "error": str(exc)}
 
 
+def cpu_usage() -> float:
+    def snapshot() -> tuple[int, int]:
+        fields = Path("/proc/stat").read_text(encoding="utf-8").splitlines()[0].split()[1:]
+        values = [int(value) for value in fields]
+        idle = values[3] + (values[4] if len(values) > 4 else 0)
+        return sum(values), idle
+
+    try:
+        total_a, idle_a = snapshot()
+        time.sleep(0.08)
+        total_b, idle_b = snapshot()
+        total = total_b - total_a
+        return round(100 * (1 - (idle_b - idle_a) / total), 1) if total > 0 else 0.0
+    except (OSError, ValueError, IndexError):
+        return 0.0
+
+
+def memory_usage() -> dict[str, Any]:
+    values: dict[str, int] = {}
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            key, raw = line.split(":", 1)
+            values[key] = int(raw.strip().split()[0]) * 1024
+    except (OSError, ValueError, IndexError):
+        return {"total": 0, "used": 0, "available": 0, "percent": 0.0}
+    total = values.get("MemTotal", 0)
+    available = values.get("MemAvailable", values.get("MemFree", 0))
+    used = max(0, total - available)
+    return {
+        "total": total,
+        "used": used,
+        "available": available,
+        "percent": round(used * 100 / total, 1) if total else 0.0,
+    }
+
+
+def service_error_hint() -> str:
+    if SKIP_SYSTEMD:
+        return ""
+    result = run(["journalctl", "-u", SERVICE, "-n", "50", "--no-pager", "-o", "cat"], timeout=15)
+    if result.returncode != 0:
+        return result.stderr.strip()
+    markers = ("fatal", "error", "failed", "cannot", "permission", "address already", "tun", "wdtt0")
+    for line in reversed(result.stdout.splitlines()):
+        if any(marker in line.lower() for marker in markers):
+            return line.strip()[:500]
+    return "Интерфейс создается самим WDTT; проверьте журнал сервиса"
+
+
+def local_tls_status(host: str, port: int) -> dict[str, Any]:
+    result: dict[str, Any] = {"local_tls_ok": False, "listening": False, "error": ""}
+    if SKIP_SYSTEMD or not host or not port:
+        return result
+    listener = run(["ss", "-ltn", f"sport = :{port}"], timeout=10)
+    result["listening"] = listener.returncode == 0 and "LISTEN" in listener.stdout
+    try:
+        context = ssl._create_unverified_context()
+        with socket.create_connection(("127.0.0.1", port), timeout=4) as raw:
+            with context.wrap_socket(raw, server_hostname=host):
+                result["local_tls_ok"] = True
+    except OSError as exc:
+        result["error"] = str(exc)
+    return result
+
+
+def default_cascade_settings() -> dict[str, Any]:
+    return {
+        "enabled": False,
+        "outbound": "vless",
+        "vless_uri": "",
+        "default_outbound": "direct",
+        "rules": [],
+        "geofiles": [],
+    }
+
+
+def load_cascade_settings() -> dict[str, Any]:
+    settings = default_cascade_settings()
+    if CASCADE_SETTINGS.is_file():
+        try:
+            saved = json.loads(CASCADE_SETTINGS.read_text(encoding="utf-8"))
+            if isinstance(saved, dict):
+                settings.update(saved)
+        except (OSError, json.JSONDecodeError):
+            pass
+    settings["rules"] = settings.get("rules") if isinstance(settings.get("rules"), list) else []
+    settings["geofiles"] = settings.get("geofiles") if isinstance(settings.get("geofiles"), list) else []
+    return settings
+
+
+def save_private_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    fd, temp_name = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(encoded)
+        os.chmod(temp_name, 0o600)
+        os.replace(temp_name, path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def parse_vless_uri(uri: str) -> dict[str, Any]:
+    parsed = urlsplit(uri.strip())
+    if parsed.scheme.lower() != "vless" or not parsed.username or not parsed.hostname or not parsed.port:
+        raise ValidationError("Нужна полная ссылка vless://UUID@host:port")
+    try:
+        user_id = str(uuid.UUID(unquote(parsed.username)))
+    except (ValueError, binascii.Error) as exc:
+        raise ValidationError("В VLESS-ссылке указан некорректный UUID") from exc
+    query = {key: values[-1] for key, values in parse_qs(parsed.query).items() if values}
+    outbound: dict[str, Any] = {
+        "type": "vless",
+        "tag": "cascade-vless",
+        "server": parsed.hostname,
+        "server_port": parsed.port,
+        "uuid": user_id,
+    }
+    if query.get("flow"):
+        outbound["flow"] = query["flow"]
+    security = query.get("security", "none").lower()
+    if security in {"tls", "reality"}:
+        tls: dict[str, Any] = {
+            "enabled": True,
+            "server_name": query.get("sni") or parsed.hostname,
+            "insecure": query.get("allowInsecure", "0") in {"1", "true"},
+        }
+        if query.get("fp"):
+            tls["utls"] = {"enabled": True, "fingerprint": query["fp"]}
+        if security == "reality":
+            public_key = query.get("pbk") or query.get("publicKey")
+            if not public_key:
+                raise ValidationError("Для VLESS Reality требуется параметр pbk")
+            tls["reality"] = {
+                "enabled": True,
+                "public_key": public_key,
+                "short_id": query.get("sid", ""),
+            }
+        outbound["tls"] = tls
+    transport_type = query.get("type", "tcp").lower()
+    if transport_type in {"ws", "http", "httpupgrade", "grpc"}:
+        transport: dict[str, Any] = {"type": transport_type}
+        if transport_type in {"ws", "http", "httpupgrade"} and query.get("path"):
+            transport["path"] = unquote(query["path"])
+        if transport_type == "grpc" and query.get("serviceName"):
+            transport["service_name"] = query["serviceName"]
+        host = query.get("host")
+        if host and transport_type in {"ws", "http", "httpupgrade"}:
+            transport["headers"] = {"Host": host}
+        outbound["transport"] = transport
+    return outbound
+
+
+def warp_endpoint() -> dict[str, Any]:
+    profile = WARP_DIR / "wgcf-profile.conf"
+    if not profile.is_file():
+        raise ValidationError("Профиль WARP еще не создан")
+    parser = configparser.ConfigParser(strict=False)
+    parser.read(profile, encoding="utf-8")
+    interface = parser["Interface"]
+    peer = parser["Peer"]
+    endpoint = peer.get("Endpoint", "engage.cloudflareclient.com:2408")
+    host, _, port = endpoint.rpartition(":")
+    try:
+        reserved = [int(item.strip()) for item in peer.get("Reserved", "0,0,0").split(",")]
+    except ValueError:
+        reserved = [0, 0, 0]
+    return {
+        "type": "wireguard",
+        "tag": "warp",
+        "system": False,
+        "mtu": int(interface.get("MTU", "1280")),
+        "address": [item.strip() for item in interface.get("Address", "").split(",") if item.strip()],
+        "private_key": interface.get("PrivateKey", ""),
+        "peers": [
+            {
+                "address": host,
+                "port": int(port or 2408),
+                "public_key": peer.get("PublicKey", ""),
+                "allowed_ips": [item.strip() for item in peer.get("AllowedIPs", "0.0.0.0/0,::/0").split(",")],
+                "reserved": reserved,
+            }
+        ],
+    }
+
+
+def split_rule_values(value: Any) -> list[str]:
+    if isinstance(value, list):
+        items = value
+    else:
+        items = re.split(r"[\s,;]+", str(value or ""))
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
+def normalize_route_rule(raw: Any, index: int) -> dict[str, Any] | None:
+    if not isinstance(raw, dict) or raw.get("enabled", True) is False:
+        return None
+    target = str(raw.get("outbound") or "direct")
+    if target not in {"direct", "vless", "warp", "block"}:
+        raise ValidationError(f"Правило {index + 1}: неизвестный маршрут")
+    rule: dict[str, Any] = {"action": "reject"} if target == "block" else {
+        "action": "route",
+        "outbound": {"direct": "direct", "vless": "cascade-vless", "warp": "warp"}[target],
+    }
+    match_type = str(raw.get("type") or "domain")
+    values = split_rule_values(raw.get("values"))
+    if match_type == "domain":
+        rule["domain_suffix"] = [value.lstrip(".") for value in values]
+    elif match_type == "ip":
+        try:
+            rule["ip_cidr"] = [str(ipaddress.ip_network(value, strict=False)) for value in values]
+        except ValueError as exc:
+            raise ValidationError(f"Правило {index + 1}: некорректный IP/CIDR") from exc
+    elif match_type == "port":
+        rule["port"] = [int(value) for value in values]
+    elif match_type == "protocol":
+        rule["protocol"] = values
+    elif match_type == "source_user":
+        data = load_database()
+        source_ips = []
+        for password in values:
+            entry = data["passwords"].get(password) or {}
+            device = data["devices"].get(str(entry.get("device_id") or "")) or {}
+            if device.get("ip"):
+                source_ips.append(f"{device['ip']}/32")
+        if not source_ips:
+            raise ValidationError(f"Правило {index + 1}: выбранные пользователи еще не имеют IP")
+        rule["source_ip_cidr"] = source_ips
+    elif match_type in {"builtin", "geofile"}:
+        rule["rule_set"] = values
+    else:
+        raise ValidationError(f"Правило {index + 1}: неизвестный тип совпадения")
+    if not values:
+        raise ValidationError(f"Правило {index + 1}: не заданы значения")
+    return rule
+
+
+def geofile_rule_sets(settings: dict[str, Any]) -> list[dict[str, Any]]:
+    result = [
+        {
+            "type": "remote",
+            "tag": tag,
+            "format": "binary",
+            "url": url,
+            "update_interval": "1d",
+        }
+        for tag, url in BUILTIN_RULESETS.items()
+    ]
+    for item in settings.get("geofiles", []):
+        if not isinstance(item, dict) or not item.get("tag"):
+            continue
+        tag = re.sub(r"[^a-zA-Z0-9_-]", "-", str(item["tag"]))[:64]
+        url = str(item.get("url") or "")
+        if url and item.get("kind") == "srs" and not item.get("source_path"):
+            result.append(
+                {
+                    "type": "remote",
+                    "tag": tag,
+                    "format": str(item.get("format") or "binary"),
+                    "url": url,
+                    "update_interval": str(item.get("update_interval") or "1d"),
+                }
+            )
+        elif item.get("path"):
+            result.append({"type": "local", "tag": tag, "format": "binary", "path": str(item["path"])})
+    return result
+
+
+def build_cascade_config(settings: dict[str, Any]) -> dict[str, Any]:
+    outbounds: list[dict[str, Any]] = [{"type": "direct", "tag": "direct"}]
+    endpoints: list[dict[str, Any]] = []
+    if settings.get("vless_uri"):
+        outbounds.append(parse_vless_uri(str(settings["vless_uri"])))
+    if (WARP_DIR / "wgcf-profile.conf").is_file():
+        endpoints.append(warp_endpoint())
+    rules = [{"action": "sniff"}, {"ip_is_private": True, "action": "route", "outbound": "direct"}]
+    for index, raw in enumerate(settings.get("rules", [])):
+        rule = normalize_route_rule(raw, index)
+        if rule:
+            rules.append(rule)
+    default = str(settings.get("default_outbound") or "direct")
+    final = {"direct": "direct", "vless": "cascade-vless", "warp": "warp"}.get(default)
+    if not final:
+        raise ValidationError("Некорректный маршрут по умолчанию")
+    tags = {item.get("tag") for item in outbounds + endpoints}
+    for rule in rules:
+        if rule.get("outbound") and rule["outbound"] not in tags:
+            raise ValidationError(f"Для правила не настроен маршрут {rule['outbound']}")
+    if final not in tags:
+        raise ValidationError(f"Маршрут по умолчанию {final} не настроен")
+    config: dict[str, Any] = {
+        "log": {"level": "info", "timestamp": True},
+        "inbounds": [
+            {
+                "type": "tun",
+                "tag": "wdtt-cascade-in",
+                "interface_name": "wdtt-cascade0",
+                "address": ["172.31.255.1/30"],
+                "mtu": 1280,
+                "auto_route": True,
+                "auto_redirect": True,
+                "strict_route": True,
+                "include_interface": ["wdtt0"],
+                "stack": "system",
+            }
+        ],
+        "outbounds": outbounds,
+        "route": {"auto_detect_interface": True, "rules": rules, "rule_set": geofile_rule_sets(settings), "final": final},
+        "experimental": {"cache_file": {"enabled": True, "path": str(GEOFILES_DIR / "cache.db")}},
+    }
+    if endpoints:
+        config["endpoints"] = endpoints
+    return config
+
+
+def cascade_status(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = load_cascade_settings()
+    active = False
+    logs: list[str] = []
+    version = ""
+    if not SKIP_SYSTEMD:
+        active = run(["systemctl", "is-active", "--quiet", CASCADE_SERVICE]).returncode == 0
+        version_result = run(["sing-box", "version"], timeout=10) if shutil.which("sing-box") else None
+        if version_result and version_result.returncode == 0:
+            version = version_result.stdout.splitlines()[0]
+        journal = run(["journalctl", "-u", CASCADE_SERVICE, "-n", "30", "--no-pager", "-o", "cat"], timeout=15)
+        if journal.returncode == 0:
+            logs = journal.stdout.splitlines()
+    public = dict(settings)
+    if public.get("vless_uri"):
+        parsed = urlsplit(str(public["vless_uri"]))
+        public["vless_summary"] = f"{parsed.hostname}:{parsed.port}"
+    return {
+        "settings": public,
+        "active": active,
+        "installed": bool(shutil.which("sing-box")),
+        "version": version,
+        "warp_ready": (WARP_DIR / "wgcf-profile.conf").is_file(),
+        "logs": logs,
+        "builtin_rule_sets": list(BUILTIN_RULESETS),
+    }
+
+
+def cascade_save(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = default_cascade_settings()
+    settings.update({key: payload[key] for key in settings if key in payload})
+    settings["rules"] = payload.get("rules") if isinstance(payload.get("rules"), list) else []
+    settings["geofiles"] = payload.get("geofiles") if isinstance(payload.get("geofiles"), list) else []
+    settings["enabled"] = bool(payload.get("enabled", False))
+    config = build_cascade_config(settings)
+    save_private_json(CASCADE_SETTINGS, settings)
+    save_private_json(CASCADE_CONFIG, config)
+    if not SKIP_SYSTEMD and shutil.which("sing-box"):
+        checked = run(["sing-box", "check", "-c", str(CASCADE_CONFIG)], timeout=30)
+        if checked.returncode != 0:
+            raise ValidationError(checked.stderr.strip() or "sing-box отклонил конфигурацию")
+        action = "enable" if settings["enabled"] else "disable"
+        run(["systemctl", action, CASCADE_SERVICE], timeout=30)
+        run(["systemctl", "restart" if settings["enabled"] else "stop", CASCADE_SERVICE], timeout=45)
+    return cascade_status({})
+
+
+def schedule_cascade_runtime(payload: dict[str, Any]) -> dict[str, Any]:
+    if SKIP_SYSTEMD:
+        return {"scheduled": True, "state": "test"}
+    unit = f"wdtt-cascade-install-{int(time.time())}"
+    result = run(
+        ["systemd-run", "--quiet", "--collect", f"--unit={unit}", "--on-active=2s", str(CASCADE_INSTALL_COMMAND), "install-cascade-runtime"],
+        timeout=20,
+    )
+    if result.returncode != 0:
+        raise AdminError(result.stderr.strip() or "Не удалось запланировать установку sing-box/WARP")
+    return {"scheduled": True, "unit": unit}
+
+
+def create_warp(payload: dict[str, Any]) -> dict[str, Any]:
+    if not shutil.which("wgcf"):
+        raise ValidationError("Сначала установите компоненты каскада")
+    WARP_DIR.mkdir(parents=True, exist_ok=True)
+    account = WARP_DIR / "wgcf-account.toml"
+    if not account.is_file():
+        registered = run(["wgcf", "register", "--accept-tos"], timeout=60, cwd=WARP_DIR)
+        if registered.returncode != 0:
+            raise AdminError(registered.stderr.strip() or "Не удалось зарегистрировать WARP")
+        generated = WARP_DIR / "wgcf-account.toml"
+        if generated.is_file():
+            account = generated
+    generated = run(["wgcf", "generate"], timeout=60, cwd=WARP_DIR)
+    if generated.returncode != 0:
+        raise AdminError(generated.stderr.strip() or "Не удалось создать профиль WARP")
+    profile = WARP_DIR / "wgcf-profile.conf"
+    os.chmod(account, 0o600)
+    os.chmod(WARP_DIR / "wgcf-profile.conf", 0o600)
+    return {"warp_ready": True}
+
+
+def geofile_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    filename = Path(str(payload.get("name") or "geofile.srs")).name
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", filename):
+        raise ValidationError("Некорректное имя GeoFile")
+    tag = re.sub(r"[^A-Za-z0-9_-]", "-", str(payload.get("tag") or Path(filename).stem))[:64]
+    if not tag:
+        raise ValidationError("Укажите tag GeoFile")
+    kind = str(payload.get("kind") or "srs").lower()
+    if kind not in {"srs", "geoip", "geosite"}:
+        raise ValidationError("Поддерживаются SRS, geoip.dat и geosite.dat")
+    content = str(payload.get("content") or "")
+    if not content:
+        raise ValidationError("GeoFile пустой")
+    try:
+        raw = base64.b64decode(content, validate=True)
+    except ValueError as exc:
+        raise ValidationError("GeoFile передан в неверном формате") from exc
+    if not raw or len(raw) > 64 * 1024 * 1024:
+        raise ValidationError("GeoFile пустой или превышает 64 МБ")
+    GEOFILES_DIR.mkdir(parents=True, exist_ok=True)
+    source = GEOFILES_DIR / filename
+    source.write_bytes(raw)
+    os.chmod(source, 0o600)
+    path = source
+    category = str(payload.get("category") or "").strip()
+    if kind in {"geoip", "geosite"}:
+        if not category:
+            raise ValidationError("Для .dat укажите категорию, например RU")
+        converter = shutil.which("geodat2srs")
+        if not converter:
+            raise ValidationError("Конвертер GeoFiles не установлен; установите компоненты каскада")
+        output_dir = GEOFILES_DIR / f"converted-{tag}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        prefix = f"{tag}-"
+        converted = run(
+            [converter, kind, "-i", str(source), "-o", str(output_dir), "--prefix", prefix],
+            timeout=180,
+        )
+        if converted.returncode != 0:
+            raise ValidationError(converted.stderr.strip() or "Не удалось преобразовать GeoFile")
+        candidates = list(output_dir.glob(f"{prefix}{category.lower()}*.srs")) + list(
+            output_dir.glob(f"{prefix}{category.upper()}*.srs")
+        )
+        if not candidates:
+            raise ValidationError(f"Категория {category} не найдена в {filename}")
+        path = candidates[0]
+    return {
+        "tag": tag,
+        "kind": kind,
+        "category": category,
+        "source_path": str(source),
+        "path": str(path),
+        "url": str(payload.get("url") or ""),
+        "auto_update": bool(payload.get("auto_update", False)),
+        "update_interval": str(payload.get("update_interval") or "1d"),
+        "updated_at": int(time.time()),
+    }
+
+
+def upload_geofile(payload: dict[str, Any]) -> dict[str, Any]:
+    item = geofile_from_payload(payload)
+    settings = load_cascade_settings()
+    settings["geofiles"] = [entry for entry in settings["geofiles"] if entry.get("tag") != item["tag"]]
+    settings["geofiles"].append(item)
+    save_private_json(CASCADE_SETTINGS, settings)
+    save_private_json(CASCADE_CONFIG, build_cascade_config(settings))
+    return item
+
+
+def refresh_geofile(payload: dict[str, Any]) -> dict[str, Any]:
+    tag = str(payload.get("tag") or "")
+    settings = load_cascade_settings()
+    item = next((entry for entry in settings["geofiles"] if entry.get("tag") == tag), None)
+    if not item or not item.get("url"):
+        raise ValidationError("Для GeoFile не задан URL обновления")
+    request = urllib.request.Request(str(item["url"]), headers={"User-Agent": "wdtt-control-panel"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            raw = response.read(64 * 1024 * 1024 + 1)
+    except (OSError, urllib.error.URLError) as exc:
+        raise AdminError(f"Не удалось загрузить GeoFile: {exc}") from exc
+    if len(raw) > 64 * 1024 * 1024:
+        raise ValidationError("Удаленный GeoFile превышает 64 МБ")
+    updated = geofile_from_payload(
+        {
+            **item,
+            "name": Path(str(item.get("source_path") or f"{tag}.srs")).name,
+            "content": base64.b64encode(raw).decode("ascii"),
+        }
+    )
+    settings["geofiles"] = [updated if entry.get("tag") == tag else entry for entry in settings["geofiles"]]
+    save_private_json(CASCADE_SETTINGS, settings)
+    save_private_json(CASCADE_CONFIG, build_cascade_config(settings))
+    if not SKIP_SYSTEMD and run(["systemctl", "is-active", "--quiet", CASCADE_SERVICE]).returncode == 0:
+        run(["systemctl", "restart", CASCADE_SERVICE], timeout=45)
+    return updated
+
+
+def interval_seconds(value: str) -> int:
+    match = re.fullmatch(r"(\d+)([mhd])", value.strip().lower())
+    if not match:
+        return 86400
+    multiplier = {"m": 60, "h": 3600, "d": 86400}[match.group(2)]
+    return max(3600, int(match.group(1)) * multiplier)
+
+
+def refresh_auto_geofiles(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = load_cascade_settings()
+    refreshed = []
+    errors = []
+    now = int(time.time())
+    for item in list(settings.get("geofiles", [])):
+        if not item.get("auto_update") or not item.get("url"):
+            continue
+        due = int(item.get("updated_at") or 0) + interval_seconds(str(item.get("update_interval") or "1d"))
+        if not payload.get("force") and due > now:
+            continue
+        try:
+            refreshed.append(refresh_geofile({"tag": item.get("tag")}))
+        except (ValidationError, AdminError) as exc:
+            errors.append({"tag": item.get("tag"), "error": str(exc)})
+    return {"refreshed": refreshed, "errors": errors}
+
+
 def overview(payload: dict[str, Any]) -> dict[str, Any]:
     data = load_database()
     stats = read_stats()
@@ -484,6 +1197,16 @@ def overview(payload: dict[str, Any]) -> dict[str, Any]:
         if forward.returncode == 0:
             ip_forward = forward.stdout.strip()
     disk = shutil.disk_usage("/")
+    disk_percent = round(disk.used * 100 / disk.total, 1) if disk.total else 0.0
+    certificate = certificate_info(str(payload.get("certificate_path") or ""))
+    certificate.update(
+        {
+            "mode": str(payload.get("tls_mode") or "unknown"),
+            "host": str(payload.get("public_host") or ""),
+            "port": int(payload.get("https_port") or 443),
+        }
+    )
+    certificate.update(local_tls_status(certificate["host"], certificate["port"]))
     return {
         "service": {
             "exists": service_exists(),
@@ -491,12 +1214,18 @@ def overview(payload: dict[str, Any]) -> dict[str, Any]:
             "interface": iface,
             "ip_forward": ip_forward,
             "binary": Path("/usr/local/bin/wdtt-server").is_file(),
+            "interface_error": "" if iface else service_error_hint(),
         },
         "stats": stats,
         "users": len(data.get("passwords", {})),
         "devices": len(data.get("devices", {})),
-        "disk": {"total": disk.total, "used": disk.used, "free": disk.free},
-        "certificate": certificate_info(str(payload.get("certificate_path") or "")),
+        "system": {
+            "cpu_percent": cpu_usage(),
+            "memory": memory_usage(),
+            "load_average": list(os.getloadavg()) if hasattr(os, "getloadavg") else [0, 0, 0],
+        },
+        "disk": {"total": disk.total, "used": disk.used, "free": disk.free, "percent": disk_percent},
+        "certificate": certificate,
         "timestamp": int(time.time()),
     }
 
@@ -515,8 +1244,19 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "backups.list": lambda payload: list_backups(),
     "backups.create": create_manual_backup,
     "backups.restore": restore_backup,
+    "backups.export": export_backup,
+    "backups.import": import_backup,
     "panel.version": panel_version,
     "panel.update": start_panel_update,
+    "certificate.export": export_certificate,
+    "certificate.renew": schedule_certificate_renew,
+    "cascade.status": cascade_status,
+    "cascade.save": cascade_save,
+    "cascade.install": schedule_cascade_runtime,
+    "cascade.warp": create_warp,
+    "geofiles.upload": upload_geofile,
+    "geofiles.refresh": refresh_geofile,
+    "geofiles.refresh_auto": refresh_auto_geofiles,
 }
 
 
