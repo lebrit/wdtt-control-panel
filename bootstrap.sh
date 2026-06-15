@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/rustdesk}"
-BRANCH="${WDTT_PANEL_BRANCH:-wdtt-control-panel}"
+REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
+BRANCH="${WDTT_PANEL_BRANCH:-main}"
 ARCHIVE_URL="https://github.com/${REPOSITORY}/archive/refs/heads/${BRANCH}.tar.gz"
 WORK_DIR="$(mktemp -d)"
 
