@@ -10,9 +10,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.7.0"', installer)
-        self.assertIn('__version__ = "0.7.0"', package)
-        self.assertIn("Текущая версия: 0.7.0", readme)
+        self.assertIn('PANEL_VERSION="0.7.1"', installer)
+        self.assertIn('__version__ = "0.7.1"', package)
+        self.assertIn("Текущая версия: 0.7.1", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -66,8 +66,10 @@ class InstallScriptTests(unittest.TestCase):
 
     def test_manager_wrapper_is_replaced_during_an_update(self):
         script = (ROOT / "install.sh").read_text(encoding="utf-8")
-        self.assertIn('rm -f "$MANAGER_WRAPPER" "$MANAGER_ALIAS_ONE" "$MANAGER_ALIAS_TWO"', script)
+        self.assertIn('rm -f "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane', script)
         self.assertIn('install -m 0755 "$INSTALL_DIR/bootstrap.sh" "$MANAGER_WRAPPER"', script)
+        self.assertNotIn("MANAGER_ALIAS_ONE", script)
+        self.assertNotIn("MANAGER_ALIAS_TWO", script)
 
     def test_hsts_is_only_enabled_for_a_public_certificate(self):
         script = (ROOT / "install.sh").read_text(encoding="utf-8")

@@ -1,6 +1,6 @@
 # WDTT Control Panel
 
-**Текущая версия: 0.7.0**
+**Текущая версия: 0.7.1**
 
 Отдельная web-панель для [amurcanov/proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android). Исходники Android-приложения и `server.go` не изменяются.
 
@@ -86,8 +86,6 @@ sudo wdtt-panel-uninstall
 sudo bash /opt/wdtt-panel/install.sh renew-cert
 sudo wdtt-panel change-password
 ```
-
-Команды `wddt-panel` и `wdtt-pane` также ведут в меню, чтобы распространенные опечатки не завершались ошибкой.
 
 Те же операции доступны через главное интерактивное меню. Обновление скачивает свежую версию с GitHub и сохраняет адрес, логин, пароль, случайный путь, сертификаты, аудит и резервные копии.
 

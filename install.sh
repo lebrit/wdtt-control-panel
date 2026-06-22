@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.7.0"
+PANEL_VERSION="0.7.1"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,8 +20,6 @@ STATUS_WRAPPER="/usr/local/sbin/wdtt-panel-status"
 GEOFILES_UPDATE_WRAPPER="/usr/local/sbin/wdtt-panel-geofiles-update"
 CASCADE_RULES_WRAPPER="/usr/local/sbin/wdtt-panel-cascade-rules"
 MANAGER_WRAPPER="/usr/local/sbin/wdtt-panel"
-MANAGER_ALIAS_ONE="/usr/local/sbin/wddt-panel"
-MANAGER_ALIAS_TWO="/usr/local/sbin/wdtt-pane"
 XRAY_SERVICE="wdtt-xray.service"
 LEGACY_CASCADE_SERVICE="wdtt-cascade.service"
 XRAY_CONFIG="$PRIVATE_STATE_DIR/xray-config.json"
@@ -259,10 +257,8 @@ EOF
 }
 
 write_maintenance_scripts() {
-  rm -f "$MANAGER_WRAPPER" "$MANAGER_ALIAS_ONE" "$MANAGER_ALIAS_TWO"
+  rm -f "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane
   install -m 0755 "$INSTALL_DIR/bootstrap.sh" "$MANAGER_WRAPPER"
-  ln -s "$MANAGER_WRAPPER" "$MANAGER_ALIAS_ONE"
-  ln -s "$MANAGER_WRAPPER" "$MANAGER_ALIAS_TWO"
   ln -sfn "$INSTALL_DIR/update.sh" "$UPDATE_WRAPPER"
   ln -sfn "$INSTALL_DIR/uninstall.sh" "$UNINSTALL_WRAPPER"
   cat > "$STATUS_WRAPPER" <<EOF
@@ -850,7 +846,7 @@ uninstall_panel() {
   rm -f "/etc/systemd/system/$PANEL_SERVICE" /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer
   systemctl disable --now "$LEGACY_CASCADE_SERVICE" "$XRAY_SERVICE" "$XRAY_CASCADE_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service 2>/dev/null || true
   rm -f "/etc/systemd/system/$LEGACY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_SERVICE" "/etc/systemd/system/$XRAY_CASCADE_SERVICE" /etc/systemd/system/wdtt-panel-geofiles-update.service /etc/systemd/system/wdtt-panel-geofiles-update.timer
-  rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" "$MANAGER_ALIAS_ONE" "$MANAGER_ALIAS_TWO" "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$GEOFILES_UPDATE_WRAPPER" "$CASCADE_RULES_WRAPPER"
+  rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$GEOFILES_UPDATE_WRAPPER" "$CASCADE_RULES_WRAPPER"
   rm -rf "$INSTALL_DIR" "$CONFIG_DIR"
   remove_firewall_rule "$panel_port"
   systemctl daemon-reload
