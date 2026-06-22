@@ -10,9 +10,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.5.2"', installer)
-        self.assertIn('__version__ = "0.5.2"', package)
-        self.assertIn("Текущая версия: 0.5.2", readme)
+        self.assertIn('PANEL_VERSION="0.5.4"', installer)
+        self.assertIn('__version__ = "0.5.4"', package)
+        self.assertIn("Текущая версия: 0.5.4", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -53,6 +53,22 @@ class InstallScriptTests(unittest.TestCase):
             script,
         )
         self.assertIn("curl --noproxy '*' -kfsS", script)
+        self.assertIn("for ((attempt = 1; attempt <= 10; attempt++))", script)
+
+    def test_certificate_upgrade_reports_the_reason_for_a_failure(self):
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("Публичный сертификат не запрошен: TCP 80 занят не Nginx", script)
+        self.assertIn("Не удалось получить Let's Encrypt: проверьте DNS", script)
+
+    def test_manager_wrapper_is_replaced_during_an_update(self):
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn('rm -f "$MANAGER_WRAPPER" "$MANAGER_ALIAS_ONE" "$MANAGER_ALIAS_TWO"', script)
+        self.assertIn('install -m 0755 "$INSTALL_DIR/bootstrap.sh" "$MANAGER_WRAPPER"', script)
+
+    def test_hsts_is_only_enabled_for_a_public_certificate(self):
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn('if [ "$TLS_MODE" = "letsencrypt" ]; then', script)
+        self.assertIn("HSTS_HEADER=", script)
 
     def test_panel_exposes_version_update_and_full_backup_controls(self):
         html = (ROOT / "wdtt_panel" / "templates" / "index.html").read_text(encoding="utf-8")

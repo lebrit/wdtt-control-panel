@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.5.2"
+PANEL_VERSION="0.5.4"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -251,9 +251,10 @@ EOF
 }
 
 write_maintenance_scripts() {
-  ln -sfn "$INSTALL_DIR/bootstrap.sh" "$MANAGER_WRAPPER"
-  ln -sfn "$INSTALL_DIR/bootstrap.sh" "$MANAGER_ALIAS_ONE"
-  ln -sfn "$INSTALL_DIR/bootstrap.sh" "$MANAGER_ALIAS_TWO"
+  rm -f "$MANAGER_WRAPPER" "$MANAGER_ALIAS_ONE" "$MANAGER_ALIAS_TWO"
+  install -m 0755 "$INSTALL_DIR/bootstrap.sh" "$MANAGER_WRAPPER"
+  ln -s "$MANAGER_WRAPPER" "$MANAGER_ALIAS_ONE"
+  ln -s "$MANAGER_WRAPPER" "$MANAGER_ALIAS_TWO"
   ln -sfn "$INSTALL_DIR/update.sh" "$UPDATE_WRAPPER"
   ln -sfn "$INSTALL_DIR/uninstall.sh" "$UNINSTALL_WRAPPER"
   cat > "$STATUS_WRAPPER" <<EOF
@@ -540,11 +541,14 @@ run_certbot_request() {
 }
 
 try_upgrade_certificate() {
-  port_80_available_for_nginx || return 1
-  [ -r "$NGINX_FILE" ] || return 1
-  grep -q '/.well-known/acme-challenge/' "$NGINX_FILE" || return 1
+  port_80_available_for_nginx || { log "Публичный сертификат не запрошен: TCP 80 занят не Nginx"; return 1; }
+  [ -r "$NGINX_FILE" ] || { log "Публичный сертификат не запрошен: не найден $NGINX_FILE"; return 1; }
+  grep -q '/.well-known/acme-challenge/' "$NGINX_FILE" || { log "Публичный сертификат не запрошен: в Nginx отсутствует ACME location"; return 1; }
   open_acme_firewall
-  run_certbot_request
+  if ! run_certbot_request; then
+    log "Не удалось получить Let's Encrypt: проверьте DNS и публичную доступность $PANEL_HOST:80; подробности в $LOG_FILE"
+    return 1
+  fi
 }
 
 create_self_signed_certificate() {
@@ -562,7 +566,11 @@ create_self_signed_certificate() {
 
 write_final_nginx() {
   HTTP_BLOCK=""
+  HSTS_HEADER=""
   HTTP_ENABLED=0
+  if [ "$TLS_MODE" = "letsencrypt" ]; then
+    HSTS_HEADER='    add_header Strict-Transport-Security "max-age=31536000" always;'
+  fi
   if port_80_available_for_nginx; then
     HTTP_ENABLED=1
     HTTP_BLOCK="server {
@@ -585,7 +593,7 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_session_timeout 1d;
     ssl_session_cache shared:WDTTTLS:10m;
-    add_header Strict-Transport-Security "max-age=31536000" always;
+$HSTS_HEADER
 
     location = ${PANEL_PATH%/} { return 302 $PANEL_PATH; }
     location ^~ $PANEL_PATH {
@@ -706,6 +714,7 @@ PY
 }
 
 status_panel() {
+  local attempt
   systemctl --no-pager --full status "$PANEL_SERVICE" || true
   [ -r "$CONFIG_FILE" ] && python3 - "$CONFIG_FILE" <<'PY'
 import json, sys
@@ -714,10 +723,19 @@ print(f"Version: {d.get('version', 'unknown')}")
 print(f"URL: https://{d['public_host']}:{d['https_port']}{d['base_path']}")
 print(f"TLS: {d.get('tls_mode', 'unknown')}")
 PY
-  if [ -n "${PANEL_HTTPS_PORT:-}" ] && curl --noproxy '*' -kfsS --connect-timeout 2 --max-time 5 "https://127.0.0.1:$PANEL_HTTPS_PORT$PANEL_PATH" >/dev/null 2>&1; then
-    echo "HTTPS local check: OK"
+  if [ -n "${PANEL_HTTPS_PORT:-}" ]; then
+    for ((attempt = 1; attempt <= 10; attempt++)); do
+      if curl --noproxy '*' -kfsS --connect-timeout 2 --max-time 5 "https://127.0.0.1:$PANEL_HTTPS_PORT$PANEL_PATH" >/dev/null 2>&1; then
+        echo "HTTPS local check: OK"
+        break
+      fi
+      sleep 0.5
+    done
+    if [ "$attempt" -gt 10 ]; then
+      echo "HTTPS local check: FAILED (проверьте nginx и journalctl -u nginx)"
+    fi
   else
-    echo "HTTPS local check: FAILED (проверьте nginx и journalctl -u nginx)"
+    echo "HTTPS local check: FAILED (не найден HTTPS-порт панели)"
   fi
   [ "${TLS_MODE:-}" != "self-signed" ] || echo "Browser trust: self-signed требует ручного доверия; шифрование при этом работает"
 }
