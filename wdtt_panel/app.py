@@ -217,6 +217,7 @@ class Panel:
             "warp/create": "warp.create",
             "warp/recreate": "warp.create",
             "warp/restart": "warp.restart",
+            "warp/ping": "warp.ping",
             "cascade": "cascade.status",
             "cascade/save": "cascade.save",
             "cascade/restart": "cascade.restart",

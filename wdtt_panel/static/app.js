@@ -517,6 +517,8 @@
     $("#cascade-inbound-port").value = settings.inbound_port || 12345;
     $("#cascade-geosite-category").value = settings.geosite_category || "ru-blocked";
     $("#cascade-geoip-category").value = settings.geoip_category || "ru-blocked";
+    $("#cascade-domains").value = (settings.domains || []).join("\n");
+    $("#cascade-ip-cidrs").value = (settings.ip_cidrs || []).join("\n");
     $("#cascade-eu-vless").value = settings.eu_vless_uri || "";
     if (!settings.enabled) $("#cascade-info").textContent = "Каскад выключен: обычный трафик WDTT не меняется.";
     else $("#cascade-info").textContent = `${result.rules_active ? "Правила TPROXY активны" : "Правила ещё не применены"} · EU: ${result.eu_summary || "не задан"} · Xray: ${result.xray_active ? "работает" : "не запущен"}.`;
@@ -548,6 +550,19 @@
     finally { setBusy(button, false); }
   }
 
+  async function pingWarp() {
+    const button = $("#ping-warp"); setBusy(button, true);
+    try {
+      const result = await api("warp/ping", { method: "POST" });
+      if (!result.ok) throw new Error(result.error || "WARP не подтвердил соединение");
+      const location = result.colo ? `, Cloudflare ${result.colo}` : "";
+      const ip = result.ip ? `, IP ${result.ip}` : "";
+      $("#warp-info").textContent = `WARP доступен: ${result.latency_ms} мс${location}${ip}.`;
+      toast(`WARP отвечает за ${result.latency_ms} мс`);
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
   async function saveCascade() {
     const button = $("#save-cascade"); setBusy(button, true);
     try {
@@ -557,6 +572,8 @@
         inbound_port: Number($("#cascade-inbound-port").value),
         geosite_category: $("#cascade-geosite-category").value.trim(),
         geoip_category: $("#cascade-geoip-category").value.trim(),
+        domains: $("#cascade-domains").value,
+        ip_cidrs: $("#cascade-ip-cidrs").value,
         eu_vless_uri: $("#cascade-eu-vless").value.trim(),
       }});
       toast("Каскад RU → EU сохранён"); await Promise.all([loadCascadeRouting(), loadXray()]);
@@ -618,6 +635,7 @@
     $("#install-xray").addEventListener("click", installXray);
     $("#install-warp").addEventListener("click", installWarp);
     $("#create-warp").addEventListener("click", () => createWarpProfile());
+    $("#ping-warp").addEventListener("click", pingWarp);
     $("#restart-warp").addEventListener("click", restartWarp);
     $("#recreate-warp").addEventListener("click", () => createWarpProfile(true));
     $("#save-cascade").addEventListener("click", saveCascade);

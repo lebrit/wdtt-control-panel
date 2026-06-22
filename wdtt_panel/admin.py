@@ -1398,6 +1398,8 @@ def default_xray_cascade_settings() -> dict[str, Any]:
         "eu_vless_uri": "",
         "geosite_category": "ru-blocked",
         "geoip_category": "ru-blocked",
+        "domains": [],
+        "ip_cidrs": [],
     }
 
 
@@ -1433,6 +1435,25 @@ def normalize_xray_cascade_settings(payload: dict[str, Any]) -> dict[str, Any]:
     settings["inbound_port"] = port
     settings["geosite_category"] = xray_tag(payload.get("geosite_category") or settings["geosite_category"], "категория GeoSite")
     settings["geoip_category"] = xray_tag(payload.get("geoip_category") or settings["geoip_category"], "категория GeoIP")
+    domains = split_rule_values(payload.get("domains"))
+    if len(domains) > 256:
+        raise ValidationError("Можно указать не более 256 дополнительных доменов")
+    normalized_domains: list[str] = []
+    for domain in domains:
+        value = domain.strip().lower().lstrip(".")
+        if value.startswith("*."):
+            value = value[2:]
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?", value) or ".." in value:
+            raise ValidationError(f"Некорректный домен для каскада: {domain}")
+        normalized_domains.append(value)
+    settings["domains"] = list(dict.fromkeys(normalized_domains))
+    networks = split_rule_values(payload.get("ip_cidrs"))
+    if len(networks) > 256:
+        raise ValidationError("Можно указать не более 256 IP/CIDR")
+    try:
+        settings["ip_cidrs"] = list(dict.fromkeys(str(ipaddress.ip_network(value, strict=False)) for value in networks))
+    except ValueError as exc:
+        raise ValidationError("Список IP каскада содержит некорректный IP/CIDR") from exc
     settings["eu_vless_uri"] = str(payload.get("eu_vless_uri") or "").strip()
     if settings["enabled"] and not settings["eu_vless_uri"]:
         raise ValidationError("Для каскада укажите VLESS-ссылку EU-сервера")
@@ -1521,7 +1542,13 @@ def apply_xray_cascade(config: dict[str, Any], routing: dict[str, Any]) -> dict[
         "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"], "routeOnly": True},
         "streamSettings": {"sockopt": {"tproxy": "tproxy"}},
     }
+    custom_rules: list[dict[str, Any]] = []
+    if routing.get("domains"):
+        custom_rules.append({"type": "field", "inboundTag": ["wdtt-cascade-in"], "domain": [f"domain:{value}" for value in routing["domains"]], "outboundTag": "eu-vless"})
+    if routing.get("ip_cidrs"):
+        custom_rules.append({"type": "field", "inboundTag": ["wdtt-cascade-in"], "ip": list(routing["ip_cidrs"]), "outboundTag": "eu-vless"})
     blocked_rules = [
+        *custom_rules,
         {"type": "field", "inboundTag": ["wdtt-cascade-in"], "domain": [f"geosite:{routing['geosite_category']}"], "outboundTag": "eu-vless"},
         {"type": "field", "inboundTag": ["wdtt-cascade-in"], "ip": [f"geoip:{routing['geoip_category']}"], "outboundTag": "eu-vless"},
     ]
@@ -1756,6 +1783,107 @@ def restart_warp(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValidationError("Сначала создайте профиль Cloudflare WARP")
     sync_warp_outbound()
     return {"restarted": True, **warp_status({})}
+
+
+def warp_probe_config(port: int) -> dict[str, Any]:
+    return {
+        "log": {"loglevel": "warning"},
+        "inbounds": [
+            {
+                "tag": "warp-probe-in",
+                "listen": "127.0.0.1",
+                "port": port,
+                "protocol": "socks",
+                "settings": {"auth": "noauth", "udp": False},
+            }
+        ],
+        "outbounds": [warp_xray_outbound()],
+    }
+
+
+def free_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def parse_cloudflare_trace(content: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for line in content.splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            result[key.strip()] = value.strip()
+    return result
+
+
+def ping_warp(payload: dict[str, Any]) -> dict[str, Any]:
+    if SKIP_SYSTEMD:
+        return {"ok": True, "state": "test", "latency_ms": 0}
+    if not shutil.which("xray"):
+        raise ValidationError("Сначала установите Xray для проверки WARP")
+    if not shutil.which("curl"):
+        raise ValidationError("Для проверки WARP требуется curl")
+    config = warp_probe_config(free_loopback_port())
+    port = int(config["inbounds"][0]["port"])
+    XRAY_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix="warp-ping.", suffix=".json", dir=XRAY_CONFIG.parent)
+    process: subprocess.Popen[str] | None = None
+    started = time.monotonic()
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(config, handle, ensure_ascii=False)
+        checked = run(["xray", "run", "-test", "-c", name], timeout=45, env={"XRAY_LOCATION_ASSET": str(XRAY_ASSETS)})
+        if checked.returncode != 0:
+            return {"ok": False, "error": checked.stderr.strip() or checked.stdout.strip() or "Xray отклонил WARP-профиль"}
+        process = subprocess.Popen(
+            ["xray", "run", "-c", name],
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            env={**os.environ, "XRAY_LOCATION_ASSET": str(XRAY_ASSETS)},
+        )
+        ready_at = time.monotonic() + 12
+        while time.monotonic() < ready_at:
+            if process.poll() is not None:
+                stderr = process.stderr.read().strip() if process.stderr else ""
+                return {"ok": False, "error": stderr or "Временный Xray для WARP завершился раньше проверки"}
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.4):
+                    break
+            except OSError:
+                time.sleep(0.2)
+        else:
+            return {"ok": False, "error": "Временный Xray не открыл локальный порт проверки"}
+        curl = subprocess.run(
+            [
+                "curl", "-fsS", "--socks5-hostname", f"127.0.0.1:{port}",
+                "--connect-timeout", "8", "--max-time", "30",
+                "https://www.cloudflare.com/cdn-cgi/trace",
+            ],
+            text=True,
+            capture_output=True,
+            timeout=40,
+            env={**os.environ, "http_proxy": "", "https_proxy": "", "HTTP_PROXY": "", "HTTPS_PROXY": ""},
+        )
+        latency = round((time.monotonic() - started) * 1000)
+        if curl.returncode != 0:
+            return {"ok": False, "latency_ms": latency, "error": curl.stderr.strip() or "Cloudflare Trace недоступен через WARP"}
+        trace = parse_cloudflare_trace(curl.stdout)
+        warp_state = trace.get("warp", "").lower()
+        if warp_state != "on":
+            return {"ok": False, "latency_ms": latency, "warp": warp_state or "unknown", "ip": trace.get("ip", ""), "error": "Cloudflare не подтвердил WARP для этого соединения"}
+        return {"ok": True, "latency_ms": latency, "warp": warp_state, "ip": trace.get("ip", ""), "colo": trace.get("colo", "")}
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "error": f"Проверка WARP не выполнена: {exc}"}
+    finally:
+        if process and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        Path(name).unlink(missing_ok=True)
 
 
 def xray_download_geofile(item: dict[str, Any]) -> dict[str, Any]:
@@ -2036,6 +2164,7 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "warp.install": schedule_warp_runtime,
     "warp.create": create_warp,
     "warp.restart": restart_warp,
+    "warp.ping": ping_warp,
     "cascade.status": cascade_status,
     "cascade.save": cascade_save,
     "cascade.restart": cascade_restart,

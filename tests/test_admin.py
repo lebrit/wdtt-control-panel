@@ -219,14 +219,18 @@ class AdminDatabaseTests(unittest.TestCase):
                 "inbound_port": 12345,
                 "geosite_category": "ru-blocked",
                 "geoip_category": "ru-blocked",
+                "domains": "example.com\nblocked.example",
+                "ip_cidrs": "203.0.113.10\n198.51.100.0/24",
                 "eu_vless_uri": "vless://00000000-0000-4000-8000-000000000000@eu.example.com:443?type=tcp&security=tls&sni=eu.example.com",
             }
         )
         config = admin.build_effective_xray_config(xray, routing)
         self.assertIn("wdtt-cascade-in", [item["tag"] for item in config["inbounds"]])
         self.assertIn("eu-vless", [item["tag"] for item in config["outbounds"]])
-        self.assertEqual(config["routing"]["rules"][0]["domain"], ["geosite:ru-blocked"])
-        self.assertEqual(config["routing"]["rules"][1]["ip"], ["geoip:ru-blocked"])
+        self.assertEqual(config["routing"]["rules"][0]["domain"], ["domain:example.com", "domain:blocked.example"])
+        self.assertEqual(config["routing"]["rules"][1]["ip"], ["203.0.113.10/32", "198.51.100.0/24"])
+        self.assertEqual(config["routing"]["rules"][2]["domain"], ["geosite:ru-blocked"])
+        self.assertEqual(config["routing"]["rules"][3]["ip"], ["geoip:ru-blocked"])
 
     def test_warp_profile_becomes_xray_wireguard_outbound(self):
         self.warp_dir.mkdir()
@@ -238,6 +242,9 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual(outbound["tag"], "warp")
         self.assertEqual(outbound["settings"]["peers"][0]["endpoint"], "engage.cloudflareclient.com:2408")
         self.assertEqual(outbound["settings"]["reserved"], [1, 2, 3])
+        probe = admin.warp_probe_config(1080)
+        self.assertEqual(probe["inbounds"][0]["port"], 1080)
+        self.assertEqual(probe["outbounds"][0]["tag"], "warp")
 
     def test_xray_raw_config_and_geofile_sources_are_saved(self):
         result = admin.xray_save(

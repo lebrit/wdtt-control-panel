@@ -10,9 +10,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.7.1"', installer)
-        self.assertIn('__version__ = "0.7.1"', package)
-        self.assertIn("Текущая версия: 0.7.1", readme)
+        self.assertIn('PANEL_VERSION="0.7.2"', installer)
+        self.assertIn('__version__ = "0.7.2"', package)
+        self.assertIn("Текущая версия: 0.7.2", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -87,6 +87,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('id="install-xray"', html)
         self.assertIn('api("xray/save"', script)
         self.assertIn('id="install-warp"', html)
+        self.assertIn('id="ping-warp"', html)
         self.assertIn('id="save-cascade"', html)
         self.assertIn('api("cascade/save"', script)
         self.assertNotIn('id="repair-wdtt"', html)
