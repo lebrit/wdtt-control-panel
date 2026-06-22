@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.5.4"
+PANEL_VERSION="0.5.5"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -522,14 +522,18 @@ request_certificate() {
 }
 
 run_certbot_request() {
+  local nginx_was_active=0 certificate_ok=0
+  local -a CERTBOT_OPTIONS
   install_certbot || return 1
-  CERTBOT=("$INSTALL_DIR/certbot/bin/certbot" certonly --non-interactive --agree-tos --webroot --webroot-path "$STATE_DIR/acme")
-  if [ -n "$PANEL_EMAIL" ]; then CERTBOT+=(--email "$PANEL_EMAIL"); else CERTBOT+=(--register-unsafely-without-email); fi
+  CERTBOT_OPTIONS=(--non-interactive --agree-tos)
+  if [ -n "$PANEL_EMAIL" ]; then CERTBOT_OPTIONS+=(--email "$PANEL_EMAIL"); else CERTBOT_OPTIONS+=(--register-unsafely-without-email); fi
   if [[ "$PANEL_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    CERTBOT+=(--preferred-profile shortlived --ip-address "$PANEL_HOST" --cert-name "$PANEL_HOST")
+    CERTBOT_OPTIONS+=(--preferred-profile shortlived --ip-address "$PANEL_HOST" --cert-name "$PANEL_HOST")
   else
-    CERTBOT+=(-d "$PANEL_HOST")
+    CERTBOT_OPTIONS+=(-d "$PANEL_HOST")
   fi
+
+  CERTBOT=("$INSTALL_DIR/certbot/bin/certbot" certonly "${CERTBOT_OPTIONS[@]}" --webroot --webroot-path "$STATE_DIR/acme")
   if "${CERTBOT[@]}" >>"$LOG_FILE" 2>&1; then
     CERTIFICATE_PATH="/etc/letsencrypt/live/$PANEL_HOST/fullchain.pem"
     PRIVATE_KEY_PATH="/etc/letsencrypt/live/$PANEL_HOST/privkey.pem"
@@ -537,7 +541,25 @@ run_certbot_request() {
     TLS_MODE="letsencrypt"
     return 0
   fi
-  return 1
+
+  log "Webroot-проверка Let's Encrypt не прошла; используется временный standalone режим на TCP 80"
+  if systemctl is-active --quiet nginx; then
+    nginx_was_active=1
+    systemctl stop nginx >>"$LOG_FILE" 2>&1 || { log "Не удалось временно остановить Nginx для Certbot"; return 1; }
+  fi
+  CERTBOT=("$INSTALL_DIR/certbot/bin/certbot" certonly "${CERTBOT_OPTIONS[@]}" --standalone --preferred-challenges http)
+  if "${CERTBOT[@]}" >>"$LOG_FILE" 2>&1; then
+    CERTIFICATE_PATH="/etc/letsencrypt/live/$PANEL_HOST/fullchain.pem"
+    PRIVATE_KEY_PATH="/etc/letsencrypt/live/$PANEL_HOST/privkey.pem"
+    if [ -f "$CERTIFICATE_PATH" ] && [ -f "$PRIVATE_KEY_PATH" ]; then
+      TLS_MODE="letsencrypt"
+      certificate_ok=1
+    fi
+  fi
+  if [ "$nginx_was_active" = "1" ]; then
+    systemctl start nginx >>"$LOG_FILE" 2>&1 || { log "Не удалось вернуть Nginx после standalone проверки Certbot"; return 1; }
+  fi
+  [ "$certificate_ok" = "1" ]
 }
 
 try_upgrade_certificate() {
@@ -643,14 +665,27 @@ EOF
 }
 
 renew_certificates() {
+  local renewal_file nginx_was_active=0 renewal_ok=0
   require_root
   load_panel_config
 
   if [ "$TLS_MODE" = "letsencrypt" ]; then
     install_certbot || die "Не удалось подготовить Certbot"
     open_acme_firewall
-    "$INSTALL_DIR/certbot/bin/certbot" renew --quiet --deploy-hook "systemctl reload nginx" >>"$LOG_FILE" 2>&1 || \
-      die "Не удалось проверить или обновить сертификат Let's Encrypt"
+    renewal_file="/etc/letsencrypt/renewal/$PANEL_HOST.conf"
+    if [ -r "$renewal_file" ] && grep -q '^authenticator = standalone$' "$renewal_file"; then
+      if systemctl is-active --quiet nginx; then
+        nginx_was_active=1
+        systemctl stop nginx >>"$LOG_FILE" 2>&1 || die "Не удалось временно остановить Nginx для продления сертификата"
+      fi
+    fi
+    if "$INSTALL_DIR/certbot/bin/certbot" renew --quiet --deploy-hook "systemctl reload nginx" >>"$LOG_FILE" 2>&1; then
+      renewal_ok=1
+    fi
+    if [ "$nginx_was_active" = "1" ]; then
+      systemctl start nginx >>"$LOG_FILE" 2>&1 || die "Не удалось вернуть Nginx после продления сертификата"
+    fi
+    [ "$renewal_ok" = "1" ] || die "Не удалось проверить или обновить сертификат Let's Encrypt"
     log "Проверка сертификата Let's Encrypt завершена"
     return 0
   fi
