@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.5.0"
+PANEL_VERSION="0.5.1"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -674,7 +674,7 @@ print(f"Version: {d.get('version', 'unknown')}")
 print(f"URL: https://{d['public_host']}:{d['https_port']}{d['base_path']}")
 print(f"TLS: {d.get('tls_mode', 'unknown')}")
 PY
-  if [ -n "${PANEL_HTTPS_PORT:-}" ] && curl -kfsS --max-time 5 "https://127.0.0.1:$PANEL_HTTPS_PORT$PANEL_PATH" >/dev/null 2>&1; then
+  if [ -n "${PANEL_HTTPS_PORT:-}" ] && curl --noproxy '*' -kfsS --connect-timeout 2 --max-time 5 "https://127.0.0.1:$PANEL_HTTPS_PORT$PANEL_PATH" >/dev/null 2>&1; then
     echo "HTTPS local check: OK"
   else
     echo "HTTPS local check: FAILED (проверьте nginx и journalctl -u nginx)"
@@ -777,7 +777,7 @@ case "${1:-install}" in
   install|--install|-i) install_panel ;;
   update|--update) update_panel ;;
   renew-cert|--renew-cert) renew_certificates ;;
-  status|--status|-s) require_root; status_panel ;;
+  status|--status|-s) require_root; load_panel_config; status_panel ;;
   uninstall|--uninstall|-u) require_root; uninstall_panel ;;
   install-cascade-runtime) install_cascade_runtime ;;
   *) die "Использование: $0 [install|update|renew-cert|status|uninstall|install-cascade-runtime]" ;;

@@ -1,6 +1,6 @@
 # WDTT Control Panel
 
-**Текущая версия: 0.5.0**
+**Текущая версия: 0.5.1**
 
 Отдельная web-панель для [amurcanov/proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android). Исходники Android-приложения и `server.go` не изменяются.
 
