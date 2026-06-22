@@ -85,7 +85,11 @@ elif action == "panel.update":
     result = {"scheduled": True, "state": "test"}
 elif action == "xray.status":
     result = {"settings": {"enabled": False, "mode": "managed", "log_level": "warning", "inbounds": [], "outbounds": [], "routing_rules": [], "geofiles": []}, "active": False, "installed": False, "version": "", "config_exists": False, "logs": [], "geofiles": []}
-elif action in {"xray.save", "xray.install", "xray.geofiles.refresh", "xray.geofiles.refresh_auto", "certificate.renew"}:
+elif action == "warp.status":
+    result = {"installed": False, "account_exists": False, "profile_exists": False, "configured": False, "active": False}
+elif action == "cascade.status":
+    result = {"settings": {"enabled": False, "source_cidr": "10.66.66.0/24", "inbound_port": 12345, "eu_vless_uri": "", "geosite_category": "ru-blocked", "geoip_category": "ru-blocked"}, "xray_active": False, "service_active": False, "rules_active": False, "eu_summary": ""}
+elif action in {"xray.save", "xray.install", "xray.geofiles.refresh", "xray.geofiles.refresh_auto", "warp.install", "warp.create", "warp.restart", "cascade.save", "cascade.restart", "certificate.renew"}:
     result = {"scheduled": True, "state": "test"}
 elif action == "certificate.export":
     result = {"name": "wdtt-panel-certificate.pem", "content": "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n"}

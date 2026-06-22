@@ -22,6 +22,7 @@ class AdminDatabaseTests(unittest.TestCase):
         self.xray_settings = root / "xray-settings.json"
         self.xray_config = root / "xray-config.json"
         self.xray_assets = root / "xray-assets"
+        self.xray_cascade_settings = root / "xray-cascade.json"
         self.patchers = [
             mock.patch.object(admin, "DB_FILE", self.db_file),
             mock.patch.object(admin, "BACKUP_DIR", self.backups),
@@ -33,6 +34,7 @@ class AdminDatabaseTests(unittest.TestCase):
             mock.patch.object(admin, "XRAY_SETTINGS", self.xray_settings),
             mock.patch.object(admin, "XRAY_CONFIG", self.xray_config),
             mock.patch.object(admin, "XRAY_ASSETS", self.xray_assets),
+            mock.patch.object(admin, "XRAY_CASCADE_SETTINGS", self.xray_cascade_settings),
             mock.patch.object(admin, "SKIP_SYSTEMD", True),
         ]
         for patcher in self.patchers:
@@ -196,6 +198,46 @@ class AdminDatabaseTests(unittest.TestCase):
         config = admin.build_xray_config(settings)
         self.assertEqual([item["tag"] for item in config["outbounds"]], ["direct", "block", "vless-out"])
         self.assertEqual(config["routing"]["rules"][0]["outboundTag"], "vless-out")
+        self.assertIn("runetfreedom", settings["geofiles"][0]["url"])
+
+    def test_ru_to_eu_cascade_adds_transparent_inbound_and_blocked_routes(self):
+        xray = admin.normalize_xray_settings(
+            {
+                "enabled": True,
+                "mode": "managed",
+                "log_level": "warning",
+                "inbounds": [],
+                "outbounds": [],
+                "routing_rules": [],
+                "geofiles": admin.default_xray_settings()["geofiles"],
+            }
+        )
+        routing = admin.normalize_xray_cascade_settings(
+            {
+                "enabled": True,
+                "source_cidr": "10.66.66.0/24",
+                "inbound_port": 12345,
+                "geosite_category": "ru-blocked",
+                "geoip_category": "ru-blocked",
+                "eu_vless_uri": "vless://00000000-0000-4000-8000-000000000000@eu.example.com:443?type=tcp&security=tls&sni=eu.example.com",
+            }
+        )
+        config = admin.build_effective_xray_config(xray, routing)
+        self.assertIn("wdtt-cascade-in", [item["tag"] for item in config["inbounds"]])
+        self.assertIn("eu-vless", [item["tag"] for item in config["outbounds"]])
+        self.assertEqual(config["routing"]["rules"][0]["domain"], ["geosite:ru-blocked"])
+        self.assertEqual(config["routing"]["rules"][1]["ip"], ["geoip:ru-blocked"])
+
+    def test_warp_profile_becomes_xray_wireguard_outbound(self):
+        self.warp_dir.mkdir()
+        (self.warp_dir / "wgcf-profile.conf").write_text(
+            "[Interface]\nPrivateKey = private-key\nAddress = 172.16.0.2/32, 2606:4700:110:8a36::2/128\nMTU = 1280\n\n[Peer]\nPublicKey = public-key\nEndpoint = engage.cloudflareclient.com:2408\nAllowedIPs = 0.0.0.0/0, ::/0\nReserved = 1,2,3\n",
+            encoding="utf-8",
+        )
+        outbound = admin.warp_xray_outbound()
+        self.assertEqual(outbound["tag"], "warp")
+        self.assertEqual(outbound["settings"]["peers"][0]["endpoint"], "engage.cloudflareclient.com:2408")
+        self.assertEqual(outbound["settings"]["reserved"], [1, 2, 3])
 
     def test_xray_raw_config_and_geofile_sources_are_saved(self):
         result = admin.xray_save(

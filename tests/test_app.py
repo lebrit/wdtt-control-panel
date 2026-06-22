@@ -90,6 +90,12 @@ class AppSmokeTests(unittest.TestCase):
         headers, body = self.request("/private-panel-path/api/xray", cookie=cookie)
         self.assertTrue(headers["status"].startswith("200"))
         self.assertEqual(json.loads(body)["result"]["settings"]["mode"], "managed")
+        headers, body = self.request("/private-panel-path/api/warp", cookie=cookie)
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertFalse(json.loads(body)["result"]["profile_exists"])
+        headers, body = self.request("/private-panel-path/api/cascade", cookie=cookie)
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertFalse(json.loads(body)["result"]["settings"]["enabled"])
         self.assertEqual(parsed["result"]["stats"]["active"], 2)
 
 

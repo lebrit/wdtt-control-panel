@@ -212,6 +212,14 @@ class Panel:
             "xray/install": "xray.install",
             "xray/geofiles/refresh": "xray.geofiles.refresh",
             "xray/geofiles/refresh-all": "xray.geofiles.refresh_auto",
+            "warp": "warp.status",
+            "warp/install": "warp.install",
+            "warp/create": "warp.create",
+            "warp/recreate": "warp.create",
+            "warp/restart": "warp.restart",
+            "cascade": "cascade.status",
+            "cascade/save": "cascade.save",
+            "cascade/restart": "cascade.restart",
         }
         if route == "history" and method == "GET":
             return self.json_response(start_response, 200, self.history())
@@ -220,7 +228,7 @@ class Panel:
         action = mapping.get(route)
         if action is None:
             return self.json_response(start_response, 404, {"error": "API endpoint не найден"})
-        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "backups.export", "panel.version", "certificate.export", "xray.status"}:
+        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "backups.export", "panel.version", "certificate.export", "xray.status", "warp.status", "cascade.status"}:
             return self.json_response(start_response, 405, {"error": "Требуется POST"})
         if method == "POST" and action in {"overview", "users.list", "backups.list"}:
             return self.json_response(start_response, 405, {"error": "Требуется GET"})
@@ -258,7 +266,7 @@ class Panel:
                 input=request,
                 text=True,
                 capture_output=True,
-                timeout=240 if action.startswith(("xray.",)) else 60,
+                timeout=240 if action.startswith(("xray.", "warp.", "cascade.")) else 60,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return {"ok": False, "error": f"Root-helper недоступен: {exc}"}

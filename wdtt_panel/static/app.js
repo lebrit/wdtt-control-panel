@@ -6,7 +6,7 @@
   const CSRF = meta("csrf-token");
   const PUBLIC_HOST = meta("public-host");
   const PANEL_VERSION = meta("panel-version");
-  const state = { overview: null, users: [], logs: [], editing: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] } };
+  const state = { overview: null, users: [], logs: [], editing: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, warp: null, cascade: null };
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -495,13 +495,89 @@
     catch (error) { toast(error.message, true); }
   }
 
+  function renderWarp(result) {
+    state.warp = result;
+    const ready = Boolean(result.profile_exists), running = Boolean(result.active);
+    $("#warp-status").className = `badge ${running ? "ok" : (ready ? "warn" : "bad")}`;
+    $("#warp-status").textContent = running ? "работает" : (ready ? "профиль создан" : (result.installed ? "ожидает профиль" : "не установлен"));
+    const connection = result.endpoint ? `${result.endpoint} · ${(result.addresses || []).join(", ")}` : "";
+    $("#warp-info").textContent = result.error || (ready ? `${connection}. ${result.configured ? "Исходящий добавлен в Xray." : "Исходящий ещё не добавлен в Xray."}` : "Установите компонент, затем создайте Cloudflare WARP-профиль.");
+    $("#install-warp").textContent = result.installed ? "WARP установлен" : "Установить WARP";
+  }
+
+  async function loadWarp() {
+    try { renderWarp(await api("warp")); } catch (error) { toast(error.message, true); }
+  }
+
+  function renderCascade(result) {
+    state.cascade = result;
+    const settings = result.settings || {};
+    $("#cascade-enabled").checked = Boolean(settings.enabled);
+    $("#cascade-source-cidr").value = settings.source_cidr || "10.66.66.0/24";
+    $("#cascade-inbound-port").value = settings.inbound_port || 12345;
+    $("#cascade-geosite-category").value = settings.geosite_category || "ru-blocked";
+    $("#cascade-geoip-category").value = settings.geoip_category || "ru-blocked";
+    $("#cascade-eu-vless").value = settings.eu_vless_uri || "";
+    if (!settings.enabled) $("#cascade-info").textContent = "Каскад выключен: обычный трафик WDTT не меняется.";
+    else $("#cascade-info").textContent = `${result.rules_active ? "Правила TPROXY активны" : "Правила ещё не применены"} · EU: ${result.eu_summary || "не задан"} · Xray: ${result.xray_active ? "работает" : "не запущен"}.`;
+  }
+
+  async function loadCascadeRouting() {
+    try { renderCascade(await api("cascade")); } catch (error) { toast(error.message, true); }
+  }
+
+  async function installWarp() {
+    const button = $("#install-warp"); setBusy(button, true);
+    try { await api("warp/install", { method: "POST" }); toast("Установка Cloudflare WARP запущена"); setTimeout(loadWarp, 10000); }
+    catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function createWarpProfile(recreate = false) {
+    if (recreate && !confirm("Пересоздать WARP-аккаунт и профиль? Старый профиль перестанет работать.")) return;
+    const button = recreate ? $("#recreate-warp") : $("#create-warp"); setBusy(button, true);
+    try { await api(recreate ? "warp/recreate" : "warp/create", { method: "POST", body: recreate ? { recreate: true } : {} }); toast(recreate ? "WARP-профиль пересоздан" : "WARP-профиль создан"); await Promise.all([loadWarp(), loadXray()]); }
+    catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function restartWarp() {
+    const button = $("#restart-warp"); setBusy(button, true);
+    try { await api("warp/restart", { method: "POST" }); toast("WARP в Xray перезапущен"); await Promise.all([loadWarp(), loadXray()]); }
+    catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function saveCascade() {
+    const button = $("#save-cascade"); setBusy(button, true);
+    try {
+      await api("cascade/save", { method: "POST", body: {
+        enabled: $("#cascade-enabled").checked,
+        source_cidr: $("#cascade-source-cidr").value.trim(),
+        inbound_port: Number($("#cascade-inbound-port").value),
+        geosite_category: $("#cascade-geosite-category").value.trim(),
+        geoip_category: $("#cascade-geoip-category").value.trim(),
+        eu_vless_uri: $("#cascade-eu-vless").value.trim(),
+      }});
+      toast("Каскад RU → EU сохранён"); await Promise.all([loadCascadeRouting(), loadXray()]);
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function restartCascade() {
+    const button = $("#restart-cascade"); setBusy(button, true);
+    try { await api("cascade/restart", { method: "POST" }); toast("Xray-каскад перезапущен"); await Promise.all([loadCascadeRouting(), loadXray()]); }
+    catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
   function bindEvents() {
     $$(".nav-item").forEach((button) => button.addEventListener("click", () => {
       $$(".nav-item").forEach((item) => item.classList.toggle("active", item === button));
       $$(".tab").forEach((tab) => tab.classList.toggle("active", tab.id === `tab-${button.dataset.tab}`));
       $("#page-title").textContent = button.textContent;
       if (button.dataset.tab === "logs") loadLogs();
-      if (button.dataset.tab === "xray") loadXray();
+      if (button.dataset.tab === "xray") Promise.all([loadXray(), loadWarp(), loadCascadeRouting()]);
       if (button.dataset.tab === "system") { loadBackups(); loadAudit(); loadPanelVersion(); }
     }));
     $("#refresh").addEventListener("click", () => Promise.all([loadOverview(), loadUsers()]).catch((error) => toast(error.message, true)));
@@ -540,6 +616,12 @@
     });
     $("#save-xray").addEventListener("click", saveXray);
     $("#install-xray").addEventListener("click", installXray);
+    $("#install-warp").addEventListener("click", installWarp);
+    $("#create-warp").addEventListener("click", () => createWarpProfile());
+    $("#restart-warp").addEventListener("click", restartWarp);
+    $("#recreate-warp").addEventListener("click", () => createWarpProfile(true));
+    $("#save-cascade").addEventListener("click", saveCascade);
+    $("#restart-cascade").addEventListener("click", restartCascade);
     $("#xray-mode").addEventListener("change", renderXrayMode);
     $("#add-xray-inbound").addEventListener("click", () => { state.xray.inbounds.push(xrayInboundTemplate($("#xray-inbound-template").value)); renderXrayItems(); });
     $("#add-xray-outbound").addEventListener("click", () => { state.xray.outbounds.push(xrayOutboundTemplate($("#xray-outbound-template").value)); renderXrayItems(); });

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.6.1"
+PANEL_VERSION="0.7.0"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,6 +18,7 @@ UPDATE_WRAPPER="/usr/local/sbin/wdtt-panel-update"
 UNINSTALL_WRAPPER="/usr/local/sbin/wdtt-panel-uninstall"
 STATUS_WRAPPER="/usr/local/sbin/wdtt-panel-status"
 GEOFILES_UPDATE_WRAPPER="/usr/local/sbin/wdtt-panel-geofiles-update"
+CASCADE_RULES_WRAPPER="/usr/local/sbin/wdtt-panel-cascade-rules"
 MANAGER_WRAPPER="/usr/local/sbin/wdtt-panel"
 MANAGER_ALIAS_ONE="/usr/local/sbin/wddt-panel"
 MANAGER_ALIAS_TWO="/usr/local/sbin/wdtt-pane"
@@ -26,6 +27,9 @@ LEGACY_CASCADE_SERVICE="wdtt-cascade.service"
 XRAY_CONFIG="$PRIVATE_STATE_DIR/xray-config.json"
 XRAY_SETTINGS="$PRIVATE_STATE_DIR/xray-settings.json"
 XRAY_ASSETS="$PRIVATE_STATE_DIR/xray-assets"
+XRAY_CASCADE_SETTINGS="$PRIVATE_STATE_DIR/xray-cascade.json"
+XRAY_CASCADE_SERVICE="wdtt-xray-cascade.service"
+WARP_DIR="$PRIVATE_STATE_DIR/warp"
 LOG_FILE="/var/log/wdtt-panel-install.log"
 
 PANEL_USER="${PANEL_USER:-admin}"
@@ -271,6 +275,15 @@ EOF
 printf '%s\n' '{"action":"xray.geofiles.refresh_auto","payload":{}}' | $ADMIN_WRAPPER
 EOF
   chmod 0755 "$GEOFILES_UPDATE_WRAPPER"
+  cat > "$CASCADE_RULES_WRAPPER" <<EOF
+#!/bin/sh
+case "\${1:-apply}" in
+  apply) printf '%s\n' '{"action":"cascade.apply","payload":{}}' | $ADMIN_WRAPPER ;;
+  remove) printf '%s\n' '{"action":"cascade.remove","payload":{}}' | $ADMIN_WRAPPER ;;
+  *) exit 2 ;;
+esac
+EOF
+  chmod 0755 "$CASCADE_RULES_WRAPPER"
 }
 
 write_xray_services() {
@@ -300,6 +313,23 @@ NoNewPrivileges=true
 ProtectHome=true
 ProtectSystem=strict
 ReadWritePaths=$PRIVATE_STATE_DIR /run
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  cat > "/etc/systemd/system/$XRAY_CASCADE_SERVICE" <<EOF
+[Unit]
+Description=WDTT Xray RU to EU Cascade Rules
+After=network-online.target wdtt.service $XRAY_SERVICE
+Wants=network-online.target
+ConditionPathExists=$XRAY_CASCADE_SETTINGS
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$CASCADE_RULES_WRAPPER apply
+ExecStop=$CASCADE_RULES_WRAPPER remove
 
 [Install]
 WantedBy=multi-user.target
@@ -380,6 +410,26 @@ install_xray_runtime() {
   fi
   log "Xray Core установлен"
   /usr/local/bin/xray version | head -1
+}
+
+install_warp_runtime() {
+  require_root
+  local machine asset_pattern warp_url work
+  machine="$(uname -m)"
+  case "$machine" in
+    x86_64|amd64) asset_pattern='wgcf_[^/]*_linux_amd64$' ;;
+    aarch64|arm64) asset_pattern='wgcf_[^/]*_linux_arm64$' ;;
+    *) die "Cloudflare WARP поддержан для amd64 и arm64" ;;
+  esac
+  work="$(mktemp -d)"
+  trap 'rm -rf "${work:-}"' RETURN
+  log "Установка wgcf для Cloudflare WARP"
+  warp_url="$(github_asset_url ViRb3/wgcf "$asset_pattern")" || die "Не найден релиз wgcf"
+  curl -fsSL --retry 3 "$warp_url" -o "$work/wgcf"
+  install -m 0755 "$work/wgcf" /usr/local/bin/wgcf
+  install -d -m 0700 "$WARP_DIR"
+  log "Компонент Cloudflare WARP установлен"
+  /usr/local/bin/wgcf --version || true
 }
 
 write_panel_config() {
@@ -798,9 +848,9 @@ uninstall_panel() {
   log "Удаление только web-панели; WDTT не затрагивается"
   systemctl disable --now "$PANEL_SERVICE" wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service 2>/dev/null || true
   rm -f "/etc/systemd/system/$PANEL_SERVICE" /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer
-  systemctl disable --now "$LEGACY_CASCADE_SERVICE" "$XRAY_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service 2>/dev/null || true
-  rm -f "/etc/systemd/system/$LEGACY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_SERVICE" /etc/systemd/system/wdtt-panel-geofiles-update.service /etc/systemd/system/wdtt-panel-geofiles-update.timer
-  rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" "$MANAGER_ALIAS_ONE" "$MANAGER_ALIAS_TWO" "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$GEOFILES_UPDATE_WRAPPER"
+  systemctl disable --now "$LEGACY_CASCADE_SERVICE" "$XRAY_SERVICE" "$XRAY_CASCADE_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service 2>/dev/null || true
+  rm -f "/etc/systemd/system/$LEGACY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_SERVICE" "/etc/systemd/system/$XRAY_CASCADE_SERVICE" /etc/systemd/system/wdtt-panel-geofiles-update.service /etc/systemd/system/wdtt-panel-geofiles-update.timer
+  rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" "$MANAGER_ALIAS_ONE" "$MANAGER_ALIAS_TWO" "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$GEOFILES_UPDATE_WRAPPER" "$CASCADE_RULES_WRAPPER"
   rm -rf "$INSTALL_DIR" "$CONFIG_DIR"
   remove_firewall_rule "$panel_port"
   systemctl daemon-reload
@@ -872,5 +922,6 @@ case "${1:-install}" in
   change-password|--change-password) change_panel_password ;;
   uninstall|--uninstall|-u) require_root; uninstall_panel ;;
   install-xray-runtime) install_xray_runtime ;;
-  *) die "Использование: $0 [install|update|renew-cert|status|change-password|uninstall|install-xray-runtime]" ;;
+  install-warp-runtime) install_warp_runtime ;;
+  *) die "Использование: $0 [install|update|renew-cert|status|change-password|uninstall|install-xray-runtime|install-warp-runtime]" ;;
 esac

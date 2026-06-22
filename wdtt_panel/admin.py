@@ -74,18 +74,29 @@ XRAY_SERVICE = os.environ.get("WDTT_XRAY_SERVICE", "wdtt-xray.service")
 XRAY_INSTALL_COMMAND = Path(
     os.environ.get("WDTT_XRAY_INSTALL_COMMAND", "/opt/wdtt-panel/install.sh")
 )
+WARP_INSTALL_COMMAND = Path(
+    os.environ.get("WDTT_WARP_INSTALL_COMMAND", "/opt/wdtt-panel/install.sh")
+)
+XRAY_CASCADE_SETTINGS = Path(
+    os.environ.get("WDTT_XRAY_CASCADE_SETTINGS", "/var/lib/wdtt-panel-private/xray-cascade.json")
+)
+XRAY_CASCADE_SERVICE = os.environ.get("WDTT_XRAY_CASCADE_SERVICE", "wdtt-xray-cascade.service")
 XRAY_DEFAULT_GEOFILES = (
     {
         "tag": "geoip",
         "filename": "geoip.dat",
-        "url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
+        "url": "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geoip.dat",
     },
     {
         "tag": "geosite",
         "filename": "geosite.dat",
-        "url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
+        "url": "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geosite.dat",
     },
 )
+LEGACY_XRAY_GEOFILE_URLS = {
+    "geoip": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
+    "geosite": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
+}
 RU_SITE_RULESET = (
     "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ru.srs"
 )
@@ -113,7 +124,7 @@ class AdminError(RuntimeError):
 
 
 def run(
-    command: list[str], timeout: int = 20, check: bool = False, cwd: Path | None = None
+    command: list[str], timeout: int = 20, check: bool = False, cwd: Path | None = None, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
@@ -122,6 +133,7 @@ def run(
         timeout=timeout,
         check=check,
         cwd=cwd,
+        env={**os.environ, **env} if env else None,
     )
 
 
@@ -1212,7 +1224,7 @@ def default_xray_settings() -> dict[str, Any]:
                 **item,
                 "enabled": True,
                 "auto_update": True,
-                "update_interval": "1d",
+                "update_interval": "6h",
                 "updated_at": 0,
             }
             for item in XRAY_DEFAULT_GEOFILES
@@ -1258,6 +1270,10 @@ def load_xray_settings() -> dict[str, Any]:
     saved_files = {
         str(item.get("tag")): item for item in settings["geofiles"] if isinstance(item, dict) and item.get("tag")
     }
+    for tag, default in defaults.items():
+        saved = saved_files.get(tag)
+        if saved and str(saved.get("url") or "") == LEGACY_XRAY_GEOFILE_URLS.get(tag):
+            saved_files[tag] = {**saved, "url": default["url"], "update_interval": "6h", "updated_at": 0}
     settings["geofiles"] = [
         {**item, **saved_files.pop(tag, {})} for tag, item in defaults.items()
     ] + list(saved_files.values())
@@ -1374,6 +1390,171 @@ def build_xray_config(settings: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
+def default_xray_cascade_settings() -> dict[str, Any]:
+    return {
+        "enabled": False,
+        "source_cidr": "10.66.66.0/24",
+        "inbound_port": 12345,
+        "eu_vless_uri": "",
+        "geosite_category": "ru-blocked",
+        "geoip_category": "ru-blocked",
+    }
+
+
+def load_xray_cascade_settings() -> dict[str, Any]:
+    settings = default_xray_cascade_settings()
+    if XRAY_CASCADE_SETTINGS.is_file():
+        try:
+            saved = json.loads(XRAY_CASCADE_SETTINGS.read_text(encoding="utf-8"))
+            if isinstance(saved, dict):
+                settings.update(saved)
+        except (OSError, json.JSONDecodeError):
+            pass
+    return settings
+
+
+def normalize_xray_cascade_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = default_xray_cascade_settings()
+    settings["enabled"] = bool(payload.get("enabled", False))
+    source = str(payload.get("source_cidr") or settings["source_cidr"]).strip()
+    try:
+        network = ipaddress.ip_network(source, strict=False)
+    except ValueError as exc:
+        raise ValidationError("Укажите корректную IPv4-подсеть пользователей WDTT") from exc
+    if network.version != 4 or network.prefixlen > 30:
+        raise ValidationError("Для каскада нужна IPv4-подсеть не менее двух адресов")
+    settings["source_cidr"] = str(network)
+    try:
+        port = int(payload.get("inbound_port") or settings["inbound_port"])
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Укажите корректный локальный порт каскада") from exc
+    if not 1024 <= port <= 65535:
+        raise ValidationError("Порт каскада должен быть от 1024 до 65535")
+    settings["inbound_port"] = port
+    settings["geosite_category"] = xray_tag(payload.get("geosite_category") or settings["geosite_category"], "категория GeoSite")
+    settings["geoip_category"] = xray_tag(payload.get("geoip_category") or settings["geoip_category"], "категория GeoIP")
+    settings["eu_vless_uri"] = str(payload.get("eu_vless_uri") or "").strip()
+    if settings["enabled"] and not settings["eu_vless_uri"]:
+        raise ValidationError("Для каскада укажите VLESS-ссылку EU-сервера")
+    return settings
+
+
+def parse_xray_vless_uri(uri: str, tag: str = "eu-vless") -> dict[str, Any]:
+    parsed = urlsplit(uri.strip())
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValidationError("В VLESS-ссылке указан некорректный порт") from exc
+    if parsed.scheme.lower() != "vless" or not parsed.username or not parsed.hostname or not port:
+        raise ValidationError("Нужна полная VLESS-ссылка: vless://UUID@host:port")
+    try:
+        user_id = str(uuid.UUID(unquote(parsed.username)))
+    except (ValueError, binascii.Error) as exc:
+        raise ValidationError("В VLESS-ссылке указан некорректный UUID") from exc
+    query = {key: values[-1] for key, values in parse_qs(parsed.query).items() if values}
+    user: dict[str, Any] = {"id": user_id, "encryption": query.get("encryption") or "none"}
+    if query.get("flow"):
+        user["flow"] = query["flow"]
+    outbound: dict[str, Any] = {
+        "tag": tag,
+        "protocol": "vless",
+        "settings": {"vnext": [{"address": parsed.hostname, "port": port, "users": [user]}]},
+    }
+    network = (query.get("type") or "tcp").lower()
+    security = (query.get("security") or "none").lower()
+    stream: dict[str, Any] = {"network": network, "security": security}
+    if security == "tls":
+        tls: dict[str, Any] = {"serverName": query.get("sni") or parsed.hostname}
+        if query.get("fp"):
+            tls["fingerprint"] = query["fp"]
+        if query.get("alpn"):
+            tls["alpn"] = [item.strip() for item in query["alpn"].split(",") if item.strip()]
+        if query.get("allowInsecure", "0").lower() in {"1", "true"}:
+            tls["allowInsecure"] = True
+        stream["tlsSettings"] = tls
+    elif security == "reality":
+        public_key = query.get("pbk") or query.get("publicKey")
+        if not public_key:
+            raise ValidationError("Для VLESS Reality требуется параметр pbk")
+        reality: dict[str, Any] = {
+            "show": False,
+            "fingerprint": query.get("fp") or "chrome",
+            "serverName": query.get("sni") or parsed.hostname,
+            "publicKey": public_key,
+            "shortId": query.get("sid") or "",
+        }
+        if query.get("spx"):
+            reality["spiderX"] = unquote(query["spx"])
+        stream["realitySettings"] = reality
+    elif security != "none":
+        raise ValidationError("Поддерживаются VLESS security: none, tls или reality")
+    if network == "ws":
+        ws: dict[str, Any] = {"path": unquote(query.get("path") or "/")}
+        if query.get("host"):
+            ws["headers"] = {"Host": query["host"]}
+        stream["wsSettings"] = ws
+    elif network == "grpc":
+        stream["grpcSettings"] = {"serviceName": query.get("serviceName") or ""}
+    elif network == "httpupgrade":
+        stream["httpupgradeSettings"] = {"path": unquote(query.get("path") or "/"), "host": query.get("host") or ""}
+    elif network not in {"tcp", "http", "h2"}:
+        raise ValidationError(f"Транспорт VLESS {network} пока не поддерживается мастером; используйте Raw JSON")
+    outbound["streamSettings"] = stream
+    return outbound
+
+
+def apply_xray_cascade(config: dict[str, Any], routing: dict[str, Any]) -> dict[str, Any]:
+    if not routing.get("enabled"):
+        return config
+    inbounds = list(config.get("inbounds") or [])
+    outbounds = list(config.get("outbounds") or [])
+    if any(item.get("tag") == "wdtt-cascade-in" for item in inbounds if isinstance(item, dict)):
+        raise ValidationError("Tag wdtt-cascade-in зарезервирован для каскада")
+    if any(item.get("tag") == "eu-vless" for item in outbounds if isinstance(item, dict)):
+        raise ValidationError("Tag eu-vless зарезервирован для каскада")
+    inbound = {
+        "tag": "wdtt-cascade-in",
+        "listen": "0.0.0.0",
+        "port": int(routing["inbound_port"]),
+        "protocol": "dokodemo-door",
+        "settings": {"network": "tcp,udp", "followRedirect": True},
+        "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"], "routeOnly": True},
+        "streamSettings": {"sockopt": {"tproxy": "tproxy"}},
+    }
+    blocked_rules = [
+        {"type": "field", "inboundTag": ["wdtt-cascade-in"], "domain": [f"geosite:{routing['geosite_category']}"], "outboundTag": "eu-vless"},
+        {"type": "field", "inboundTag": ["wdtt-cascade-in"], "ip": [f"geoip:{routing['geoip_category']}"], "outboundTag": "eu-vless"},
+    ]
+    result = json.loads(json.dumps(config))
+    result["inbounds"] = [*inbounds, inbound]
+    result["outbounds"] = [*outbounds, parse_xray_vless_uri(str(routing["eu_vless_uri"]))]
+    routing_config = dict(result.get("routing") or {})
+    routing_config["rules"] = [*blocked_rules, *(routing_config.get("rules") or [])]
+    result["routing"] = routing_config
+    return result
+
+
+def build_effective_xray_config(settings: dict[str, Any], routing: dict[str, Any] | None = None) -> dict[str, Any]:
+    routing = routing or load_xray_cascade_settings()
+    if routing.get("enabled") and settings.get("mode") != "managed":
+        raise ValidationError("Каскад RU→EU работает только в Managed-режиме Xray")
+    return apply_xray_cascade(build_xray_config(settings), routing)
+
+
+def persist_xray_configuration(settings: dict[str, Any], config: dict[str, Any]) -> None:
+    xray_validate_config(config)
+    save_private_json(XRAY_SETTINGS, settings)
+    save_private_json(XRAY_CONFIG, config)
+    if not SKIP_SYSTEMD and shutil.which("xray"):
+        action = "enable" if settings["enabled"] else "disable"
+        changed = run(["systemctl", action, XRAY_SERVICE], timeout=30)
+        if changed.returncode != 0:
+            raise AdminError(changed.stderr.strip() or "Не удалось изменить состояние службы Xray")
+        changed = run(["systemctl", "restart" if settings["enabled"] else "stop", XRAY_SERVICE], timeout=60)
+        if changed.returncode != 0:
+            raise AdminError(changed.stderr.strip() or "Не удалось применить конфигурацию Xray")
+
+
 def xray_validate_config(config: dict[str, Any]) -> None:
     if SKIP_SYSTEMD or not shutil.which("xray"):
         return
@@ -1382,7 +1563,7 @@ def xray_validate_config(config: dict[str, Any]) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(config, handle, ensure_ascii=False)
-        checked = run(["xray", "run", "-test", "-c", name], timeout=45)
+        checked = run(["xray", "run", "-test", "-c", name], timeout=45, env={"XRAY_LOCATION_ASSET": str(XRAY_ASSETS)})
         if checked.returncode != 0:
             raise ValidationError(checked.stderr.strip() or checked.stdout.strip() or "Xray отклонил конфигурацию")
     finally:
@@ -1420,18 +1601,9 @@ def xray_status(payload: dict[str, Any]) -> dict[str, Any]:
 
 def xray_save(payload: dict[str, Any]) -> dict[str, Any]:
     settings = normalize_xray_settings(payload)
-    config = build_xray_config(settings)
-    xray_validate_config(config)
-    save_private_json(XRAY_SETTINGS, settings)
-    save_private_json(XRAY_CONFIG, config)
-    if not SKIP_SYSTEMD and shutil.which("xray"):
-        action = "enable" if settings["enabled"] else "disable"
-        changed = run(["systemctl", action, XRAY_SERVICE], timeout=30)
-        if changed.returncode != 0:
-            raise AdminError(changed.stderr.strip() or "Не удалось изменить состояние службы Xray")
-        changed = run(["systemctl", "restart" if settings["enabled"] else "stop", XRAY_SERVICE], timeout=60)
-        if changed.returncode != 0:
-            raise AdminError(changed.stderr.strip() or "Не удалось применить конфигурацию Xray")
+    persist_xray_configuration(settings, build_effective_xray_config(settings))
+    if load_xray_cascade_settings().get("enabled"):
+        cascade_apply_rules({})
     return xray_status({})
 
 
@@ -1446,6 +1618,144 @@ def schedule_xray_runtime(payload: dict[str, Any]) -> dict[str, Any]:
     if result.returncode != 0:
         raise AdminError(result.stderr.strip() or "Не удалось запланировать установку Xray")
     return {"scheduled": True, "unit": unit}
+
+
+def warp_profile_details() -> dict[str, Any]:
+    profile = WARP_DIR / "wgcf-profile.conf"
+    if not profile.is_file():
+        raise ValidationError("Профиль Cloudflare WARP еще не создан")
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    try:
+        parser.read(profile, encoding="utf-8")
+        interface, peer = parser["Interface"], parser["Peer"]
+    except (OSError, KeyError, configparser.Error) as exc:
+        raise ValidationError("Не удалось прочитать профиль Cloudflare WARP") from exc
+    secret_key, public_key = interface.get("PrivateKey", "").strip(), peer.get("PublicKey", "").strip()
+    endpoint = peer.get("Endpoint", "engage.cloudflareclient.com:2408").strip()
+    addresses = [item.strip() for item in interface.get("Address", "").split(",") if item.strip()]
+    if not secret_key or not public_key or not endpoint or not addresses:
+        raise ValidationError("Профиль Cloudflare WARP неполный")
+    try:
+        reserved = [int(item.strip()) for item in peer.get("Reserved", "0,0,0").split(",")]
+        mtu = int(interface.get("MTU", "1280"))
+    except ValueError as exc:
+        raise ValidationError("Профиль Cloudflare WARP содержит некорректные параметры") from exc
+    if len(reserved) != 3 or any(not 0 <= item <= 255 for item in reserved):
+        raise ValidationError("Параметр Reserved в профиле Cloudflare WARP некорректен")
+    return {
+        "secret_key": secret_key,
+        "public_key": public_key,
+        "endpoint": endpoint,
+        "addresses": addresses,
+        "allowed_ips": [item.strip() for item in peer.get("AllowedIPs", "0.0.0.0/0,::/0").split(",") if item.strip()],
+        "reserved": reserved,
+        "mtu": max(576, min(mtu, 9000)),
+    }
+
+
+def warp_xray_outbound() -> dict[str, Any]:
+    profile = warp_profile_details()
+    return {
+        "tag": "warp",
+        "protocol": "wireguard",
+        "settings": {
+            "secretKey": profile["secret_key"],
+            "address": profile["addresses"],
+            "peers": [
+                {
+                    "publicKey": profile["public_key"],
+                    "endpoint": profile["endpoint"],
+                    "keepAlive": 25,
+                    "allowedIPs": profile["allowed_ips"],
+                }
+            ],
+            "mtu": profile["mtu"],
+            "reserved": profile["reserved"],
+            "domainStrategy": "ForceIPv4",
+        },
+    }
+
+
+def sync_warp_outbound() -> None:
+    settings = load_xray_settings()
+    if settings.get("mode") != "managed":
+        raise ValidationError("Для автоматического WARP переключите Xray в Managed-режим")
+    settings["outbounds"] = [
+        item for item in settings["outbounds"] if isinstance(item, dict) and item.get("tag") != "warp"
+    ]
+    settings["outbounds"].append(warp_xray_outbound())
+    persist_xray_configuration(settings, build_effective_xray_config(settings))
+    if load_xray_cascade_settings().get("enabled"):
+        cascade_apply_rules({})
+
+
+def warp_status(payload: dict[str, Any]) -> dict[str, Any]:
+    profile = WARP_DIR / "wgcf-profile.conf"
+    details: dict[str, Any] = {}
+    if profile.is_file():
+        try:
+            raw = warp_profile_details()
+            details = {"endpoint": raw["endpoint"], "addresses": raw["addresses"], "mtu": raw["mtu"]}
+        except ValidationError as exc:
+            details = {"error": str(exc)}
+    settings = load_xray_settings()
+    configured = any(isinstance(item, dict) and item.get("tag") == "warp" for item in settings["outbounds"])
+    active = False
+    if not SKIP_SYSTEMD:
+        active = run(["systemctl", "is-active", "--quiet", XRAY_SERVICE]).returncode == 0 and configured
+    return {
+        "installed": bool(shutil.which("wgcf")),
+        "account_exists": (WARP_DIR / "wgcf-account.toml").is_file(),
+        "profile_exists": profile.is_file(),
+        "configured": configured,
+        "active": active,
+        **details,
+    }
+
+
+def schedule_warp_runtime(payload: dict[str, Any]) -> dict[str, Any]:
+    if SKIP_SYSTEMD:
+        return {"scheduled": True, "state": "test"}
+    unit = f"wdtt-warp-install-{int(time.time())}"
+    result = run(
+        ["systemd-run", "--quiet", "--collect", f"--unit={unit}", "--on-active=2s", str(WARP_INSTALL_COMMAND), "install-warp-runtime"],
+        timeout=20,
+    )
+    if result.returncode != 0:
+        raise AdminError(result.stderr.strip() or "Не удалось запланировать установку wgcf")
+    return {"scheduled": True, "unit": unit}
+
+
+def create_warp(payload: dict[str, Any]) -> dict[str, Any]:
+    if SKIP_SYSTEMD:
+        return {"created": True, "state": "test"}
+    if not shutil.which("wgcf"):
+        raise ValidationError("Сначала установите компонент WARP")
+    WARP_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(WARP_DIR, 0o700)
+    account = WARP_DIR / "wgcf-account.toml"
+    profile = WARP_DIR / "wgcf-profile.conf"
+    if bool(payload.get("recreate")):
+        account.unlink(missing_ok=True)
+        profile.unlink(missing_ok=True)
+    if not account.is_file():
+        registered = run(["wgcf", "register", "--accept-tos"], timeout=90, cwd=WARP_DIR)
+        if registered.returncode != 0:
+            raise AdminError(registered.stderr.strip() or "Cloudflare WARP не принял регистрацию")
+    generated = run(["wgcf", "generate"], timeout=90, cwd=WARP_DIR)
+    if generated.returncode != 0 or not profile.is_file():
+        raise AdminError(generated.stderr.strip() or "Не удалось создать профиль Cloudflare WARP")
+    os.chmod(account, 0o600)
+    os.chmod(profile, 0o600)
+    sync_warp_outbound()
+    return {"created": True, **warp_status({})}
+
+
+def restart_warp(payload: dict[str, Any]) -> dict[str, Any]:
+    if not (WARP_DIR / "wgcf-profile.conf").is_file():
+        raise ValidationError("Сначала создайте профиль Cloudflare WARP")
+    sync_warp_outbound()
+    return {"restarted": True, **warp_status({})}
 
 
 def xray_download_geofile(item: dict[str, Any]) -> dict[str, Any]:
@@ -1514,6 +1824,149 @@ def xray_refresh_auto_geofiles(payload: dict[str, Any]) -> dict[str, Any]:
     return {"refreshed": refreshed, "errors": errors}
 
 
+def cascade_iptables(arguments: list[str], table: str = "mangle") -> subprocess.CompletedProcess[str]:
+    return run(["iptables", "-w", "-t", table, *arguments], timeout=30)
+
+
+def cascade_run_or_raise(arguments: list[str], table: str = "mangle") -> None:
+    result = cascade_iptables(arguments, table)
+    if result.returncode != 0:
+        raise AdminError(result.stderr.strip() or f"Не удалось применить iptables: {' '.join(arguments)}")
+
+
+def cascade_remove_rules(payload: dict[str, Any]) -> dict[str, Any]:
+    if SKIP_SYSTEMD or not shutil.which("iptables"):
+        return {"removed": True, "state": "test" if SKIP_SYSTEMD else "not-installed"}
+    for table, chain, parent, target in (
+        ("mangle", "WDTT_XRAY_CASCADE", "PREROUTING", "WDTT_XRAY_CASCADE"),
+        ("filter", "WDTT_XRAY_CASCADE_IN", "INPUT", "WDTT_XRAY_CASCADE_IN"),
+    ):
+        for _ in range(8):
+            result = cascade_iptables(["-D", parent, "-j", target], table)
+            if result.returncode != 0:
+                break
+        cascade_iptables(["-F", chain], table)
+        cascade_iptables(["-X", chain], table)
+    for _ in range(8):
+        result = run(["ip", "rule", "del", "fwmark", "0x233/0xfff", "table", "233", "priority", "1233"], timeout=20)
+        if result.returncode != 0:
+            break
+    run(["ip", "route", "flush", "table", "233"], timeout=20)
+    return {"removed": True}
+
+
+def cascade_apply_rules(payload: dict[str, Any]) -> dict[str, Any]:
+    routing = load_xray_cascade_settings()
+    if not routing.get("enabled"):
+        return cascade_remove_rules({})
+    routing = normalize_xray_cascade_settings(routing)
+    if SKIP_SYSTEMD:
+        return {"applied": True, "state": "test"}
+    if run(["systemctl", "is-active", "--quiet", XRAY_SERVICE], timeout=20).returncode != 0:
+        raise AdminError("Xray не запущен; правила каскада не были применены")
+    if not shutil.which("iptables"):
+        raise AdminError("iptables не установлен; установите системные зависимости панели")
+    for module in ("xt_TPROXY", "nf_tproxy_core"):
+        if shutil.which("modprobe"):
+            run(["modprobe", module], timeout=20)
+    mangle_chain, input_chain = "WDTT_XRAY_CASCADE", "WDTT_XRAY_CASCADE_IN"
+    for table, chain in (("mangle", mangle_chain), ("filter", input_chain)):
+        created = cascade_iptables(["-N", chain], table)
+        if created.returncode != 0 and "Chain already exists" not in created.stderr:
+            raise AdminError(created.stderr.strip() or f"Не удалось создать цепочку {chain}")
+        cascade_run_or_raise(["-F", chain], table)
+    source, port = routing["source_cidr"], str(routing["inbound_port"])
+    cascade_run_or_raise(["-A", mangle_chain, "-s", source, "-p", "tcp", "-j", "TPROXY", "--on-port", port, "--tproxy-mark", "0x233/0xfff"])
+    cascade_run_or_raise(["-A", mangle_chain, "-s", source, "-p", "udp", "-j", "TPROXY", "--on-port", port, "--tproxy-mark", "0x233/0xfff"])
+    for protocol in ("tcp", "udp"):
+        cascade_run_or_raise(["-A", input_chain, "-s", source, "-p", protocol, "--dport", port, "-j", "ACCEPT"], "filter")
+        cascade_run_or_raise(["-A", input_chain, "-p", protocol, "--dport", port, "-j", "DROP"], "filter")
+        if cascade_iptables(["-C", "INPUT", "-p", protocol, "--dport", port, "-j", input_chain], "filter").returncode != 0:
+            cascade_run_or_raise(["-I", "INPUT", "1", "-p", protocol, "--dport", port, "-j", input_chain], "filter")
+    if cascade_iptables(["-C", "PREROUTING", "-j", mangle_chain]).returncode != 0:
+        cascade_run_or_raise(["-I", "PREROUTING", "1", "-j", mangle_chain])
+    rule = run(["ip", "rule", "add", "fwmark", "0x233/0xfff", "table", "233", "priority", "1233"], timeout=20)
+    if rule.returncode != 0 and "File exists" not in rule.stderr:
+        raise AdminError(rule.stderr.strip() or "Не удалось добавить policy routing для каскада")
+    route = run(["ip", "route", "replace", "local", "0.0.0.0/0", "dev", "lo", "table", "233"], timeout=20)
+    if route.returncode != 0:
+        raise AdminError(route.stderr.strip() or "Не удалось добавить локальный маршрут каскада")
+    return {"applied": True, "source_cidr": source, "inbound_port": int(port)}
+
+
+def cascade_status(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = load_xray_cascade_settings()
+    summary = ""
+    if settings.get("eu_vless_uri"):
+        parsed = urlsplit(str(settings["eu_vless_uri"]))
+        try:
+            summary = f"{parsed.hostname}:{parsed.port}"
+        except ValueError:
+            summary = "некорректный порт"
+    rules_active = False
+    service_active = False
+    if not SKIP_SYSTEMD:
+        if shutil.which("iptables"):
+            rules_active = cascade_iptables(["-C", "PREROUTING", "-j", "WDTT_XRAY_CASCADE"]).returncode == 0
+        service_active = run(["systemctl", "is-active", "--quiet", XRAY_CASCADE_SERVICE]).returncode == 0
+    return {
+        "settings": settings,
+        "xray_active": (not SKIP_SYSTEMD and run(["systemctl", "is-active", "--quiet", XRAY_SERVICE]).returncode == 0),
+        "service_active": service_active,
+        "rules_active": rules_active,
+        "eu_summary": summary,
+    }
+
+
+def cascade_save(payload: dict[str, Any]) -> dict[str, Any]:
+    routing = normalize_xray_cascade_settings(payload)
+    if routing["enabled"]:
+        refreshed = xray_refresh_auto_geofiles({"force": True})
+        if refreshed["errors"]:
+            raise AdminError(f"Не удалось обновить GeoFiles: {refreshed['errors'][0]['tag']}")
+    xray_settings = load_xray_settings()
+    if routing["enabled"]:
+        required_geofiles = {"geoip.dat", "geosite.dat"}
+        available_geofiles = {
+            str(item.get("filename"))
+            for item in xray_settings["geofiles"]
+            if item.get("enabled", True) and (XRAY_ASSETS / str(item.get("filename") or "")).is_file()
+        }
+        if not required_geofiles.issubset(available_geofiles):
+            raise ValidationError("Для каскада включите и обновите GeoIP и GeoSite")
+        if xray_settings.get("mode") != "managed":
+            raise ValidationError("Каскад RU→EU требует Managed-режим Xray")
+        if not xray_settings.get("enabled"):
+            raise ValidationError("Сначала включите Xray и сохраните его конфигурацию")
+        if not SKIP_SYSTEMD and not shutil.which("xray"):
+            raise ValidationError("Сначала установите Xray")
+    persist_xray_configuration(xray_settings, build_effective_xray_config(xray_settings, routing))
+    save_private_json(XRAY_CASCADE_SETTINGS, routing)
+    if not SKIP_SYSTEMD:
+        if routing["enabled"]:
+            enabled = run(["systemctl", "enable", "--now", XRAY_CASCADE_SERVICE], timeout=45)
+            if enabled.returncode != 0:
+                raise AdminError(enabled.stderr.strip() or "Не удалось включить правила каскада")
+            cascade_apply_rules({})
+        else:
+            run(["systemctl", "disable", "--now", XRAY_CASCADE_SERVICE], timeout=45)
+            cascade_remove_rules({})
+    return cascade_status({})
+
+
+def cascade_restart(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = load_xray_cascade_settings()
+    if not settings.get("enabled"):
+        raise ValidationError("Сначала включите каскад RU→EU")
+    if SKIP_SYSTEMD:
+        return {"restarted": True, "state": "test"}
+    restarted = run(["systemctl", "restart", XRAY_SERVICE], timeout=60)
+    if restarted.returncode != 0:
+        raise AdminError(restarted.stderr.strip() or "Не удалось перезапустить Xray")
+    cascade_apply_rules({})
+    return {"restarted": True, **cascade_status({})}
+
+
 def overview(payload: dict[str, Any]) -> dict[str, Any]:
     data = load_database()
     stats = read_stats()
@@ -1579,6 +2032,15 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "xray.install": schedule_xray_runtime,
     "xray.geofiles.refresh": xray_refresh_geofile,
     "xray.geofiles.refresh_auto": xray_refresh_auto_geofiles,
+    "warp.status": warp_status,
+    "warp.install": schedule_warp_runtime,
+    "warp.create": create_warp,
+    "warp.restart": restart_warp,
+    "cascade.status": cascade_status,
+    "cascade.save": cascade_save,
+    "cascade.restart": cascade_restart,
+    "cascade.apply": cascade_apply_rules,
+    "cascade.remove": cascade_remove_rules,
 }
 
 

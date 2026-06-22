@@ -1,6 +1,6 @@
 # WDTT Control Panel
 
-**Текущая версия: 0.6.1**
+**Текущая версия: 0.7.0**
 
 Отдельная web-панель для [amurcanov/proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android). Исходники Android-приложения и `server.go` не изменяются.
 
@@ -27,7 +27,18 @@
 - редакторы входящих, исходящих и правил маршрутизации Xray с шаблонами VLESS, VMess, Trojan, Shadowsocks, SOCKS, HTTP и WireGuard;
 - стандартные GeoIP/GeoSite и собственные GeoFiles из HTTPS-источников;
 - ручное и автоматическое обновление GeoFiles через systemd-таймер;
+- российские GeoFiles из `runetfreedom/russia-v2ray-rules-dat`: `geosite:ru-blocked` и `geoip:ru-blocked` для маршрутизации заблокированных в РФ ресурсов;
+- автоматический Cloudflare WARP: установка `wgcf`, создание, перезапуск и пересоздание профиля с добавлением WireGuard-исходящего в Xray;
+- прозрачный каскад RU → EU: трафик сети WDTT `10.66.66.0/24` перехватывается Xray, а категории российских блокировок направляются в указанный EU-VLESS;
 - установка на пустой сервер или поверх уже развернутого WDTT.
+
+## GeoFiles, WARP и каскад RU → EU
+
+По умолчанию панель получает `geoip.dat` и `geosite.dat` по HTTPS из [runetfreedom/russia-v2ray-rules-dat](https://github.com/runetfreedom/russia-v2ray-rules-dat) и проверяет обновления каждые шесть часов. В этих файлах доступны, в частности, `geoip:ru-blocked`, `geoip:ru-blocked-community`, `geoip:re-filter`, `geosite:ru-blocked`, `geosite:ru-blocked-all` и категории из domain-list-community. Для обычного каскада используйте `ru-blocked`: более широкий `ru-blocked-all` содержит сотни тысяч доменов и может давать лишнюю маршрутизацию.
+
+Вкладка **Xray** позволяет установить `wgcf`, создать Cloudflare WARP-профиль и автоматически добавить исходящий `warp` в Managed-конфигурацию Xray. WARP остаётся обычным исходящим: его можно выбрать в правилах маршрутизации Xray.
+
+Каскад RU → EU требует установленный и включённый Xray в Managed-режиме. Укажите VLESS-ссылку EU-сервера, проверьте подсеть WDTT (стандартно `10.66.66.0/24`) и включите каскад. Панель загрузит GeoFiles, добавит защищённый TPROXY-маршрут и направит `geosite:ru-blocked` и `geoip:ru-blocked` через EU-VLESS; весь остальной трафик, включая обычные российские сайты, остаётся прямым через RU-сервер. В каскад попадает только трафик из указанной подсети WDTT, а его внутренний порт закрывается для внешних подключений.
 
 ## Совместимость
 
