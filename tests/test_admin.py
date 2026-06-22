@@ -245,6 +245,7 @@ class AdminDatabaseTests(unittest.TestCase):
         probe = admin.warp_probe_config(1080)
         self.assertEqual(probe["inbounds"][0]["port"], 1080)
         self.assertEqual(probe["outbounds"][0]["tag"], "warp")
+        self.assertEqual(admin.parse_cloudflare_trace("warp=on\nip=198.51.100.10\n")["warp"], "on")
 
     def test_xray_raw_config_and_geofile_sources_are_saved(self):
         result = admin.xray_save(

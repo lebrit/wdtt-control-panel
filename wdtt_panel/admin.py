@@ -1854,25 +1854,37 @@ def ping_warp(payload: dict[str, Any]) -> dict[str, Any]:
                 time.sleep(0.2)
         else:
             return {"ok": False, "error": "Временный Xray не открыл локальный порт проверки"}
-        curl = subprocess.run(
-            [
-                "curl", "-fsS", "--socks5-hostname", f"127.0.0.1:{port}",
-                "--connect-timeout", "8", "--max-time", "30",
-                "https://www.cloudflare.com/cdn-cgi/trace",
-            ],
-            text=True,
-            capture_output=True,
-            timeout=40,
-            env={**os.environ, "http_proxy": "", "https_proxy": "", "HTTP_PROXY": "", "HTTPS_PROXY": ""},
-        )
-        latency = round((time.monotonic() - started) * 1000)
-        if curl.returncode != 0:
-            return {"ok": False, "latency_ms": latency, "error": curl.stderr.strip() or "Cloudflare Trace недоступен через WARP"}
-        trace = parse_cloudflare_trace(curl.stdout)
-        warp_state = trace.get("warp", "").lower()
-        if warp_state != "on":
-            return {"ok": False, "latency_ms": latency, "warp": warp_state or "unknown", "ip": trace.get("ip", ""), "error": "Cloudflare не подтвердил WARP для этого соединения"}
-        return {"ok": True, "latency_ms": latency, "warp": warp_state, "ip": trace.get("ip", ""), "colo": trace.get("colo", "")}
+        environment = {
+            **os.environ,
+            "http_proxy": "", "https_proxy": "", "all_proxy": "", "no_proxy": "",
+            "HTTP_PROXY": "", "HTTPS_PROXY": "", "ALL_PROXY": "", "NO_PROXY": "",
+        }
+        failures: list[str] = []
+        for trace_url in (
+            "https://www.cloudflare.com/cdn-cgi/trace",
+            "https://cloudflare.com/cdn-cgi/trace",
+            "http://www.cloudflare.com/cdn-cgi/trace",
+        ):
+            curl = subprocess.run(
+                [
+                    "curl", "-fsS", "--socks5-hostname", f"127.0.0.1:{port}",
+                    "--connect-timeout", "8", "--max-time", "30", trace_url,
+                ],
+                text=True,
+                capture_output=True,
+                timeout=40,
+                env=environment,
+            )
+            latency = round((time.monotonic() - started) * 1000)
+            if curl.returncode != 0:
+                failures.append(curl.stderr.strip() or f"{trace_url}: недоступен")
+                continue
+            trace = parse_cloudflare_trace(curl.stdout)
+            warp_state = trace.get("warp", "").lower()
+            if warp_state == "on":
+                return {"ok": True, "latency_ms": latency, "warp": warp_state, "ip": trace.get("ip", ""), "colo": trace.get("colo", ""), "trace_url": trace_url}
+            failures.append(f"{trace_url}: Cloudflare вернул warp={warp_state or 'unknown'}")
+        return {"ok": False, "latency_ms": round((time.monotonic() - started) * 1000), "error": "WARP не подтверждён. " + " | ".join(failures[-2:])}
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"ok": False, "error": f"Проверка WARP не выполнена: {exc}"}
     finally:
