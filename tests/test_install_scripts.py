@@ -10,9 +10,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.5.0"', installer)
-        self.assertIn('__version__ = "0.5.0"', package)
-        self.assertIn("Текущая версия: 0.5.0", readme)
+        self.assertIn('PANEL_VERSION="0.5.1"', installer)
+        self.assertIn('__version__ = "0.5.1"', package)
+        self.assertIn("Текущая версия: 0.5.1", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -31,6 +31,14 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("write_maintenance_scripts", script)
         self.assertIn("install_cascade_runtime()", script)
         self.assertIn("wdtt-panel-geofiles-update.timer", script)
+
+    def test_status_uses_the_saved_secret_path(self):
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            "status|--status|-s) require_root; load_panel_config; status_panel ;;",
+            script,
+        )
+        self.assertIn("curl --noproxy '*' -kfsS", script)
 
     def test_panel_exposes_version_update_and_full_backup_controls(self):
         html = (ROOT / "wdtt_panel" / "templates" / "index.html").read_text(encoding="utf-8")
