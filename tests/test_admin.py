@@ -240,6 +240,7 @@ class AdminDatabaseTests(unittest.TestCase):
         )
         outbound = admin.warp_xray_outbound()
         self.assertEqual(outbound["tag"], "warp")
+        self.assertTrue(outbound["settings"]["noKernelTun"])
         self.assertEqual(outbound["settings"]["peers"][0]["endpoint"], "engage.cloudflareclient.com:2408")
         self.assertEqual(outbound["settings"]["reserved"], [1, 2, 3])
         probe = admin.warp_probe_config(1080)

@@ -1686,6 +1686,7 @@ def warp_xray_outbound() -> dict[str, Any]:
         "tag": "warp",
         "protocol": "wireguard",
         "settings": {
+            "noKernelTun": True,
             "secretKey": profile["secret_key"],
             "address": profile["addresses"],
             "peers": [
