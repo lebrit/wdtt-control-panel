@@ -10,13 +10,13 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.5.1"', installer)
-        self.assertIn('__version__ = "0.5.1"', package)
-        self.assertIn("Текущая версия: 0.5.1", readme)
+        self.assertIn('PANEL_VERSION="0.5.2"', installer)
+        self.assertIn('__version__ = "0.5.2"', package)
+        self.assertIn("Текущая версия: 0.5.2", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
-        for action in ("install", "update", "status", "renew-cert", "uninstall"):
+        for action in ("install", "update", "status", "renew-cert", "change-password", "uninstall"):
             self.assertIn(action, script)
         self.assertIn("/dev/tty", script)
         self.assertIn("--domain", script)
@@ -31,6 +31,20 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("write_maintenance_scripts", script)
         self.assertIn("install_cascade_runtime()", script)
         self.assertIn("wdtt-panel-geofiles-update.timer", script)
+
+    def test_installer_can_change_the_panel_login_password(self):
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("change_panel_password()", script)
+        self.assertIn('change-password|--change-password) change_panel_password ;;', script)
+        self.assertIn('data["session_secret"] = session_secret', script)
+
+    def test_acme_opens_port_80_before_certbot(self):
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        request_start = script.index("request_certificate()")
+        request_end = script.index("run_certbot_request()", request_start)
+        request = script[request_start:request_end]
+        self.assertIn("open_acme_firewall", request)
+        self.assertIn("open_acme_firewall()", script)
 
     def test_status_uses_the_saved_secret_path(self):
         script = (ROOT / "install.sh").read_text(encoding="utf-8")

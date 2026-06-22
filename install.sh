@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.5.1"
+PANEL_VERSION="0.5.2"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -483,9 +483,21 @@ server {
     location / { return 404; }
 }
 EOF
-  nginx -t >>"$LOG_FILE" 2>&1
-  systemctl enable --now nginx >>"$LOG_FILE" 2>&1
-  systemctl reload nginx >>"$LOG_FILE" 2>&1
+  nginx -t >>"$LOG_FILE" 2>&1 || { log "Nginx не принял временную ACME-конфигурацию"; return 1; }
+  systemctl enable --now nginx >>"$LOG_FILE" 2>&1 || { log "Не удалось запустить Nginx для ACME"; return 1; }
+  systemctl reload nginx >>"$LOG_FILE" 2>&1 || { log "Не удалось применить временную ACME-конфигурацию Nginx"; return 1; }
+}
+
+open_acme_firewall() {
+  if command_exists ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
+    ufw allow 80/tcp comment 'WDTT Panel ACME' >/dev/null || true
+  elif command_exists firewall-cmd && systemctl is-active --quiet firewalld; then
+    firewall-cmd --permanent --add-port=80/tcp >/dev/null || true
+    firewall-cmd --reload >/dev/null || true
+  elif command_exists iptables; then
+    iptables -C INPUT -p tcp --dport 80 -m comment --comment WDTT_PANEL -j ACCEPT 2>/dev/null || \
+      iptables -I INPUT -p tcp --dport 80 -m comment --comment WDTT_PANEL -j ACCEPT || true
+  fi
 }
 
 install_certbot() {
@@ -501,7 +513,11 @@ request_certificate() {
   TLS_MODE="self-signed"
   port_80_available_for_nginx || { log "Порт 80 занят не Nginx: публичный сертификат пропущен"; return 1; }
   write_acme_nginx || return 1
-  run_certbot_request
+  open_acme_firewall
+  if ! run_certbot_request; then
+    log "Не удалось получить Let's Encrypt: убедитесь, что $PANEL_HOST доступен из интернета по TCP 80; подробности в $LOG_FILE"
+    return 1
+  fi
 }
 
 run_certbot_request() {
@@ -527,6 +543,7 @@ try_upgrade_certificate() {
   port_80_available_for_nginx || return 1
   [ -r "$NGINX_FILE" ] || return 1
   grep -q '/.well-known/acme-challenge/' "$NGINX_FILE" || return 1
+  open_acme_firewall
   run_certbot_request
 }
 
@@ -623,6 +640,7 @@ renew_certificates() {
 
   if [ "$TLS_MODE" = "letsencrypt" ]; then
     install_certbot || die "Не удалось подготовить Certbot"
+    open_acme_firewall
     "$INSTALL_DIR/certbot/bin/certbot" renew --quiet --deploy-hook "systemctl reload nginx" >>"$LOG_FILE" 2>&1 || \
       die "Не удалось проверить или обновить сертификат Let's Encrypt"
     log "Проверка сертификата Let's Encrypt завершена"
@@ -648,21 +666,43 @@ renew_certificates() {
 }
 
 open_firewall() {
+  [ "${HTTP_ENABLED:-0}" = "1" ] && open_acme_firewall
   if command_exists ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
-    [ "${HTTP_ENABLED:-0}" = "1" ] && ufw allow 80/tcp comment 'WDTT Panel ACME' >/dev/null || true
     ufw allow "$PANEL_HTTPS_PORT/tcp" comment 'WDTT Panel HTTPS' >/dev/null || true
   elif command_exists firewall-cmd && systemctl is-active --quiet firewalld; then
-    [ "${HTTP_ENABLED:-0}" = "1" ] && firewall-cmd --permanent --add-port=80/tcp >/dev/null || true
     firewall-cmd --permanent --add-port="$PANEL_HTTPS_PORT/tcp" >/dev/null || true
     firewall-cmd --reload >/dev/null || true
   elif command_exists iptables; then
     iptables -C INPUT -p tcp --dport "$PANEL_HTTPS_PORT" -m comment --comment WDTT_PANEL -j ACCEPT 2>/dev/null || \
       iptables -I INPUT -p tcp --dport "$PANEL_HTTPS_PORT" -m comment --comment WDTT_PANEL -j ACCEPT || true
-    if [ "${HTTP_ENABLED:-0}" = "1" ]; then
-      iptables -C INPUT -p tcp --dport 80 -m comment --comment WDTT_PANEL -j ACCEPT 2>/dev/null || \
-        iptables -I INPUT -p tcp --dport 80 -m comment --comment WDTT_PANEL -j ACCEPT || true
-    fi
   fi
+}
+
+change_panel_password() {
+  require_root
+  load_panel_config
+  [ -n "$PANEL_PASSWORD" ] || die "Укажите новый пароль через меню или PANEL_PASSWORD"
+  [ "${#PANEL_PASSWORD}" -ge 12 ] || die "PANEL_PASSWORD должен содержать не менее 12 символов"
+
+  PASSWORD_HASH="$(PYTHONPATH="$INSTALL_DIR" python3 -c 'import sys; from wdtt_panel.security import hash_password; print(hash_password(sys.argv[1]))' "$PANEL_PASSWORD")"
+  SESSION_SECRET="$(random_token 48)"
+  python3 - "$CONFIG_FILE" "$PASSWORD_HASH" "$SESSION_SECRET" <<'PY'
+import json, os, sys
+path, password_hash, session_secret = sys.argv[1:]
+data = json.load(open(path, encoding="utf-8"))
+data["password_hash"] = password_hash
+data["session_secret"] = session_secret
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    json.dump(data, handle, ensure_ascii=False, indent=2)
+    handle.write("\n")
+os.chmod(tmp, 0o640)
+os.replace(tmp, path)
+PY
+  chown root:wdtt-panel "$CONFIG_FILE"
+  chmod 0640 "$CONFIG_FILE"
+  systemctl restart "$PANEL_SERVICE" >>"$LOG_FILE" 2>&1 || die "Не удалось перезапустить панель после смены пароля"
+  log "Пароль входа в панель изменен; все активные сессии завершены"
 }
 
 status_panel() {
@@ -778,6 +818,7 @@ case "${1:-install}" in
   update|--update) update_panel ;;
   renew-cert|--renew-cert) renew_certificates ;;
   status|--status|-s) require_root; load_panel_config; status_panel ;;
+  change-password|--change-password) change_panel_password ;;
   uninstall|--uninstall|-u) require_root; uninstall_panel ;;
   install-cascade-runtime) install_cascade_runtime ;;
   *) die "Использование: $0 [install|update|renew-cert|status|uninstall|install-cascade-runtime]" ;;

@@ -10,7 +10,7 @@ INTERACTIVE=0
 
 usage() {
   cat <<EOF
-Usage: bootstrap.sh [install|update|uninstall|status|renew-cert] [options]
+Usage: bootstrap.sh [install|update|uninstall|status|renew-cert|change-password] [options]
 
 Without arguments an interactive management menu is shown.
 
@@ -25,6 +25,9 @@ Install options:
   --wdtt MODE         WDTT mode: auto or no
   --wdtt-password PWD Main WDTT password for a clean server
   --non-interactive   Do not ask questions; generate missing values
+
+Change-password options:
+  --password VALUE    New panel administrator password (12+ characters)
 EOF
 }
 
@@ -41,7 +44,8 @@ WDTT Control Panel
 2) Обновить панель
 3) Показать статус и адрес
 4) Проверить/обновить сертификат
-5) Удалить панель
+5) Сменить пароль входа в панель
+6) Удалить панель
 0) Выход
 EOF
   printf 'Выберите действие [1]: ' >/dev/tty
@@ -51,7 +55,8 @@ EOF
     2) ACTION="update" ;;
     3) ACTION="status" ;;
     4) ACTION="renew-cert" ;;
-    5)
+    5) ACTION="change-password" ;;
+    6)
       printf 'Удалить web-панель? WDTT и его пользователи останутся [y/N]: ' >/dev/tty
       IFS= read -r confirm </dev/tty || true
       case "$confirm" in y|Y|yes|YES|да|Да|ДА) ACTION="uninstall" ;; *) echo 'Отменено.' >/dev/tty; ACTION="" ;; esac
@@ -59,6 +64,15 @@ EOF
     0) ACTION="exit" ;;
     *) echo 'Неизвестный пункт меню.' >/dev/tty; ACTION="" ;;
   esac
+}
+
+prompt_password_change() {
+  [ "${NON_INTERACTIVE:-0}" = "1" ] && return 0
+  [ -r /dev/tty ] && [ -w /dev/tty ] || return 0
+  [ -n "${PANEL_PASSWORD:-}" ] && return 0
+  printf 'Новый пароль панели, минимум 12 символов: ' >/dev/tty
+  IFS= read -r -s PANEL_PASSWORD </dev/tty || true
+  printf '\n' >/dev/tty
 }
 
 prompt_value() {
@@ -126,7 +140,7 @@ EOF
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    install|update|uninstall|status|renew-cert) ACTION="$1"; shift ;;
+    install|update|uninstall|status|renew-cert|change-password) ACTION="$1"; shift ;;
     --domain|--host) [ "$#" -ge 2 ] || { usage; exit 2; }; PANEL_HOST="$2"; shift 2 ;;
     --ip) [ "$#" -ge 2 ] || { usage; exit 2; }; PANEL_HOST="$2"; shift 2 ;;
     --user) [ "$#" -ge 2 ] || { usage; exit 2; }; PANEL_USER="$2"; shift 2 ;;
@@ -168,6 +182,8 @@ run_action() {
   [ -n "$ACTION" ] || return 0
   if [ "$ACTION" = "install" ]; then
     prompt_install_options
+  elif [ "$ACTION" = "change-password" ]; then
+    prompt_password_change
   fi
 
   export PANEL_HOST="${PANEL_HOST:-}"

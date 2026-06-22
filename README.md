@@ -1,6 +1,6 @@
 # WDTT Control Panel
 
-**Текущая версия: 0.5.1**
+**Текущая версия: 0.5.2**
 
 Отдельная web-панель для [amurcanov/proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android). Исходники Android-приложения и `server.go` не изменяются.
 
@@ -56,7 +56,7 @@ curl -fsSL https://raw.githubusercontent.com/lebrit/wdtt-control-panel/main/boot
 3. Использовать уже установленный WDTT либо установить официальный WDTT на пустой сервер.
 4. Получить Let's Encrypt сертификат или автоматически создать self-signed сертификат.
 
-Для автоматизации тот же скрипт принимает `install`, `update`, `status`, `renew-cert`, `uninstall` и параметры `--domain`, `--ip`, `--user`, `--password`, `--email`, `--https-port`, `--path`, `--wdtt`, `--wdtt-password`, `--non-interactive`.
+Для автоматизации тот же скрипт принимает `install`, `update`, `status`, `renew-cert`, `change-password`, `uninstall` и параметры `--domain`, `--ip`, `--user`, `--password`, `--email`, `--https-port`, `--path`, `--wdtt`, `--wdtt-password`, `--non-interactive`.
 
 Пример автоматической установки с доменом:
 
@@ -74,6 +74,7 @@ sudo wdtt-panel-status
 sudo wdtt-panel-update
 sudo wdtt-panel-uninstall
 sudo bash /opt/wdtt-panel/install.sh renew-cert
+sudo wdtt-panel change-password
 ```
 
 Команды `wddt-panel` и `wdtt-pane` также ведут в меню, чтобы распространенные опечатки не завершались ошибкой.
@@ -92,6 +93,7 @@ curl -fsSL https://raw.githubusercontent.com/lebrit/wdtt-control-panel/main/unin
 ## Сертификаты
 
 - Для домена используется Certbot и HTTP-01; A/AAAA запись должна указывать на сервер, TCP 80 должен быть доступен.
+- Перед запросом и продлением сертификата установщик автоматически открывает TCP 80 в UFW, firewalld или iptables. Если сертификат не получен, причина сохраняется в `/var/log/wdtt-panel-install.log`.
 - Для IPv4 используется Certbot 5.4+ и короткоживущий профиль Let's Encrypt.
 - Проверка и продление сертификата выполняются systemd-таймером каждые 12 часов.
 - Если публичный сертификат получить нельзя, установщик создает self-signed сертификат. Таймер повторно пытается получить доверенный сертификат, а self-signed автоматически заменяет до истечения срока.
