@@ -18,7 +18,7 @@
     <nav>
       <button class="nav-item active" data-tab="dashboard">Обзор</button>
       <button class="nav-item" data-tab="users">Пользователи</button>
-      <button class="nav-item" data-tab="cascade">Каскад</button>
+      <button class="nav-item" data-tab="xray">Xray</button>
       <button class="nav-item" data-tab="logs">Журналы</button>
       <button class="nav-item" data-tab="system">Система</button>
     </nav>
@@ -56,45 +56,34 @@
           <div class="section-head"><div><p class="eyebrow">HEALTH CHECK</p><h2>Диагностика</h2></div></div>
           <div id="health-list" class="health-list"></div>
           <p id="interface-error" class="diagnostic-error" hidden></p>
+          <div class="button-row"><button id="repair-wdtt" class="secondary" hidden>Восстановить wdtt0</button></div>
         </article>
       </div>
     </section>
 
-    <section class="tab" id="tab-cascade">
-      <div class="section-head"><div><p class="eyebrow">ADVANCED ROUTING</p><h2>Каскад и маршрутизация</h2><p class="muted">Правила применяются сверху вниз. Исходный WDTT не изменяется.</p></div><div class="inline-actions"><button id="install-cascade" class="secondary">Установить компоненты</button><button id="save-cascade" class="primary">Сохранить и применить</button></div></div>
+    <section class="tab" id="tab-xray">
+      <div class="section-head"><div><p class="eyebrow">XRAY CORE</p><h2>Исходящие и конфигурации Xray</h2><p class="muted">Xray работает отдельно от WDTT и не изменяет его исходный код. Managed-режим даёт безопасный редактор, Raw-режим принимает полный JSON Xray.</p></div><div class="inline-actions"><button id="install-xray" class="secondary">Установить Xray</button><button id="save-xray" class="primary">Сохранить и применить</button></div></div>
       <div class="system-grid">
         <article class="panel-card">
-          <div class="section-head"><div><p class="eyebrow">OUTBOUND</p><h2>Выходные подключения</h2></div><span id="cascade-status" class="badge warn">не настроен</span></div>
-          <label class="field-label">VLESS-ссылка<textarea id="cascade-vless" class="compact-textarea mono" placeholder="vless://UUID@server:443?... "></textarea></label>
-          <div class="form-grid compact-grid">
-            <label>Маршрут по умолчанию<select id="cascade-default"><option value="direct">Напрямую</option><option value="vless">VLESS</option><option value="warp">WARP</option></select></label>
-            <label class="checkbox cascade-toggle"><input id="cascade-enabled" type="checkbox"> Включить каскад</label>
-          </div>
-          <div class="button-row"><button id="create-warp" class="secondary">Создать WARP</button><span id="warp-status" class="muted">WARP не настроен</span></div>
+          <div class="section-head"><div><p class="eyebrow">RUNTIME</p><h2>Служба Xray</h2></div><span id="xray-status" class="badge warn">не установлен</span></div>
+          <div class="form-grid compact-grid"><label>Режим<select id="xray-mode"><option value="managed">Managed</option><option value="raw">Raw JSON</option></select></label><label>Уровень журнала<select id="xray-log-level"><option value="warning">warning</option><option value="info">info</option><option value="error">error</option><option value="debug">debug</option><option value="none">none</option></select></label><label class="checkbox"><input id="xray-enabled" type="checkbox"> Включить Xray</label></div>
+          <p id="xray-runtime-info" class="muted">Конфигурация ещё не загружена.</p>
         </article>
-        <article class="panel-card">
-          <p class="eyebrow">PRESETS</p><h2>Готовые наборы</h2><p class="muted">Добавляются как обычные правила и затем могут быть переставлены или изменены.</p>
-          <div class="preset-grid"><button class="secondary" data-preset="ru-sites">RU-сайты</button><button class="secondary" data-preset="ru-ip">RU-IP</button><button class="secondary" data-preset="ru-blocked-sites">Заблокированные сайты РФ</button><button class="secondary" data-preset="ru-blocked-ip">Заблокированные IP РФ</button><button class="secondary" data-preset="ai-services">Сервисы ИИ</button></div>
+        <article class="panel-card wide" id="xray-managed-editor">
+          <div class="section-head"><div><p class="eyebrow">INBOUNDS</p><h2>Входящие подключения</h2></div><div class="inline-actions"><select id="xray-inbound-template"><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="trojan">Trojan</option><option value="shadowsocks">Shadowsocks</option><option value="socks">SOCKS</option><option value="http">HTTP</option></select><button id="add-xray-inbound" class="secondary">Добавить</button></div></div>
+          <div id="xray-inbounds" class="xray-json-list"></div>
+          <div class="section-head"><div><p class="eyebrow">OUTBOUNDS</p><h2>Исходящие подключения</h2></div><div class="inline-actions"><select id="xray-outbound-template"><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="trojan">Trojan</option><option value="shadowsocks">Shadowsocks</option><option value="socks">SOCKS</option><option value="http">HTTP</option><option value="wireguard">WireGuard</option><option value="freedom">Freedom</option><option value="blackhole">Blackhole</option></select><button id="add-xray-outbound" class="secondary">Добавить</button></div></div>
+          <div id="xray-outbounds" class="xray-json-list"></div>
+          <div class="section-head"><div><p class="eyebrow">ROUTING</p><h2>Правила маршрутизации</h2></div><button id="add-xray-rule" class="secondary">Добавить правило</button></div>
+          <div id="xray-rules" class="xray-json-list"></div>
         </article>
+        <article class="panel-card wide" id="xray-raw-editor" hidden><p class="eyebrow">RAW CONFIGURATION</p><h2>Полная конфигурация Xray</h2><textarea id="xray-raw-config" class="compact-textarea mono" spellcheck="false" placeholder='{"inbounds": [], "outbounds": []}'></textarea></article>
         <article class="panel-card wide">
-          <div class="section-head"><div><p class="eyebrow">PRIORITY RULES</p><h2>Тонкая маршрутизация</h2></div><button id="add-route-rule" class="secondary">Добавить правило</button></div>
-          <div id="route-rules" class="route-rules"></div>
+          <div class="section-head"><div><p class="eyebrow">GEOFILES</p><h2>GeoIP и GeoSite</h2><p class="muted">Стандартные GeoFiles загружаются по HTTPS и обновляются по таймеру. Добавляйте собственные .dat-источники для правил вида <code>geoip:tag</code> или <code>geosite:tag</code>.</p></div><button id="refresh-all-xray-geofiles" class="secondary">Обновить сейчас</button></div>
+          <div class="geofile-form"><input id="xray-geofile-tag" placeholder="Tag: custom"><input id="xray-geofile-file" placeholder="Файл: custom.dat"><input id="xray-geofile-url" placeholder="HTTPS URL GeoFile"><select id="xray-geofile-interval"><option value="6h">Каждые 6 часов</option><option value="12h">Каждые 12 часов</option><option value="1d" selected>Раз в сутки</option><option value="7d">Раз в неделю</option></select><button id="add-xray-geofile" class="primary">Добавить источник</button></div>
+          <div id="xray-geofiles" class="backup-list"></div>
         </article>
-        <article class="panel-card wide">
-          <div class="section-head"><div><p class="eyebrow">GEOFILES</p><h2>GeoFiles и Rule Sets</h2><p class="muted">SRS используется напрямую. Для geosite.dat/geoip.dat укажите категорию, например RU.</p></div><button id="refresh-all-geofiles" class="secondary">Обновить сейчас</button></div>
-          <div class="geofile-form">
-            <input id="geofile-file" type="file" accept=".srs,.dat,.db">
-            <select id="geofile-kind"><option value="srs">SRS</option><option value="geosite">geosite.dat</option><option value="geoip">geoip.dat</option></select>
-            <input id="geofile-tag" placeholder="Tag правила">
-            <input id="geofile-category" placeholder="Категория для .dat: RU">
-            <input id="geofile-url" placeholder="URL для обновлений (необязательно)">
-            <select id="geofile-interval"><option value="6h">Каждые 6 часов</option><option value="12h">Каждые 12 часов</option><option value="1d" selected>Раз в сутки</option><option value="7d">Раз в неделю</option></select>
-            <label class="checkbox"><input id="geofile-auto" type="checkbox"> Автообновление</label>
-            <button id="upload-geofile" class="primary">Загрузить GeoFile</button>
-          </div>
-          <div id="geofiles-list" class="backup-list"></div>
-        </article>
-        <article class="panel-card wide"><p class="eyebrow">CASCADE LOG</p><h2>Журнал маршрутизации</h2><pre id="cascade-log" class="inline-log">Нет данных.</pre></article>
+        <article class="panel-card wide"><p class="eyebrow">XRAY LOG</p><h2>Журнал Xray</h2><pre id="xray-log" class="inline-log">Нет данных.</pre></article>
       </div>
     </section>
 

@@ -109,6 +109,11 @@ tbody tr:hover { background: rgba(255,255,255,.018); }
 .route-order button { min-height: 29px; padding: 0; }
 .geofile-form { display: grid; grid-template-columns: 1.4fr .8fr 1fr 1fr 1.6fr .9fr 1fr auto; gap: 9px; align-items: center; margin-bottom: 16px; }
 .inline-log { max-height: 260px; overflow: auto; margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; color: #a7b5c8; background: #05080d; font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
+.xray-json-list { display: grid; gap: 10px; margin: 12px 0 22px; }
+.xray-json-row { display: grid; grid-template-columns: 150px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: rgba(5, 8, 13, .42); }
+.xray-json-row strong, .xray-json-row small { display: block; }
+.xray-json-row small { color: var(--muted); margin-top: 4px; }
+.xray-json-row textarea { min-height: 120px; resize: vertical; }
 dialog { width: min(650px, calc(100vw - 32px)); border: 1px solid #2b3b50; border-radius: 18px; padding: 24px; color: var(--text); background: #0e1622; box-shadow: 0 28px 90px rgba(0,0,0,.55); }
 dialog::backdrop { background: rgba(1,4,8,.78); backdrop-filter: blur(4px); }
 .dialog-head { margin-bottom: 20px; }
@@ -138,5 +143,5 @@ dialog::backdrop { background: rgba(1,4,8,.78); backdrop-filter: blur(4px); }
   .brand { padding: 0 12px 0 0; } .brand div, .sidebar-footer { display: none; } nav { display: flex; }
   .nav-item { white-space: nowrap; } .content { margin: 0; padding: 24px 16px 45px; }
   .topbar { align-items: flex-end; } .host-pill { display: none; } .hero-grid, .system-grid { grid-template-columns: 1fr; }
-  .hero-card { grid-column: auto; } .panel-card.wide { grid-column: auto; } .form-grid { grid-template-columns: 1fr; } .form-grid .wide { grid-column: auto; } .route-rule, .geofile-form { grid-template-columns: 1fr; } .route-order { grid-template-columns: 1fr 1fr; } .preset-grid { grid-template-columns: 1fr; }
+  .hero-card { grid-column: auto; } .panel-card.wide { grid-column: auto; } .form-grid { grid-template-columns: 1fr; } .form-grid .wide { grid-column: auto; } .route-rule, .geofile-form, .xray-json-row { grid-template-columns: 1fr; } .route-order { grid-template-columns: 1fr 1fr; } .preset-grid { grid-template-columns: 1fr; }
 }

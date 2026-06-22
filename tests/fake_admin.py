@@ -83,9 +83,9 @@ elif action == "panel.version":
     result = {"current": "0.5.0", "latest": "0.5.0", "update_available": False}
 elif action == "panel.update":
     result = {"scheduled": True, "state": "test"}
-elif action == "cascade.status":
-    result = {"settings": {"enabled": False, "vless_uri": "", "default_outbound": "direct", "rules": [], "geofiles": []}, "active": False, "installed": False, "version": "", "warp_ready": False, "logs": [], "builtin_rule_sets": ["ru-sites", "ru-ip", "ru-blocked-sites", "ru-blocked-ip", "ai-services"]}
-elif action in {"cascade.save", "cascade.install", "cascade.warp", "certificate.renew"}:
+elif action == "xray.status":
+    result = {"settings": {"enabled": False, "mode": "managed", "log_level": "warning", "inbounds": [], "outbounds": [], "routing_rules": [], "geofiles": []}, "active": False, "installed": False, "version": "", "config_exists": False, "logs": [], "geofiles": []}
+elif action in {"xray.save", "xray.install", "xray.geofiles.refresh", "xray.geofiles.refresh_auto", "certificate.renew", "service.repair"}:
     result = {"scheduled": True, "state": "test"}
 elif action == "certificate.export":
     result = {"name": "wdtt-panel-certificate.pem", "content": "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n"}
@@ -93,8 +93,6 @@ elif action == "backups.export":
     result = {"name": "passwords-demo.json", "content": '{"passwords":{},"devices":{}}'}
 elif action == "backups.import":
     result = {"name": "passwords-uploaded.json", "size": 32, "created_at": 1781514000}
-elif action.startswith("geofiles."):
-    result = {"refreshed": [], "errors": []}
 else:
     result = {}
 print(json.dumps({"ok": True, "result": result}))

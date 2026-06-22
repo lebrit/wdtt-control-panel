@@ -197,6 +197,7 @@ class Panel:
             "users/unbind": "users.unbind",
             "users/reset-traffic": "users.reset_traffic",
             "service": "service.action",
+            "service/repair": "service.repair",
             "logs": "logs",
             "backups": "backups.list",
             "backups/create": "backups.create",
@@ -207,13 +208,11 @@ class Panel:
             "panel/update": "panel.update",
             "certificate/export": "certificate.export",
             "certificate/renew": "certificate.renew",
-            "cascade": "cascade.status",
-            "cascade/save": "cascade.save",
-            "cascade/install": "cascade.install",
-            "cascade/warp": "cascade.warp",
-            "geofiles/upload": "geofiles.upload",
-            "geofiles/refresh": "geofiles.refresh",
-            "geofiles/refresh-all": "geofiles.refresh_auto",
+            "xray": "xray.status",
+            "xray/save": "xray.save",
+            "xray/install": "xray.install",
+            "xray/geofiles/refresh": "xray.geofiles.refresh",
+            "xray/geofiles/refresh-all": "xray.geofiles.refresh_auto",
         }
         if route == "history" and method == "GET":
             return self.json_response(start_response, 200, self.history())
@@ -222,7 +221,7 @@ class Panel:
         action = mapping.get(route)
         if action is None:
             return self.json_response(start_response, 404, {"error": "API endpoint не найден"})
-        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "backups.export", "panel.version", "certificate.export", "cascade.status"}:
+        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "backups.export", "panel.version", "certificate.export", "xray.status"}:
             return self.json_response(start_response, 405, {"error": "Требуется POST"})
         if method == "POST" and action in {"overview", "users.list", "backups.list"}:
             return self.json_response(start_response, 405, {"error": "Требуется GET"})
@@ -241,7 +240,7 @@ class Panel:
             payload["name"] = query.get("name", [""])[0]
         if action == "certificate.export":
             payload["certificate_path"] = str(self.config.get("certificate_path") or "")
-        if route == "geofiles/refresh-all":
+        if route == "xray/geofiles/refresh-all":
             payload["force"] = True
         result = self.admin(action, payload)
         status = 200 if result.get("ok") else 400
@@ -260,7 +259,7 @@ class Panel:
                 input=request,
                 text=True,
                 capture_output=True,
-                timeout=240 if action.startswith(("cascade.", "geofiles.")) else 60,
+                timeout=240 if action.startswith(("xray.",)) else 60,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return {"ok": False, "error": f"Root-helper недоступен: {exc}"}

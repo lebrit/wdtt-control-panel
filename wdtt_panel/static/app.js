@@ -6,7 +6,7 @@
   const CSRF = meta("csrf-token");
   const PUBLIC_HOST = meta("public-host");
   const PANEL_VERSION = meta("panel-version");
-  const state = { overview: null, users: [], logs: [], editing: null, cascade: null, routeRules: [], geofiles: [] };
+  const state = { overview: null, users: [], logs: [], editing: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] } };
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -89,6 +89,7 @@
     const interfaceError = $("#interface-error");
     interfaceError.textContent = service.interface_error || "";
     interfaceError.hidden = !service.interface_error;
+    $("#repair-wdtt").hidden = Boolean(service.interface);
     renderCertificate(overview.certificate || {});
     await loadHistory();
   }
@@ -407,106 +408,95 @@
     } catch (error) { toast(error.message, true); }
   }
 
-  const routeTypeOptions = [
-    ["domain", "Домены"], ["ip", "IP/CIDR"], ["port", "Порты"], ["protocol", "Протокол"],
-    ["source_user", "Пользователи"], ["builtin", "Готовый набор"], ["geofile", "GeoFile"],
-  ];
-  const routeTargetOptions = [["direct", "Напрямую"], ["vless", "VLESS"], ["warp", "WARP"], ["block", "Блокировать"]];
+  const xrayInboundTemplate = (kind) => {
+    const port = 10000 + state.xray.inbounds.length;
+    const ordinal = state.xray.inbounds.filter((item) => item.protocol === kind).length + 1;
+    const base = { tag: `${kind}-in-${ordinal}`, listen: "0.0.0.0", port, protocol: kind, settings: {} };
+    if (["vless", "vmess"].includes(kind)) return { ...base, settings: { clients: [] }, streamSettings: { network: "tcp", security: "none" } };
+    if (kind === "trojan") return { ...base, settings: { clients: [] }, streamSettings: { network: "tcp", security: "none" } };
+    if (kind === "shadowsocks") return { ...base, settings: { clients: [], network: "tcp,udp" } };
+    return { ...base, settings: { auth: "noauth", udp: true } };
+  };
 
-  function optionList(options, current) {
-    return options.map(([value, label]) => `<option value="${value}" ${value === current ? "selected" : ""}>${label}</option>`).join("");
+  const xrayOutboundTemplate = (kind) => {
+    const ordinal = state.xray.outbounds.filter((item) => item.protocol === kind).length + 1;
+    const tag = `${kind}-out-${ordinal}`;
+    if (kind === "vless") return { tag, protocol: "vless", settings: { vnext: [{ address: "example.com", port: 443, users: [{ id: "00000000-0000-4000-8000-000000000000", encryption: "none" }] }] }, streamSettings: { network: "tcp", security: "tls" } };
+    if (kind === "vmess") return { tag, protocol: "vmess", settings: { vnext: [{ address: "example.com", port: 443, users: [{ id: "00000000-0000-4000-8000-000000000000", security: "auto", alterId: 0 }] }] } };
+    if (kind === "trojan") return { tag, protocol: "trojan", settings: { servers: [{ address: "example.com", port: 443, password: "change-me" }] }, streamSettings: { security: "tls" } };
+    if (kind === "shadowsocks") return { tag, protocol: "shadowsocks", settings: { servers: [{ address: "example.com", port: 443, method: "aes-128-gcm", password: "change-me" }] } };
+    if (["socks", "http"].includes(kind)) return { tag, protocol: kind, settings: { servers: [{ address: "127.0.0.1", port: 1080 }] } };
+    if (kind === "wireguard") return { tag, protocol: "wireguard", settings: { secretKey: "", address: ["10.0.0.2/32"], peers: [] } };
+    return { tag, protocol: kind, settings: {} };
+  };
+
+  function xrayItemRow(kind, item, index) {
+    return `<article class="xray-json-row"><div><strong>${escapeHtml(item.tag || `${kind} ${index + 1}`)}</strong><small>${escapeHtml(item.protocol || item.type || "JSON")}</small></div><textarea class="mono" data-xray-json="${kind}" data-xray-index="${index}" spellcheck="false">${escapeHtml(JSON.stringify(item, null, 2))}</textarea><button data-xray-remove="${kind}" data-xray-index="${index}" class="danger">Удалить</button></article>`;
   }
 
-  function renderRouteRules() {
-    $("#route-rules").innerHTML = state.routeRules.map((rule, index) => `<div class="route-rule" data-rule-index="${index}">
-      <div class="route-order"><button data-rule-up="${index}" ${index === 0 ? "disabled" : ""}>↑</button><button data-rule-down="${index}" ${index === state.routeRules.length - 1 ? "disabled" : ""}>↓</button></div>
-      <select data-rule-field="type">${optionList(routeTypeOptions, rule.type || "domain")}</select>
-      <textarea data-rule-field="values" placeholder="Значения через запятую или с новой строки">${escapeHtml(Array.isArray(rule.values) ? rule.values.join("\n") : (rule.values || ""))}</textarea>
-      <select class="route-target" data-rule-field="outbound">${optionList(routeTargetOptions, rule.outbound || "direct")}</select>
-      <div class="row-actions"><label class="checkbox"><input data-rule-field="enabled" type="checkbox" ${rule.enabled === false ? "" : "checked"}> Вкл.</label><button data-rule-remove="${index}">Удалить</button></div>
-    </div>`).join("") || `<p class="muted">Правил нет. Весь трафик идет по маршруту по умолчанию.</p>`;
+  function renderXrayItems() {
+    $("#xray-inbounds").innerHTML = state.xray.inbounds.map((item, index) => xrayItemRow("inbounds", item, index)).join("") || `<p class="muted">Входящие не добавлены. Xray не откроет новые порты, пока вы не создадите inbound.</p>`;
+    $("#xray-outbounds").innerHTML = state.xray.outbounds.map((item, index) => xrayItemRow("outbounds", item, index)).join("") || `<p class="muted">Используются встроенные direct и block. Добавьте VLESS, Trojan, Shadowsocks, SOCKS, HTTP или WireGuard.</p>`;
+    $("#xray-rules").innerHTML = state.xray.routing_rules.map((item, index) => xrayItemRow("routing_rules", item, index)).join("") || `<p class="muted">Правил нет: Xray использует стандартную маршрутизацию.</p>`;
   }
 
-  function renderGeofiles() {
-    $("#geofiles-list").innerHTML = state.geofiles.map((item) => `<div class="backup-row"><span><strong>${escapeHtml(item.tag)}</strong><br><small>${escapeHtml(item.kind || "srs")} · ${item.auto_update ? `авто ${escapeHtml(item.update_interval || "1d")}` : "вручную"} · ${escapeHtml(formatDate(item.updated_at))}</small></span><button data-refresh-geofile="${escapeHtml(item.tag)}" ${item.url ? "" : "disabled"}>Обновить</button></div>`).join("") || `<p class="muted">Пользовательские GeoFiles не загружены.</p>`;
+  function renderXrayGeofiles() {
+    $("#xray-geofiles").innerHTML = state.xray.geofiles.map((item) => `<div class="backup-row"><span><strong>${escapeHtml(item.tag)}</strong><br><small>${escapeHtml(item.filename)} · ${item.available ? formatBytes(item.size) : "ещё не загружен"} · ${item.updated_at ? formatDate(item.updated_at) : "ожидает обновления"}</small></span><div class="inline-actions"><label class="checkbox"><input data-xray-geo="enabled" data-xray-tag="${escapeHtml(item.tag)}" type="checkbox" ${item.enabled === false ? "" : "checked"}> Вкл.</label><label class="checkbox"><input data-xray-geo="auto_update" data-xray-tag="${escapeHtml(item.tag)}" type="checkbox" ${item.auto_update ? "checked" : ""}> Авто</label><button data-refresh-xray-geofile="${escapeHtml(item.tag)}" ${item.url ? "" : "disabled"}>Обновить</button></div></div>`).join("") || `<p class="muted">GeoFiles не настроены.</p>`;
   }
 
-  async function loadCascade() {
+  function renderXrayMode() {
+    const raw = $("#xray-mode").value === "raw";
+    $("#xray-managed-editor").hidden = raw;
+    $("#xray-raw-editor").hidden = !raw;
+  }
+
+  async function loadXray() {
     try {
-      const result = await api("cascade");
-      state.cascade = result;
-      const settings = result.settings || {};
-      state.routeRules = settings.rules || [];
-      state.geofiles = settings.geofiles || [];
-      $("#cascade-vless").value = settings.vless_uri || "";
-      $("#cascade-default").value = settings.default_outbound || "direct";
-      $("#cascade-enabled").checked = Boolean(settings.enabled);
-      $("#cascade-status").className = `badge ${result.active ? "ok" : (settings.enabled ? "bad" : "warn")}`;
-      $("#cascade-status").textContent = result.active ? "работает" : (settings.enabled ? "ошибка" : "выключен");
-      $("#warp-status").textContent = result.warp_ready ? "WARP готов" : "WARP не настроен";
-      $("#install-cascade").textContent = result.installed ? (result.version || "Компоненты установлены") : "Установить компоненты";
-      $("#cascade-log").textContent = (result.logs || []).join("\n") || "Нет записей.";
-      renderRouteRules(); renderGeofiles();
+      const result = await api("xray");
+      state.xray = result.settings || { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] };
+      state.xray.inbounds ||= []; state.xray.outbounds ||= []; state.xray.routing_rules ||= []; state.xray.geofiles = result.geofiles || state.xray.geofiles || [];
+      $("#xray-enabled").checked = Boolean(state.xray.enabled);
+      $("#xray-mode").value = state.xray.mode || "managed";
+      $("#xray-log-level").value = state.xray.log_level || "warning";
+      $("#xray-raw-config").value = state.xray.raw_config || "";
+      $("#xray-status").className = `badge ${result.active ? "ok" : (state.xray.enabled ? "bad" : "warn")}`;
+      $("#xray-status").textContent = result.active ? "работает" : (state.xray.enabled ? "ошибка" : (result.installed ? "выключен" : "не установлен"));
+      $("#xray-runtime-info").textContent = result.installed ? `${result.version || "Xray установлен"} · ${result.config_exists ? "конфигурация создана" : "конфигурация ещё не создана"}` : "Нажмите «Установить Xray», затем создайте конфигурацию.";
+      $("#install-xray").textContent = result.installed ? (result.version || "Xray установлен") : "Установить Xray";
+      $("#xray-log").textContent = (result.logs || []).join("\n") || "Нет записей.";
+      renderXrayMode(); renderXrayItems(); renderXrayGeofiles();
     } catch (error) { toast(error.message, true); }
   }
 
-  async function saveCascade() {
-    const button = $("#save-cascade"); setBusy(button, true);
+  function collectXrayItems(kind) {
+    return $$(`[data-xray-json="${kind}"]`).map((node, index) => {
+      try { return JSON.parse(node.value); }
+      catch (error) { throw new Error(`${kind} ${index + 1}: неверный JSON`); }
+    });
+  }
+
+  async function saveXray() {
+    const button = $("#save-xray"); setBusy(button, true);
     try {
-      await api("cascade/save", { method: "POST", body: {
-        enabled: $("#cascade-enabled").checked,
-        vless_uri: $("#cascade-vless").value.trim(),
-        default_outbound: $("#cascade-default").value,
-        rules: state.routeRules,
-        geofiles: state.geofiles,
-      }});
-      toast("Маршрутизация сохранена и применена"); await loadCascade();
+      const mode = $("#xray-mode").value;
+      const payload = { enabled: $("#xray-enabled").checked, mode, log_level: $("#xray-log-level").value, geofiles: state.xray.geofiles };
+      if (mode === "raw") payload.raw_config = $("#xray-raw-config").value;
+      else { payload.inbounds = collectXrayItems("inbounds"); payload.outbounds = collectXrayItems("outbounds"); payload.routing_rules = collectXrayItems("routing_rules"); }
+      await api("xray/save", { method: "POST", body: payload });
+      toast("Конфигурация Xray сохранена и применена"); await loadXray();
     } catch (error) { toast(error.message, true); }
     finally { setBusy(button, false); }
   }
 
-  function addRouteRule(type = "domain", values = "", outbound = "vless") {
-    state.routeRules.push({ enabled: true, type, values, outbound }); renderRouteRules();
-  }
-
-  async function installCascade() {
-    const button = $("#install-cascade"); setBusy(button, true);
-    try { await api("cascade/install", { method: "POST" }); toast("Установка sing-box, WARP и GeoFile-конвертера запущена"); setTimeout(loadCascade, 15000); }
-    catch (error) { toast(error.message, true); setBusy(button, false); }
-  }
-
-  async function createWarp() {
-    const button = $("#create-warp"); setBusy(button, true);
-    try { await api("cascade/warp", { method: "POST" }); toast("Профиль WARP создан"); await loadCascade(); }
+  async function installXray() {
+    const button = $("#install-xray"); setBusy(button, true);
+    try { await api("xray/install", { method: "POST" }); toast("Установка Xray запущена в фоне"); setTimeout(loadXray, 12000); }
     catch (error) { toast(error.message, true); }
     finally { setBusy(button, false); }
   }
 
-  function arrayBufferToBase64(buffer) {
-    const bytes = new Uint8Array(buffer); let binary = "";
-    for (let offset = 0; offset < bytes.length; offset += 32768) binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
-    return btoa(binary);
-  }
-
-  async function uploadGeofile() {
-    const file = $("#geofile-file").files[0];
-    if (!file) { toast("Выберите GeoFile", true); return; }
-    const button = $("#upload-geofile"); setBusy(button, true);
-    try {
-      const item = await api("geofiles/upload", { method: "POST", body: {
-        name: file.name, content: arrayBufferToBase64(await file.arrayBuffer()), kind: $("#geofile-kind").value,
-        tag: $("#geofile-tag").value.trim(), category: $("#geofile-category").value.trim(),
-        url: $("#geofile-url").value.trim(), auto_update: $("#geofile-auto").checked,
-        update_interval: $("#geofile-interval").value,
-      }});
-      state.geofiles = state.geofiles.filter((entry) => entry.tag !== item.tag); state.geofiles.push(item);
-      renderGeofiles(); toast(`GeoFile ${item.tag} загружен`);
-    } catch (error) { toast(error.message, true); }
-    finally { setBusy(button, false); }
-  }
-
-  async function refreshGeofile(tag) {
-    try { await api("geofiles/refresh", { method: "POST", body: { tag } }); toast(`GeoFile ${tag} обновлен`); await loadCascade(); }
+  async function refreshXrayGeofile(tag) {
+    try { await api("xray/geofiles/refresh", { method: "POST", body: { tag } }); toast(`GeoFile ${tag} обновлен`); await loadXray(); }
     catch (error) { toast(error.message, true); }
   }
 
@@ -516,10 +506,16 @@
       $$(".tab").forEach((tab) => tab.classList.toggle("active", tab.id === `tab-${button.dataset.tab}`));
       $("#page-title").textContent = button.textContent;
       if (button.dataset.tab === "logs") loadLogs();
-      if (button.dataset.tab === "cascade") loadCascade();
+      if (button.dataset.tab === "xray") loadXray();
       if (button.dataset.tab === "system") { loadBackups(); loadAudit(); loadPanelVersion(); }
     }));
     $("#refresh").addEventListener("click", () => Promise.all([loadOverview(), loadUsers()]).catch((error) => toast(error.message, true)));
+    $("#repair-wdtt").addEventListener("click", async (event) => {
+      const button = event.currentTarget; setBusy(button, true);
+      try { await api("service/repair", { method: "POST" }); toast("WDTT перезапущен, wdtt0 восстановлен"); await loadOverview(); }
+      catch (error) { toast(error.message, true); }
+      finally { setBusy(button, false); }
+    });
     $("#new-user").addEventListener("click", () => openUserDialog());
     $("#bulk-users").addEventListener("click", openBulkUserDialog);
     $("#user-form").addEventListener("submit", saveUser);
@@ -553,30 +549,31 @@
       const restore = event.target.closest("[data-restore]"); if (restore) restoreBackup(restore.dataset.restore);
       const download = event.target.closest("[data-download-backup]"); if (download) downloadBackup(download.dataset.downloadBackup);
     });
-    $("#save-cascade").addEventListener("click", saveCascade);
-    $("#install-cascade").addEventListener("click", installCascade);
-    $("#create-warp").addEventListener("click", createWarp);
-    $("#add-route-rule").addEventListener("click", () => addRouteRule());
-    $("#upload-geofile").addEventListener("click", uploadGeofile);
-    $("#refresh-all-geofiles").addEventListener("click", async () => {
-      try { const result = await api("geofiles/refresh-all", { method: "POST" }); toast(`Обновлено GeoFiles: ${(result.refreshed || []).length}`); await loadCascade(); }
+    $("#save-xray").addEventListener("click", saveXray);
+    $("#install-xray").addEventListener("click", installXray);
+    $("#xray-mode").addEventListener("change", renderXrayMode);
+    $("#add-xray-inbound").addEventListener("click", () => { state.xray.inbounds.push(xrayInboundTemplate($("#xray-inbound-template").value)); renderXrayItems(); });
+    $("#add-xray-outbound").addEventListener("click", () => { state.xray.outbounds.push(xrayOutboundTemplate($("#xray-outbound-template").value)); renderXrayItems(); });
+    $("#add-xray-rule").addEventListener("click", () => { state.xray.routing_rules.push({ type: "field", outboundTag: "direct", domain: ["geosite:ru"] }); renderXrayItems(); });
+    $$(".xray-json-list").forEach((list) => list.addEventListener("click", (event) => {
+      const remove = event.target.closest("[data-xray-remove]"); if (!remove) return;
+      state.xray[remove.dataset.xrayRemove].splice(Number(remove.dataset.xrayIndex), 1); renderXrayItems();
+    }));
+    $("#add-xray-geofile").addEventListener("click", () => {
+      const tag = $("#xray-geofile-tag").value.trim(), filename = $("#xray-geofile-file").value.trim(), url = $("#xray-geofile-url").value.trim();
+      if (!tag || !filename || !url) { toast("Укажите tag, имя файла и HTTPS URL", true); return; }
+      state.xray.geofiles = state.xray.geofiles.filter((item) => item.tag !== tag);
+      state.xray.geofiles.push({ tag, filename, url, enabled: true, auto_update: true, update_interval: $("#xray-geofile-interval").value, updated_at: 0 });
+      $("#xray-geofile-tag").value = ""; $("#xray-geofile-file").value = ""; $("#xray-geofile-url").value = ""; renderXrayGeofiles();
+    });
+    $("#refresh-all-xray-geofiles").addEventListener("click", async () => {
+      try { const result = await api("xray/geofiles/refresh-all", { method: "POST" }); toast(`Обновлено GeoFiles: ${(result.refreshed || []).length}`); await loadXray(); }
       catch (error) { toast(error.message, true); }
     });
-    $("#geofiles-list").addEventListener("click", (event) => { const button = event.target.closest("[data-refresh-geofile]"); if (button) refreshGeofile(button.dataset.refreshGeofile); });
-    $$("[data-preset]").forEach((button) => button.addEventListener("click", () => {
-      const target = ["ru-sites", "ru-ip"].includes(button.dataset.preset) ? "direct" : "vless";
-      addRouteRule("builtin", button.dataset.preset, target);
-    }));
-    $("#route-rules").addEventListener("input", (event) => {
-      const row = event.target.closest("[data-rule-index]"); const field = event.target.dataset.ruleField;
-      if (!row || !field) return;
-      const rule = state.routeRules[Number(row.dataset.ruleIndex)]; rule[field] = event.target.type === "checkbox" ? event.target.checked : event.target.value;
-    });
-    $("#route-rules").addEventListener("click", (event) => {
-      const up = event.target.closest("[data-rule-up]"), down = event.target.closest("[data-rule-down]"), remove = event.target.closest("[data-rule-remove]");
-      if (up) { const i = Number(up.dataset.ruleUp); [state.routeRules[i - 1], state.routeRules[i]] = [state.routeRules[i], state.routeRules[i - 1]]; renderRouteRules(); }
-      if (down) { const i = Number(down.dataset.ruleDown); [state.routeRules[i + 1], state.routeRules[i]] = [state.routeRules[i], state.routeRules[i + 1]]; renderRouteRules(); }
-      if (remove) { state.routeRules.splice(Number(remove.dataset.ruleRemove), 1); renderRouteRules(); }
+    $("#xray-geofiles").addEventListener("click", (event) => { const button = event.target.closest("[data-refresh-xray-geofile]"); if (button) refreshXrayGeofile(button.dataset.refreshXrayGeofile); });
+    $("#xray-geofiles").addEventListener("change", (event) => {
+      const input = event.target; const tag = input.dataset.xrayTag; const key = input.dataset.xrayGeo; if (!tag || !key) return;
+      const item = state.xray.geofiles.find((entry) => entry.tag === tag); if (item) item[key] = input.checked;
     });
     $$("dialog button[value='cancel']").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
     $("#logout-form").addEventListener("submit", async (event) => {

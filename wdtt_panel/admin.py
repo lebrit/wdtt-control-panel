@@ -61,6 +61,31 @@ CASCADE_SERVICE = os.environ.get("WDTT_CASCADE_SERVICE", "wdtt-cascade.service")
 CASCADE_INSTALL_COMMAND = Path(
     os.environ.get("WDTT_CASCADE_INSTALL_COMMAND", "/opt/wdtt-panel/install.sh")
 )
+XRAY_SETTINGS = Path(
+    os.environ.get("WDTT_XRAY_SETTINGS", "/var/lib/wdtt-panel-private/xray-settings.json")
+)
+XRAY_CONFIG = Path(
+    os.environ.get("WDTT_XRAY_CONFIG", "/var/lib/wdtt-panel-private/xray-config.json")
+)
+XRAY_ASSETS = Path(
+    os.environ.get("WDTT_XRAY_ASSETS", "/var/lib/wdtt-panel-private/xray-assets")
+)
+XRAY_SERVICE = os.environ.get("WDTT_XRAY_SERVICE", "wdtt-xray.service")
+XRAY_INSTALL_COMMAND = Path(
+    os.environ.get("WDTT_XRAY_INSTALL_COMMAND", "/opt/wdtt-panel/install.sh")
+)
+XRAY_DEFAULT_GEOFILES = (
+    {
+        "tag": "geoip",
+        "filename": "geoip.dat",
+        "url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
+    },
+    {
+        "tag": "geosite",
+        "filename": "geosite.dat",
+        "url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
+    },
+)
 RU_SITE_RULESET = (
     "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ru.srs"
 )
@@ -123,6 +148,23 @@ def service_action(action: str) -> dict[str, Any]:
     if result.returncode != 0:
         raise AdminError(result.stderr.strip() or f"Не удалось выполнить systemctl {action}")
     return {"action": action, "active": service_active()}
+
+
+def repair_wdtt_interface(payload: dict[str, Any]) -> dict[str, Any]:
+    """Restart WDTT and wait for the interface it owns to appear."""
+    if SKIP_SYSTEMD:
+        return {"repaired": True, "interface": True, "state": "test"}
+    if not service_exists():
+        raise AdminError("Служба WDTT не установлена")
+    run(["systemctl", "reset-failed", SERVICE], timeout=20)
+    restarted = run(["systemctl", "restart", SERVICE], timeout=60)
+    if restarted.returncode != 0:
+        raise AdminError(restarted.stderr.strip() or "Не удалось перезапустить WDTT")
+    for _ in range(20):
+        if run(["ip", "link", "show", "wdtt0"], timeout=10).returncode == 0:
+            return {"repaired": True, "interface": True, "active": service_active()}
+        time.sleep(0.5)
+    raise AdminError(f"WDTT перезапущен, но wdtt0 не появился: {service_error_hint()}")
 
 
 def empty_database() -> dict[str, Any]:
@@ -1186,6 +1228,322 @@ def refresh_auto_geofiles(payload: dict[str, Any]) -> dict[str, Any]:
     return {"refreshed": refreshed, "errors": errors}
 
 
+def default_xray_settings() -> dict[str, Any]:
+    return {
+        "enabled": False,
+        "mode": "managed",
+        "log_level": "warning",
+        "inbounds": [],
+        "outbounds": [],
+        "routing_rules": [],
+        "raw_config": "",
+        "geofiles": [
+            {
+                **item,
+                "enabled": True,
+                "auto_update": True,
+                "update_interval": "1d",
+                "updated_at": 0,
+            }
+            for item in XRAY_DEFAULT_GEOFILES
+        ],
+    }
+
+
+def xray_tag(value: Any, label: str = "tag") -> str:
+    value = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", value):
+        raise ValidationError(f"Некорректный {label}")
+    return value
+
+
+def xray_object(value: Any, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValidationError(f"{label} должен быть JSON-объектом")
+    try:
+        encoded = json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"{label} содержит неподдерживаемые значения") from exc
+    if len(encoded.encode("utf-8")) > 256 * 1024:
+        raise ValidationError(f"{label} превышает 256 КБ")
+    return value
+
+
+def load_xray_settings() -> dict[str, Any]:
+    settings = default_xray_settings()
+    if XRAY_SETTINGS.is_file():
+        try:
+            saved = json.loads(XRAY_SETTINGS.read_text(encoding="utf-8"))
+            if isinstance(saved, dict):
+                settings.update(saved)
+        except (OSError, json.JSONDecodeError):
+            pass
+    settings["mode"] = settings.get("mode") if settings.get("mode") in {"managed", "raw"} else "managed"
+    settings["log_level"] = str(settings.get("log_level") or "warning")
+    for key in ("inbounds", "outbounds", "routing_rules", "geofiles"):
+        settings[key] = settings.get(key) if isinstance(settings.get(key), list) else []
+    settings["raw_config"] = str(settings.get("raw_config") or "")
+
+    defaults = {item["tag"]: item for item in default_xray_settings()["geofiles"]}
+    saved_files = {
+        str(item.get("tag")): item for item in settings["geofiles"] if isinstance(item, dict) and item.get("tag")
+    }
+    settings["geofiles"] = [
+        {**item, **saved_files.pop(tag, {})} for tag, item in defaults.items()
+    ] + list(saved_files.values())
+    return settings
+
+
+def normalize_xray_geofiles(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) > 32:
+        raise ValidationError("Некорректный список GeoFiles")
+    result: list[dict[str, Any]] = []
+    tags: set[str] = set()
+    for index, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            raise ValidationError(f"GeoFile {index + 1}: нужен объект")
+        tag = xray_tag(raw.get("tag"), "tag GeoFile")
+        if tag in tags:
+            raise ValidationError(f"GeoFile с tag {tag} указан дважды")
+        tags.add(tag)
+        filename = Path(str(raw.get("filename") or f"{tag}.dat")).name
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", filename):
+            raise ValidationError(f"GeoFile {tag}: некорректное имя файла")
+        url = str(raw.get("url") or "").strip()
+        if url:
+            parsed = urlsplit(url)
+            if parsed.scheme != "https" or not parsed.hostname:
+                raise ValidationError(f"GeoFile {tag}: разрешены только HTTPS URL")
+        result.append(
+            {
+                "tag": tag,
+                "filename": filename,
+                "url": url,
+                "enabled": bool(raw.get("enabled", True)),
+                "auto_update": bool(raw.get("auto_update", True)),
+                "update_interval": str(raw.get("update_interval") or "1d"),
+                "updated_at": int(raw.get("updated_at") or 0),
+            }
+        )
+    return result
+
+
+def normalize_xray_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = default_xray_settings()
+    settings["enabled"] = bool(payload.get("enabled", False))
+    settings["mode"] = str(payload.get("mode") or "managed")
+    if settings["mode"] not in {"managed", "raw"}:
+        raise ValidationError("Выберите режим Xray: managed или raw")
+    settings["log_level"] = str(payload.get("log_level") or "warning")
+    if settings["log_level"] not in {"debug", "info", "warning", "error", "none"}:
+        raise ValidationError("Некорректный уровень журнала Xray")
+    settings["geofiles"] = normalize_xray_geofiles(payload.get("geofiles", settings["geofiles"]))
+    if settings["mode"] == "raw":
+        raw_config = str(payload.get("raw_config") or "").strip()
+        if len(raw_config.encode("utf-8")) > 2 * 1024 * 1024:
+            raise ValidationError("Raw Xray-конфигурация превышает 2 МБ")
+        try:
+            parsed = json.loads(raw_config)
+        except json.JSONDecodeError as exc:
+            raise ValidationError(f"Raw Xray-конфигурация содержит неверный JSON: {exc}") from exc
+        xray_object(parsed, "Raw Xray-конфигурация")
+        settings["raw_config"] = json.dumps(parsed, ensure_ascii=False, indent=2)
+        return settings
+
+    for key, label in (("inbounds", "Входящие"), ("outbounds", "Исходящие"), ("routing_rules", "Правила маршрутизации")):
+        values = payload.get(key, [])
+        if not isinstance(values, list) or len(values) > 100:
+            raise ValidationError(f"{label}: некорректный список")
+        settings[key] = [xray_object(item, f"{label} {index + 1}") for index, item in enumerate(values)]
+    return settings
+
+
+def build_xray_config(settings: dict[str, Any]) -> dict[str, Any]:
+    if settings["mode"] == "raw":
+        parsed = json.loads(settings["raw_config"])
+        return xray_object(parsed, "Raw Xray-конфигурация")
+
+    inbounds = settings["inbounds"]
+    outbound_tags = {"direct", "block"}
+    inbound_tags: set[str] = set()
+    for item in inbounds:
+        tag = xray_tag(item.get("tag"), "tag входящего")
+        if tag in inbound_tags:
+            raise ValidationError(f"Входящий с tag {tag} указан дважды")
+        inbound_tags.add(tag)
+        if not str(item.get("protocol") or "").strip():
+            raise ValidationError(f"Входящий {tag}: не указан protocol")
+
+    outbounds: list[dict[str, Any]] = [
+        {"tag": "direct", "protocol": "freedom", "settings": {}},
+        {"tag": "block", "protocol": "blackhole", "settings": {}},
+    ]
+    for item in settings["outbounds"]:
+        tag = xray_tag(item.get("tag"), "tag исходящего")
+        if tag in outbound_tags:
+            raise ValidationError(f"Исходящий с tag {tag} указан дважды")
+        if not str(item.get("protocol") or "").strip():
+            raise ValidationError(f"Исходящий {tag}: не указан protocol")
+        outbound_tags.add(tag)
+        outbounds.append(item)
+
+    rules: list[dict[str, Any]] = []
+    for index, rule in enumerate(settings["routing_rules"]):
+        if not str(rule.get("type") or "").strip():
+            rule = {"type": "field", **rule}
+        target = str(rule.get("outboundTag") or "")
+        if target and target not in outbound_tags:
+            raise ValidationError(f"Правило {index + 1}: исходящий {target} не настроен")
+        rules.append(rule)
+    config: dict[str, Any] = {
+        "log": {"loglevel": settings["log_level"]},
+        "inbounds": inbounds,
+        "outbounds": outbounds,
+        "routing": {"domainStrategy": "AsIs", "rules": rules},
+    }
+    return config
+
+
+def xray_validate_config(config: dict[str, Any]) -> None:
+    if SKIP_SYSTEMD or not shutil.which("xray"):
+        return
+    XRAY_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix="xray-check.", suffix=".json", dir=XRAY_CONFIG.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(config, handle, ensure_ascii=False)
+        checked = run(["xray", "run", "-test", "-c", name], timeout=45)
+        if checked.returncode != 0:
+            raise ValidationError(checked.stderr.strip() or checked.stdout.strip() or "Xray отклонил конфигурацию")
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+def xray_status(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = load_xray_settings()
+    active = False
+    version = ""
+    logs: list[str] = []
+    if not SKIP_SYSTEMD:
+        active = run(["systemctl", "is-active", "--quiet", XRAY_SERVICE]).returncode == 0
+        if shutil.which("xray"):
+            probe = run(["xray", "version"], timeout=15)
+            if probe.returncode == 0:
+                version = probe.stdout.splitlines()[0] if probe.stdout else "Xray"
+        journal = run(["journalctl", "-u", XRAY_SERVICE, "-n", "50", "--no-pager", "-o", "cat"], timeout=20)
+        if journal.returncode == 0:
+            logs = journal.stdout.splitlines()
+    files = []
+    for item in settings["geofiles"]:
+        path = XRAY_ASSETS / item["filename"]
+        files.append({**item, "available": path.is_file(), "size": path.stat().st_size if path.is_file() else 0})
+    return {
+        "settings": settings,
+        "active": active,
+        "installed": bool(shutil.which("xray")),
+        "version": version,
+        "logs": logs,
+        "config_exists": XRAY_CONFIG.is_file(),
+        "geofiles": files,
+    }
+
+
+def xray_save(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = normalize_xray_settings(payload)
+    config = build_xray_config(settings)
+    xray_validate_config(config)
+    save_private_json(XRAY_SETTINGS, settings)
+    save_private_json(XRAY_CONFIG, config)
+    if not SKIP_SYSTEMD and shutil.which("xray"):
+        action = "enable" if settings["enabled"] else "disable"
+        changed = run(["systemctl", action, XRAY_SERVICE], timeout=30)
+        if changed.returncode != 0:
+            raise AdminError(changed.stderr.strip() or "Не удалось изменить состояние службы Xray")
+        changed = run(["systemctl", "restart" if settings["enabled"] else "stop", XRAY_SERVICE], timeout=60)
+        if changed.returncode != 0:
+            raise AdminError(changed.stderr.strip() or "Не удалось применить конфигурацию Xray")
+    return xray_status({})
+
+
+def schedule_xray_runtime(payload: dict[str, Any]) -> dict[str, Any]:
+    if SKIP_SYSTEMD:
+        return {"scheduled": True, "state": "test"}
+    unit = f"wdtt-xray-install-{int(time.time())}"
+    result = run(
+        ["systemd-run", "--quiet", "--collect", f"--unit={unit}", "--on-active=2s", str(XRAY_INSTALL_COMMAND), "install-xray-runtime"],
+        timeout=20,
+    )
+    if result.returncode != 0:
+        raise AdminError(result.stderr.strip() or "Не удалось запланировать установку Xray")
+    return {"scheduled": True, "unit": unit}
+
+
+def xray_download_geofile(item: dict[str, Any]) -> dict[str, Any]:
+    url = str(item.get("url") or "")
+    if not url:
+        raise ValidationError(f"Для GeoFile {item.get('tag', '')} не задан URL")
+    request = urllib.request.Request(url, headers={"User-Agent": "wdtt-control-panel"})
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            raw = response.read(64 * 1024 * 1024 + 1)
+    except (OSError, urllib.error.URLError) as exc:
+        raise AdminError(f"Не удалось загрузить GeoFile {item.get('tag', '')}: {exc}") from exc
+    if not raw or len(raw) > 64 * 1024 * 1024:
+        raise ValidationError(f"GeoFile {item.get('tag', '')} пустой или превышает 64 МБ")
+    XRAY_ASSETS.mkdir(parents=True, exist_ok=True)
+    destination = XRAY_ASSETS / str(item["filename"])
+    fd, name = tempfile.mkstemp(prefix=f"{destination.name}.", suffix=".tmp", dir=XRAY_ASSETS)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(name, 0o600)
+        os.replace(name, destination)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+    return {**item, "updated_at": int(time.time())}
+
+
+def xray_refresh_geofile(payload: dict[str, Any]) -> dict[str, Any]:
+    tag = xray_tag(payload.get("tag"), "tag GeoFile")
+    settings = load_xray_settings()
+    found = next((item for item in settings["geofiles"] if item.get("tag") == tag), None)
+    if not found:
+        raise ValidationError("GeoFile не найден")
+    updated = xray_download_geofile(found)
+    settings["geofiles"] = [updated if item.get("tag") == tag else item for item in settings["geofiles"]]
+    save_private_json(XRAY_SETTINGS, settings)
+    if not SKIP_SYSTEMD and run(["systemctl", "is-active", "--quiet", XRAY_SERVICE]).returncode == 0:
+        run(["systemctl", "restart", XRAY_SERVICE], timeout=60)
+    return updated
+
+
+def xray_refresh_auto_geofiles(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = load_xray_settings()
+    now = int(time.time())
+    refreshed: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for item in settings["geofiles"]:
+        if not item.get("enabled", True) or not item.get("auto_update"):
+            continue
+        due = int(item.get("updated_at") or 0) + interval_seconds(str(item.get("update_interval") or "1d"))
+        if not payload.get("force") and due > now:
+            continue
+        try:
+            refreshed.append(xray_download_geofile(item))
+        except (ValidationError, AdminError) as exc:
+            errors.append({"tag": str(item.get("tag") or "unknown"), "error": str(exc)})
+    if refreshed:
+        changed = {item["tag"]: item for item in refreshed}
+        settings["geofiles"] = [changed.get(item.get("tag"), item) for item in settings["geofiles"]]
+        save_private_json(XRAY_SETTINGS, settings)
+        if not SKIP_SYSTEMD and run(["systemctl", "is-active", "--quiet", XRAY_SERVICE]).returncode == 0:
+            run(["systemctl", "restart", XRAY_SERVICE], timeout=60)
+    return {"refreshed": refreshed, "errors": errors}
+
+
 def overview(payload: dict[str, Any]) -> dict[str, Any]:
     data = load_database()
     stats = read_stats()
@@ -1240,6 +1598,7 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "users.unbind": unbind_user,
     "users.reset_traffic": reset_traffic,
     "service.action": lambda payload: service_action(str(payload.get("service_action") or "")),
+    "service.repair": repair_wdtt_interface,
     "logs": journal_logs,
     "backups.list": lambda payload: list_backups(),
     "backups.create": create_manual_backup,
@@ -1250,13 +1609,11 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "panel.update": start_panel_update,
     "certificate.export": export_certificate,
     "certificate.renew": schedule_certificate_renew,
-    "cascade.status": cascade_status,
-    "cascade.save": cascade_save,
-    "cascade.install": schedule_cascade_runtime,
-    "cascade.warp": create_warp,
-    "geofiles.upload": upload_geofile,
-    "geofiles.refresh": refresh_geofile,
-    "geofiles.refresh_auto": refresh_auto_geofiles,
+    "xray.status": xray_status,
+    "xray.save": xray_save,
+    "xray.install": schedule_xray_runtime,
+    "xray.geofiles.refresh": xray_refresh_geofile,
+    "xray.geofiles.refresh_auto": xray_refresh_auto_geofiles,
 }
 
 

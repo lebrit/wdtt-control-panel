@@ -86,6 +86,10 @@ class AppSmokeTests(unittest.TestCase):
         self.assertTrue(headers["status"].startswith("200"))
         parsed = json.loads(body)
         self.assertTrue(parsed["ok"])
+
+        headers, body = self.request("/private-panel-path/api/xray", cookie=cookie)
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertEqual(json.loads(body)["result"]["settings"]["mode"], "managed")
         self.assertEqual(parsed["result"]["stats"]["active"], 2)
 
 

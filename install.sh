@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.5.5"
+PANEL_VERSION="0.6.0"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,7 +21,11 @@ GEOFILES_UPDATE_WRAPPER="/usr/local/sbin/wdtt-panel-geofiles-update"
 MANAGER_WRAPPER="/usr/local/sbin/wdtt-panel"
 MANAGER_ALIAS_ONE="/usr/local/sbin/wddt-panel"
 MANAGER_ALIAS_TWO="/usr/local/sbin/wdtt-pane"
-CASCADE_SERVICE="wdtt-cascade.service"
+XRAY_SERVICE="wdtt-xray.service"
+LEGACY_CASCADE_SERVICE="wdtt-cascade.service"
+XRAY_CONFIG="$PRIVATE_STATE_DIR/xray-config.json"
+XRAY_SETTINGS="$PRIVATE_STATE_DIR/xray-settings.json"
+XRAY_ASSETS="$PRIVATE_STATE_DIR/xray-assets"
 LOG_FILE="/var/log/wdtt-panel-install.log"
 
 PANEL_USER="${PANEL_USER:-admin}"
@@ -264,24 +268,29 @@ EOF
   chmod 0755 "$STATUS_WRAPPER"
   cat > "$GEOFILES_UPDATE_WRAPPER" <<EOF
 #!/bin/sh
-printf '%s\n' '{"action":"geofiles.refresh_auto","payload":{}}' | $ADMIN_WRAPPER
+printf '%s\n' '{"action":"xray.geofiles.refresh_auto","payload":{}}' | $ADMIN_WRAPPER
 EOF
   chmod 0755 "$GEOFILES_UPDATE_WRAPPER"
 }
 
-write_cascade_services() {
-  cat > "/etc/systemd/system/$CASCADE_SERVICE" <<EOF
+write_xray_services() {
+  systemctl disable --now "$LEGACY_CASCADE_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service 2>/dev/null || true
+  rm -f "/etc/systemd/system/$LEGACY_CASCADE_SERVICE"
+  install -d -m 0700 "$XRAY_ASSETS"
+
+  cat > "/etc/systemd/system/$XRAY_SERVICE" <<EOF
 [Unit]
-Description=WDTT Cascade Routing (sing-box)
+Description=WDTT Xray Routing Runtime
 After=network-online.target wdtt.service
-Wants=network-online.target wdtt.service
-ConditionPathExists=$PRIVATE_STATE_DIR/sing-box.json
+Wants=network-online.target
+ConditionPathExists=$XRAY_CONFIG
 
 [Service]
 Type=simple
 User=root
-ExecStartPre=/usr/local/bin/sing-box check -c $PRIVATE_STATE_DIR/sing-box.json
-ExecStart=/usr/local/bin/sing-box run -c $PRIVATE_STATE_DIR/sing-box.json
+Environment=XRAY_LOCATION_ASSET=$XRAY_ASSETS
+ExecStartPre=/usr/local/bin/xray run -test -c $XRAY_CONFIG
+ExecStart=/usr/local/bin/xray run -c $XRAY_CONFIG
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=1048576
@@ -298,7 +307,7 @@ EOF
 
   cat > /etc/systemd/system/wdtt-panel-geofiles-update.service <<EOF
 [Unit]
-Description=Update WDTT Panel GeoFiles
+Description=Update WDTT Panel Xray GeoFiles
 After=network-online.target
 Wants=network-online.target
 
@@ -308,12 +317,12 @@ ExecStart=$GEOFILES_UPDATE_WRAPPER
 EOF
   cat > /etc/systemd/system/wdtt-panel-geofiles-update.timer <<'EOF'
 [Unit]
-Description=Automatic WDTT Panel GeoFiles updates
+Description=Automatic WDTT Panel Xray GeoFiles updates
 
 [Timer]
 OnBootSec=20min
-OnUnitActiveSec=1h
-RandomizedDelaySec=15min
+OnUnitActiveSec=6h
+RandomizedDelaySec=30min
 Persistent=true
 
 [Install]
@@ -342,46 +351,35 @@ raise SystemExit(2)
 PY
 }
 
-install_cascade_runtime() {
+install_xray_runtime() {
   require_root
-  local machine runtime_arch work sing_url wgcf_url go_arch go_tarball
+  local machine asset_pattern work xray_url bundled_asset
   machine="$(uname -m)"
   case "$machine" in
-    x86_64|amd64) runtime_arch="amd64"; go_arch="amd64" ;;
-    aarch64|arm64) runtime_arch="arm64"; go_arch="arm64" ;;
-    *) die "Компоненты каскада поддержаны для amd64 и arm64" ;;
+    x86_64|amd64) asset_pattern='Xray-linux-64\.zip$' ;;
+    aarch64|arm64) asset_pattern='Xray-linux-arm64-v8a\.zip$' ;;
+    *) die "Xray поддержан для amd64 и arm64" ;;
   esac
   work="$(mktemp -d)"
   trap 'rm -rf "${work:-}"' RETURN
 
-  log "Установка sing-box для каскадной маршрутизации"
-  sing_url="$(github_asset_url SagerNet/sing-box "linux-${runtime_arch}\\.tar\\.gz$")" || die "Не найден релиз sing-box"
-  curl -fsSL --retry 3 "$sing_url" -o "$work/sing-box.tar.gz"
-  tar -xzf "$work/sing-box.tar.gz" -C "$work"
-  install -m 0755 "$(find "$work" -type f -name sing-box | head -1)" /usr/local/bin/sing-box
-
-  log "Установка генератора профиля Cloudflare WARP"
-  wgcf_url="$(github_asset_url ViRb3/wgcf "linux_${runtime_arch}$")" || die "Не найден релиз wgcf"
-  curl -fsSL --retry 3 "$wgcf_url" -o /usr/local/bin/wgcf
-  chmod 0755 /usr/local/bin/wgcf
-
-  if ! command_exists geodat2srs; then
-    log "Сборка конвертера GeoFiles (.dat -> .srs)"
-    if command_exists go; then
-      GOBIN=/usr/local/bin go install github.com/runetfreedom/geodat2srs@latest >>"$LOG_FILE" 2>&1
-    else
-      go_tarball="go${GO_VERSION}.linux-${go_arch}.tar.gz"
-      curl -fsSL "https://go.dev/dl/$go_tarball" -o "$work/$go_tarball"
-      tar -xzf "$work/$go_tarball" -C "$work"
-      GOBIN=/usr/local/bin "$work/go/bin/go" install github.com/runetfreedom/geodat2srs@latest >>"$LOG_FILE" 2>&1
+  log "Установка Xray Core"
+  xray_url="$(github_asset_url XTLS/Xray-core "$asset_pattern")" || die "Не найден релиз Xray Core"
+  curl -fsSL --retry 3 "$xray_url" -o "$work/xray.zip"
+  unzip -q "$work/xray.zip" -d "$work/xray"
+  install -m 0755 "$(find "$work/xray" -type f \( -name Xray -o -name xray \) | head -1)" /usr/local/bin/xray
+  install -d -m 0700 "$XRAY_ASSETS"
+  for bundled_asset in geoip.dat geosite.dat; do
+    if [ ! -f "$XRAY_ASSETS/$bundled_asset" ] && [ -f "$work/xray/$bundled_asset" ]; then
+      install -m 0600 "$work/xray/$bundled_asset" "$XRAY_ASSETS/$bundled_asset"
     fi
+  done
+  write_xray_services
+  if [ -r "$XRAY_SETTINGS" ] && python3 -c 'import json,sys; raise SystemExit(0 if json.load(open(sys.argv[1])).get("enabled") else 1)' "$XRAY_SETTINGS"; then
+    systemctl enable --now "$XRAY_SERVICE" >>"$LOG_FILE" 2>&1
   fi
-  write_cascade_services
-  if [ -r "$PRIVATE_STATE_DIR/cascade.json" ] && python3 -c 'import json,sys; raise SystemExit(0 if json.load(open(sys.argv[1])).get("enabled") else 1)' "$PRIVATE_STATE_DIR/cascade.json"; then
-    systemctl enable --now "$CASCADE_SERVICE"
-  fi
-  log "Компоненты каскада установлены"
-  /usr/local/bin/sing-box version | head -1
+  log "Xray Core установлен"
+  /usr/local/bin/xray version | head -1
 }
 
 write_panel_config() {
@@ -800,8 +798,8 @@ uninstall_panel() {
   log "Удаление только web-панели; WDTT не затрагивается"
   systemctl disable --now "$PANEL_SERVICE" wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service 2>/dev/null || true
   rm -f "/etc/systemd/system/$PANEL_SERVICE" /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer
-  systemctl disable --now "$CASCADE_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service 2>/dev/null || true
-  rm -f "/etc/systemd/system/$CASCADE_SERVICE" /etc/systemd/system/wdtt-panel-geofiles-update.service /etc/systemd/system/wdtt-panel-geofiles-update.timer
+  systemctl disable --now "$LEGACY_CASCADE_SERVICE" "$XRAY_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service 2>/dev/null || true
+  rm -f "/etc/systemd/system/$LEGACY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_SERVICE" /etc/systemd/system/wdtt-panel-geofiles-update.service /etc/systemd/system/wdtt-panel-geofiles-update.timer
   rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" "$MANAGER_ALIAS_ONE" "$MANAGER_ALIAS_TWO" "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$GEOFILES_UPDATE_WRAPPER"
   rm -rf "$INSTALL_DIR" "$CONFIG_DIR"
   remove_firewall_rule "$panel_port"
@@ -820,7 +818,7 @@ update_panel() {
   write_panel_service
   write_final_nginx
   write_renew_timer
-  write_cascade_services
+  write_xray_services
   systemctl restart "$PANEL_SERVICE"
   log "Панель обновлена; адрес, пароль, сертификаты и данные сохранены"
   status_panel
@@ -852,7 +850,7 @@ install_panel() {
   write_panel_service
   write_final_nginx
   write_renew_timer
-  write_cascade_services
+  write_xray_services
   open_firewall
   systemctl restart "$PANEL_SERVICE"
 
@@ -873,6 +871,6 @@ case "${1:-install}" in
   status|--status|-s) require_root; load_panel_config; status_panel ;;
   change-password|--change-password) change_panel_password ;;
   uninstall|--uninstall|-u) require_root; uninstall_panel ;;
-  install-cascade-runtime) install_cascade_runtime ;;
-  *) die "Использование: $0 [install|update|renew-cert|status|uninstall|install-cascade-runtime]" ;;
+  install-xray-runtime) install_xray_runtime ;;
+  *) die "Использование: $0 [install|update|renew-cert|status|change-password|uninstall|install-xray-runtime]" ;;
 esac

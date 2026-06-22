@@ -19,6 +19,9 @@ class AdminDatabaseTests(unittest.TestCase):
         self.cascade_config = root / "sing-box.json"
         self.warp_dir = root / "warp"
         self.geofiles_dir = root / "geofiles"
+        self.xray_settings = root / "xray-settings.json"
+        self.xray_config = root / "xray-config.json"
+        self.xray_assets = root / "xray-assets"
         self.patchers = [
             mock.patch.object(admin, "DB_FILE", self.db_file),
             mock.patch.object(admin, "BACKUP_DIR", self.backups),
@@ -27,6 +30,9 @@ class AdminDatabaseTests(unittest.TestCase):
             mock.patch.object(admin, "CASCADE_CONFIG", self.cascade_config),
             mock.patch.object(admin, "WARP_DIR", self.warp_dir),
             mock.patch.object(admin, "GEOFILES_DIR", self.geofiles_dir),
+            mock.patch.object(admin, "XRAY_SETTINGS", self.xray_settings),
+            mock.patch.object(admin, "XRAY_CONFIG", self.xray_config),
+            mock.patch.object(admin, "XRAY_ASSETS", self.xray_assets),
             mock.patch.object(admin, "SKIP_SYSTEMD", True),
         ]
         for patcher in self.patchers:
@@ -173,33 +179,51 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual(result["admins"][0]["role"], "admin")
         self.assertTrue(result["admins"][0]["connected"])
 
-    def test_vless_and_priority_rules_generate_sing_box_config(self):
-        settings = admin.default_cascade_settings()
-        settings["vless_uri"] = "vless://11111111-1111-4111-8111-111111111111@example.com:443?security=tls&type=ws&path=%2Fws"
-        settings["default_outbound"] = "vless"
-        settings["rules"] = [
-            {"type": "builtin", "values": "ru-sites", "outbound": "direct", "enabled": True},
-            {"type": "domain", "values": "openai.com,example.org", "outbound": "vless", "enabled": True},
-            {"type": "ip", "values": "1.1.1.1,8.8.8.0/24", "outbound": "direct", "enabled": True},
-        ]
-        config = admin.build_cascade_config(settings)
-        self.assertEqual(config["route"]["final"], "cascade-vless")
-        self.assertEqual(config["route"]["rules"][2]["rule_set"], ["ru-sites"])
-        self.assertIn("1.1.1.1/32", config["route"]["rules"][4]["ip_cidr"])
-
-    def test_srs_geofile_upload_is_private_and_routable(self):
-        item = admin.upload_geofile(
+    def test_xray_managed_config_has_safe_default_outbounds(self):
+        settings = admin.normalize_xray_settings(
             {
-                "name": "custom.srs",
-                "tag": "custom-sites",
-                "kind": "srs",
-                "content": base64.b64encode(b"test-srs").decode("ascii"),
-                "auto_update": False,
+                "enabled": True,
+                "mode": "managed",
+                "log_level": "warning",
+                "inbounds": [],
+                "outbounds": [
+                    {"tag": "vless-out", "protocol": "vless", "settings": {"vnext": []}},
+                ],
+                "routing_rules": [{"type": "field", "outboundTag": "vless-out", "domain": ["geosite:ru"]}],
+                "geofiles": admin.default_xray_settings()["geofiles"],
             }
         )
-        self.assertTrue(Path(item["path"]).is_file())
-        config = json.loads(self.cascade_config.read_text(encoding="utf-8"))
-        self.assertEqual(config["route"]["rule_set"][-1]["tag"], "custom-sites")
+        config = admin.build_xray_config(settings)
+        self.assertEqual([item["tag"] for item in config["outbounds"]], ["direct", "block", "vless-out"])
+        self.assertEqual(config["routing"]["rules"][0]["outboundTag"], "vless-out")
+
+    def test_xray_raw_config_and_geofile_sources_are_saved(self):
+        result = admin.xray_save(
+            {
+                "enabled": False,
+                "mode": "raw",
+                "log_level": "warning",
+                "raw_config": '{"inbounds": [], "outbounds": [{"tag": "direct", "protocol": "freedom"}]}',
+                "geofiles": [
+                    {
+                        "tag": "custom",
+                        "filename": "custom.dat",
+                        "url": "https://example.com/custom.dat",
+                        "enabled": True,
+                        "auto_update": True,
+                        "update_interval": "1d",
+                    }
+                ],
+            }
+        )
+        self.assertTrue(self.xray_config.is_file())
+        self.assertEqual(result["settings"]["mode"], "raw")
+        with self.assertRaises(admin.ValidationError):
+            admin.normalize_xray_geofiles([{"tag": "bad", "filename": "bad.dat", "url": "http://example.com/bad.dat"}])
+
+    def test_repair_wdtt_interface_is_available(self):
+        result = admin.repair_wdtt_interface({})
+        self.assertTrue(result["interface"])
 
 
 if __name__ == "__main__":
