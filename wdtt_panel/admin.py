@@ -666,18 +666,42 @@ def read_stats() -> dict[str, Any]:
 
 def journal_logs(payload: dict[str, Any]) -> dict[str, Any]:
     try:
-        limit = max(20, min(int(payload.get("limit", 300)), 2000))
+        limit = max(20, min(int(payload.get("limit", 1000)), 5000))
     except (TypeError, ValueError):
-        limit = 300
+        limit = 1000
+    source = str(payload.get("source") or "wdtt")
+    sources = {
+        "wdtt": ([SERVICE], "WDTT"),
+        "xray": ([XRAY_SERVICE], "Xray / WARP"),
+        "cascade": ([XRAY_CASCADE_SERVICE], "Каскад RU → EU"),
+        "panel": (["wdtt-panel.service"], "Панель"),
+        "nginx": (["nginx.service"], "Nginx"),
+        "all": ([SERVICE, XRAY_SERVICE, XRAY_CASCADE_SERVICE, "wdtt-panel.service", "nginx.service"], "Все службы панели"),
+    }
+    if source == "installer":
+        path = Path("/var/log/wdtt-panel-install.log")
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]
+        except OSError as exc:
+            raise AdminError(f"Не удалось прочитать журнал установщика: {exc}") from exc
+        return {"lines": lines, "source": source, "title": "Установщик", "units": [], "limit": limit}
+    if source not in sources:
+        raise ValidationError("Неизвестный источник журнала")
+    units, title = sources[source]
     if SKIP_SYSTEMD:
-        return {"lines": []}
-    result = run(
-        ["journalctl", "-u", SERVICE, "-n", str(limit), "--no-pager", "-o", "short-iso"],
-        timeout=30,
-    )
+        return {"lines": [], "source": source, "title": title, "units": [], "limit": limit}
+    command = ["journalctl"]
+    for unit in units:
+        command.extend(["-u", unit])
+    command.extend(["-n", str(limit), "--no-pager", "--all", "-o", "short-iso"])
+    result = run(command, timeout=45)
     if result.returncode != 0:
         raise AdminError(result.stderr.strip() or "Не удалось прочитать journalctl")
-    return {"lines": result.stdout.splitlines()}
+    states = [
+        {"unit": unit, "active": run(["systemctl", "is-active", "--quiet", unit], timeout=15).returncode == 0}
+        for unit in units
+    ]
+    return {"lines": result.stdout.splitlines(), "source": source, "title": title, "units": states, "limit": limit}
 
 
 def certificate_info(path: str) -> dict[str, Any]:

@@ -9,7 +9,7 @@
   <meta name="https-port" content="{{HTTPS_PORT}}">
   <meta name="panel-version" content="{{VERSION}}">
   <title>WDTT Control</title>
-  <link rel="stylesheet" href="{{BASE}}static/app.css">
+  <link rel="stylesheet" href="{{BASE}}static/app.css?v={{VERSION}}">
 </head>
 <body>
   <div id="toast" class="toast" hidden></div>
@@ -104,7 +104,8 @@
     </section>
 
     <section class="tab" id="tab-logs">
-      <div class="section-head"><div><p class="eyebrow">SYSTEMD JOURNAL</p><h2>Журнал WDTT</h2></div><div class="inline-actions"><select id="log-filter"><option value="">Все события</option><option value="[СТАТ]">Статистика</option><option value="[WG]">WireGuard</option><option value="[WRAP]">WRAP</option><option value="[DTLS]">DTLS</option><option value="Отказ">Отказы</option></select><button id="load-logs" class="secondary">Обновить</button></div></div>
+      <div class="section-head"><div><p class="eyebrow">FULL DIAGNOSTICS</p><h2>Полные журналы служб</h2><p class="muted">Выберите источник, загрузите до 5000 строк и при необходимости скачайте файл для диагностики. В WARP‑сценариях смотрите «Xray / WARP».</p></div><div class="inline-actions"><select id="log-source"><option value="wdtt">WDTT</option><option value="xray">Xray / WARP</option><option value="cascade">Каскад RU → EU</option><option value="panel">Панель</option><option value="nginx">Nginx</option><option value="installer">Установщик</option><option value="all">Все службы</option></select><select id="log-limit"><option value="500">500 строк</option><option value="1000" selected>1000 строк</option><option value="2000">2000 строк</option><option value="5000">5000 строк</option></select><select id="log-filter"><option value="">Без фильтра</option><option value="[СТАТ]">Статистика</option><option value="[WG]">WireGuard</option><option value="[WRAP]">WRAP</option><option value="[DTLS]">DTLS</option><option value="[WARP]">WARP</option><option value="error">error</option><option value="failed">failed</option></select><button id="download-logs" class="secondary">Скачать</button><button id="load-logs" class="primary">Загрузить</button></div></div>
+      <p id="logs-summary" class="muted">Выберите источник журнала.</p>
       <article class="log-view"><pre id="logs-output">Загрузка журнала...</pre></article>
     </section>
 
@@ -174,6 +175,6 @@
     </form>
   </dialog>
 
-  <script src="{{BASE}}static/app.js" defer></script>
+  <script src="{{BASE}}static/app.js?v={{VERSION}}" defer></script>
 </body>
 </html>

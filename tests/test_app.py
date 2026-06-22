@@ -96,6 +96,9 @@ class AppSmokeTests(unittest.TestCase):
         headers, body = self.request("/private-panel-path/api/cascade", cookie=cookie)
         self.assertTrue(headers["status"].startswith("200"))
         self.assertFalse(json.loads(body)["result"]["settings"]["enabled"])
+        headers, body = self.request("/private-panel-path/api/logs", cookie=cookie)
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertEqual(json.loads(body)["result"]["source"], "wdtt")
         self.assertEqual(parsed["result"]["stats"]["active"], 2)
 
 

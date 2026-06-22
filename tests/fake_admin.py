@@ -69,6 +69,10 @@ elif action == "users.create_bulk":
     }
 elif action == "logs":
     result = {
+        "source": "wdtt",
+        "title": "WDTT",
+        "units": [{"unit": "wdtt.service", "active": True}],
+        "limit": 1000,
         "lines": [
             "2026-06-15T08:00:00+00:00 wdtt-server[100]: [SERVER] Готов",
             "2026-06-15T08:00:10+00:00 wdtt-server[100]: [СТАТ] Активных: 2 | Всего: 5",

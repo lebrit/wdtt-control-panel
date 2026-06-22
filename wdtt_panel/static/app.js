@@ -6,7 +6,7 @@
   const CSRF = meta("csrf-token");
   const PUBLIC_HOST = meta("public-host");
   const PANEL_VERSION = meta("panel-version");
-  const state = { overview: null, users: [], logs: [], editing: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, warp: null, cascade: null };
+  const state = { overview: null, users: [], logs: [], logsMeta: null, editing: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, warp: null, cascade: null };
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -275,8 +275,11 @@
 
   async function loadLogs() {
     try {
-      const result = await api("logs?limit=700");
+      const source = encodeURIComponent($("#log-source").value);
+      const limit = encodeURIComponent($("#log-limit").value);
+      const result = await api(`logs?source=${source}&limit=${limit}`);
       state.logs = result.lines || [];
+      state.logsMeta = result;
       renderLogs();
     } catch (error) { $("#logs-output").textContent = error.message; }
   }
@@ -285,6 +288,16 @@
     const filter = $("#log-filter").value;
     const lines = filter ? state.logs.filter((line) => line.includes(filter)) : state.logs;
     $("#logs-output").textContent = lines.join("\n") || "Нет строк для выбранного фильтра.";
+    const meta = state.logsMeta || {};
+    const states = (meta.units || []).map((item) => `${item.unit}: ${item.active ? "работает" : "не активна"}`).join(" · ");
+    $("#logs-summary").textContent = `${meta.title || "Журнал"}: загружено ${state.logs.length} строк${filter ? `, после фильтра ${lines.length}` : ""}${states ? ` · ${states}` : ""}`;
+  }
+
+  function downloadLogs() {
+    const meta = state.logsMeta || {};
+    if (!state.logs.length) { toast("Сначала загрузите журнал", true); return; }
+    const header = [`# ${meta.title || "WDTT diagnostics"}`, `# Exported: ${new Date().toISOString()}`, ""].join("\n");
+    downloadText(`wdtt-diagnostics-${meta.source || "logs"}.log`, `${header}${state.logs.join("\n")}\n`, "text/plain;charset=utf-8");
   }
 
   async function serviceAction(action, button) {
@@ -618,6 +631,9 @@
       }
     });
     $("#load-logs").addEventListener("click", loadLogs);
+    $("#download-logs").addEventListener("click", downloadLogs);
+    $("#log-source").addEventListener("change", loadLogs);
+    $("#log-limit").addEventListener("change", loadLogs);
     $("#log-filter").addEventListener("change", renderLogs);
     $$('[data-service]').forEach((button) => button.addEventListener("click", () => serviceAction(button.dataset.service, button)));
     $("#load-backups").addEventListener("click", loadBackups);

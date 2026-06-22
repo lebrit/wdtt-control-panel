@@ -181,6 +181,12 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual(result["admins"][0]["role"], "admin")
         self.assertTrue(result["admins"][0]["connected"])
 
+    def test_full_diagnostics_log_sources_are_limited(self):
+        result = admin.journal_logs({"source": "all", "limit": 9999})
+        self.assertEqual(result["source"], "all")
+        self.assertEqual(result["limit"], 5000)
+        self.assertEqual(result["lines"], [])
+
     def test_xray_managed_config_has_safe_default_outbounds(self):
         settings = admin.normalize_xray_settings(
             {

@@ -241,6 +241,7 @@ class Panel:
         if action == "logs":
             query = parse_qs(str(environ.get("QUERY_STRING") or ""))
             payload["limit"] = query.get("limit", [300])[0]
+            payload["source"] = query.get("source", ["wdtt"])[0]
         if action == "panel.version":
             payload["current_version"] = str(self.config.get("version") or "0.0.0")
         if action == "backups.export":
