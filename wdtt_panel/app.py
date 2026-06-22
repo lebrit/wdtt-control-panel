@@ -197,7 +197,6 @@ class Panel:
             "users/unbind": "users.unbind",
             "users/reset-traffic": "users.reset_traffic",
             "service": "service.action",
-            "service/repair": "service.repair",
             "logs": "logs",
             "backups": "backups.list",
             "backups/create": "backups.create",

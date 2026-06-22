@@ -6,7 +6,7 @@ request = json.load(sys.stdin)
 action = request.get("action")
 if action == "overview":
     result = {
-        "service": {"exists": True, "active": True, "interface": True, "ip_forward": "1", "binary": True},
+        "service": {"exists": True, "active": True, "ip_forward": "1", "binary": True},
         "stats": {"active": 2, "total": 5, "up_gb": "0.10", "down_gb": "0.20"},
         "users": 1,
         "devices": 1,
@@ -85,7 +85,7 @@ elif action == "panel.update":
     result = {"scheduled": True, "state": "test"}
 elif action == "xray.status":
     result = {"settings": {"enabled": False, "mode": "managed", "log_level": "warning", "inbounds": [], "outbounds": [], "routing_rules": [], "geofiles": []}, "active": False, "installed": False, "version": "", "config_exists": False, "logs": [], "geofiles": []}
-elif action in {"xray.save", "xray.install", "xray.geofiles.refresh", "xray.geofiles.refresh_auto", "certificate.renew", "service.repair"}:
+elif action in {"xray.save", "xray.install", "xray.geofiles.refresh", "xray.geofiles.refresh_auto", "certificate.renew"}:
     result = {"scheduled": True, "state": "test"}
 elif action == "certificate.export":
     result = {"name": "wdtt-panel-certificate.pem", "content": "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n"}

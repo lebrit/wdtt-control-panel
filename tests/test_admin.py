@@ -221,10 +221,5 @@ class AdminDatabaseTests(unittest.TestCase):
         with self.assertRaises(admin.ValidationError):
             admin.normalize_xray_geofiles([{"tag": "bad", "filename": "bad.dat", "url": "http://example.com/bad.dat"}])
 
-    def test_repair_wdtt_interface_is_available(self):
-        result = admin.repair_wdtt_interface({})
-        self.assertTrue(result["interface"])
-
-
 if __name__ == "__main__":
     unittest.main()

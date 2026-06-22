@@ -1,6 +1,6 @@
 # WDTT Control Panel
 
-**Текущая версия: 0.6.0**
+**Текущая версия: 0.6.1**
 
 Отдельная web-панель для [amurcanov/proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android). Исходники Android-приложения и `server.go` не изменяются.
 
@@ -13,7 +13,7 @@
 - генерация совместимых `wdtt://` ссылок;
 - dashboard: соединения, NAT, uptime, трафик, CPU, RAM, диск, пользователи и устройства;
 - журнал `wdtt.service` с фильтрацией;
-- start/stop/restart WDTT, диагностика `wdtt0`, IP forwarding и бинарника;
+- start/stop/restart WDTT, состояние службы, IP forwarding и бинарника;
 - автоматические резервные копии `passwords.json` перед каждым изменением;
 - полные backup с загрузкой на компьютер и восстановлением из файла;
 - восстановление резервной копии и журнал действий администратора;

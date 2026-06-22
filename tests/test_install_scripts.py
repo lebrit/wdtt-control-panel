@@ -10,9 +10,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.6.0"', installer)
-        self.assertIn('__version__ = "0.6.0"', package)
-        self.assertIn("Текущая версия: 0.6.0", readme)
+        self.assertIn('PANEL_VERSION="0.6.1"', installer)
+        self.assertIn('__version__ = "0.6.1"', package)
+        self.assertIn("Текущая версия: 0.6.1", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -82,8 +82,8 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('id="tab-xray"', html)
         self.assertIn('id="install-xray"', html)
         self.assertIn('api("xray/save"', script)
-        self.assertIn('id="repair-wdtt"', html)
-        self.assertIn('api("service/repair"', script)
+        self.assertNotIn('id="repair-wdtt"', html)
+        self.assertNotIn('api("service/repair"', script)
 
     def test_admin_lock_is_in_writable_private_state(self):
         script = (ROOT / "wdtt_panel" / "admin.py").read_text(encoding="utf-8")

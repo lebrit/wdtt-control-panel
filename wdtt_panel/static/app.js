@@ -83,13 +83,8 @@
     $("#health-list").innerHTML = [
       healthRow("systemd unit", service.exists, service.exists ? "найден" : "не найден"),
       healthRow("wdtt-server", service.binary, service.binary ? "установлен" : "отсутствует"),
-      healthRow("Интерфейс wdtt0", service.interface, service.interface ? "поднят" : "не активен"),
       healthRow("IPv4 forwarding", String(service.ip_forward) === "1", String(service.ip_forward) === "1" ? "включен" : "выключен"),
     ].join("");
-    const interfaceError = $("#interface-error");
-    interfaceError.textContent = service.interface_error || "";
-    interfaceError.hidden = !service.interface_error;
-    $("#repair-wdtt").hidden = Boolean(service.interface);
     renderCertificate(overview.certificate || {});
     await loadHistory();
   }
@@ -510,12 +505,6 @@
       if (button.dataset.tab === "system") { loadBackups(); loadAudit(); loadPanelVersion(); }
     }));
     $("#refresh").addEventListener("click", () => Promise.all([loadOverview(), loadUsers()]).catch((error) => toast(error.message, true)));
-    $("#repair-wdtt").addEventListener("click", async (event) => {
-      const button = event.currentTarget; setBusy(button, true);
-      try { await api("service/repair", { method: "POST" }); toast("WDTT перезапущен, wdtt0 восстановлен"); await loadOverview(); }
-      catch (error) { toast(error.message, true); }
-      finally { setBusy(button, false); }
-    });
     $("#new-user").addEventListener("click", () => openUserDialog());
     $("#bulk-users").addEventListener("click", openBulkUserDialog);
     $("#user-form").addEventListener("submit", saveUser);

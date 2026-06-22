@@ -150,23 +150,6 @@ def service_action(action: str) -> dict[str, Any]:
     return {"action": action, "active": service_active()}
 
 
-def repair_wdtt_interface(payload: dict[str, Any]) -> dict[str, Any]:
-    """Restart WDTT and wait for the interface it owns to appear."""
-    if SKIP_SYSTEMD:
-        return {"repaired": True, "interface": True, "state": "test"}
-    if not service_exists():
-        raise AdminError("Служба WDTT не установлена")
-    run(["systemctl", "reset-failed", SERVICE], timeout=20)
-    restarted = run(["systemctl", "restart", SERVICE], timeout=60)
-    if restarted.returncode != 0:
-        raise AdminError(restarted.stderr.strip() or "Не удалось перезапустить WDTT")
-    for _ in range(20):
-        if run(["ip", "link", "show", "wdtt0"], timeout=10).returncode == 0:
-            return {"repaired": True, "interface": True, "active": service_active()}
-        time.sleep(0.5)
-    raise AdminError(f"WDTT перезапущен, но wdtt0 не появился: {service_error_hint()}")
-
-
 def empty_database() -> dict[str, Any]:
     return {
         "main_password": "",
@@ -740,19 +723,6 @@ def memory_usage() -> dict[str, Any]:
         "available": available,
         "percent": round(used * 100 / total, 1) if total else 0.0,
     }
-
-
-def service_error_hint() -> str:
-    if SKIP_SYSTEMD:
-        return ""
-    result = run(["journalctl", "-u", SERVICE, "-n", "50", "--no-pager", "-o", "cat"], timeout=15)
-    if result.returncode != 0:
-        return result.stderr.strip()
-    markers = ("fatal", "error", "failed", "cannot", "permission", "address already", "tun", "wdtt0")
-    for line in reversed(result.stdout.splitlines()):
-        if any(marker in line.lower() for marker in markers):
-            return line.strip()[:500]
-    return "Интерфейс создается самим WDTT; проверьте журнал сервиса"
 
 
 def local_tls_status(host: str, port: int) -> dict[str, Any]:
@@ -1547,10 +1517,8 @@ def xray_refresh_auto_geofiles(payload: dict[str, Any]) -> dict[str, Any]:
 def overview(payload: dict[str, Any]) -> dict[str, Any]:
     data = load_database()
     stats = read_stats()
-    iface = False
     ip_forward = "unknown"
     if not SKIP_SYSTEMD:
-        iface = run(["ip", "link", "show", "wdtt0"]).returncode == 0
         forward = run(["sysctl", "-n", "net.ipv4.ip_forward"])
         if forward.returncode == 0:
             ip_forward = forward.stdout.strip()
@@ -1569,10 +1537,8 @@ def overview(payload: dict[str, Any]) -> dict[str, Any]:
         "service": {
             "exists": service_exists(),
             "active": service_active(),
-            "interface": iface,
             "ip_forward": ip_forward,
             "binary": Path("/usr/local/bin/wdtt-server").is_file(),
-            "interface_error": "" if iface else service_error_hint(),
         },
         "stats": stats,
         "users": len(data.get("passwords", {})),
@@ -1598,7 +1564,6 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "users.unbind": unbind_user,
     "users.reset_traffic": reset_traffic,
     "service.action": lambda payload: service_action(str(payload.get("service_action") or "")),
-    "service.repair": repair_wdtt_interface,
     "logs": journal_logs,
     "backups.list": lambda payload: list_backups(),
     "backups.create": create_manual_backup,
