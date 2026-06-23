@@ -308,20 +308,80 @@ def list_users() -> dict[str, Any]:
 
 
 def wireguard_handshakes() -> dict[str, int]:
-    if SKIP_SYSTEMD or not shutil.which("wg"):
-        return {}
-    result = run(["wg", "show", "wdtt0", "dump"], timeout=10)
-    if result.returncode != 0:
-        return {}
     handshakes: dict[str, int] = {}
-    for index, line in enumerate(result.stdout.splitlines()):
-        fields = line.split("\t")
-        if index == 0 or len(fields) < 5:
-            continue
+    if SKIP_SYSTEMD:
+        return handshakes
+    if shutil.which("wg"):
+        result = run(["wg", "show", "wdtt0", "dump"], timeout=10)
+        if result.returncode == 0:
+            for index, line in enumerate(result.stdout.splitlines()):
+                fields = line.split("\t")
+                if index == 0 or len(fields) < 5:
+                    continue
+                try:
+                    handshakes[fields[0]] = int(fields[4])
+                except ValueError:
+                    continue
+    handshakes.update(userspace_wireguard_handshakes())
+    return handshakes
+
+
+def userspace_wireguard_handshakes() -> dict[str, int]:
+    """Read handshakes directly from WDTT's embedded WireGuard UAPI socket.
+
+    WDTT starts WireGuard in userspace.  On servers without wireguard-tools,
+    `wg show` cannot query it even though the tunnel is healthy, which made
+    connected administrator devices appear offline in the panel.
+    """
+    raw = ""
+    for path in ("/var/run/wireguard/wdtt0.sock", "/run/wireguard/wdtt0.sock"):
         try:
-            handshakes[fields[0]] = int(fields[4])
-        except ValueError:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(2)
+                client.connect(path)
+                client.sendall(b"get=1\n\n")
+                chunks: list[bytes] = []
+                while True:
+                    chunk = client.recv(16384)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    if b"\n\n" in b"".join(chunks):
+                        break
+                raw = b"".join(chunks).decode("utf-8", "replace")
+            break
+        except OSError:
             continue
+    if not raw:
+        return {}
+
+    handshakes: dict[str, int] = {}
+    public_key = ""
+    stamp = 0
+
+    def save_peer() -> None:
+        nonlocal public_key, stamp
+        if not public_key:
+            return
+        try:
+            key_bytes = bytes.fromhex(public_key)
+            handshakes[base64.b64encode(key_bytes).decode("ascii")] = stamp
+        except ValueError:
+            pass
+
+    for line in raw.splitlines():
+        key, separator, value = line.partition("=")
+        if not separator:
+            continue
+        if key == "public_key":
+            save_peer()
+            public_key, stamp = value, 0
+        elif key == "last_handshake_time_sec":
+            try:
+                stamp = int(value)
+            except ValueError:
+                stamp = 0
+    save_peer()
     return handshakes
 
 

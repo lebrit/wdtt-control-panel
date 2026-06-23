@@ -31,7 +31,7 @@
   <main class="content">
     <header class="topbar">
       <div><p class="eyebrow">SERVER CONSOLE</p><h1 id="page-title">Обзор</h1></div>
-      <div class="top-actions"><span class="host-pill" id="panel-version-pill">v{{VERSION}}</span><span class="host-pill">{{PUBLIC_HOST}}</span><button id="refresh" class="secondary">Обновить</button></div>
+      <div class="top-actions"><span class="host-pill" id="panel-version-pill">v{{VERSION}}</span><span class="host-pill">{{PUBLIC_HOST}}</span><button id="sidebar-toggle" class="secondary" aria-expanded="true">Свернуть меню</button><button id="refresh" class="secondary">Обновить</button></div>
     </header>
 
     <section class="tab active" id="tab-dashboard">
@@ -82,26 +82,11 @@
           <div class="xray-guide"><span>1. Создайте маршрут</span><span>2. Добавьте правило</span><span>3. Сохраните и примените</span></div>
           <div class="xray-easy-grid">
             <section class="xray-workflow">
-              <div class="section-head"><div><p class="eyebrow">ROUTES</p><h3>Куда направлять трафик</h3><p class="muted">WARP создаётся в карточке выше. Для EU или другого сервера вставьте готовую VLESS‑ссылку — параметры разберутся автоматически.</p></div></div>
-              <div class="form-grid compact-grid">
-                <label>Название маршрута<input id="xray-route-name" maxlength="80" placeholder="EU сервер"></label>
-                <label>Короткий tag<input id="xray-route-tag" maxlength="64" pattern="[A-Za-z0-9_.-]+" placeholder="eu-vless-1"></label>
-                <label class="wide">VLESS‑ссылка<textarea id="xray-route-vless" class="compact-textarea mono" spellcheck="false" placeholder="vless://UUID@eu.example.com:443?type=tcp&amp;security=reality&amp;pbk=...#EU"></textarea></label>
-              </div>
-              <button id="add-xray-vless-route" class="secondary">Добавить VLESS‑маршрут</button>
+              <div class="section-head"><div><p class="eyebrow">ROUTES</p><h3>Куда направлять трафик</h3><p class="muted">WARP создаётся в карточке выше. Для EU или другого сервера добавьте готовую VLESS‑ссылку.</p></div><button id="add-xray-vless-route" class="secondary">Добавить VLESS</button></div>
               <div id="xray-friendly-routes" class="friendly-route-list"></div>
             </section>
             <section class="xray-workflow">
-              <div class="section-head"><div><p class="eyebrow">RULES</p><h3>Какие сайты идут через маршрут</h3><p class="muted">Домен — например <code>youtube.com</code>; IP можно указать как адрес или подсеть <code>203.0.113.0/24</code>. Для списка заблокированных ресурсов используйте <code>ru-blocked</code>.</p></div></div>
-              <div class="form-grid compact-grid">
-                <label>Название правила<input id="xray-rule-name" maxlength="80" placeholder="YouTube через WARP"></label>
-                <label>Направлять через<select id="xray-rule-outbound"></select></label>
-                <label>Домены<textarea id="xray-rule-domains" class="compact-textarea" spellcheck="false" placeholder="youtube.com&#10;googlevideo.com"></textarea></label>
-                <label>IP или CIDR<textarea id="xray-rule-ip-cidrs" class="compact-textarea mono" spellcheck="false" placeholder="203.0.113.10&#10;198.51.100.0/24"></textarea></label>
-                <label>GeoSite‑категории<textarea id="xray-rule-geosite" class="compact-textarea mono" spellcheck="false" placeholder="ru-blocked"></textarea></label>
-                <label>GeoIP‑категории<textarea id="xray-rule-geoip" class="compact-textarea mono" spellcheck="false" placeholder="ru-blocked"></textarea></label>
-              </div>
-              <button id="add-xray-friendly-rule" class="primary">Добавить правило</button>
+              <div class="section-head"><div><p class="eyebrow">RULES</p><h3>Какие сайты идут через маршрут</h3><p class="muted">Для Google AI используйте готовую заготовку в окне правила. Она добавит нужные домены вместо ненадёжных IP Google.</p></div><button id="add-xray-friendly-rule" class="primary">Добавить правило</button></div>
               <div id="xray-friendly-rules" class="friendly-rule-list"></div>
             </section>
           </div>
@@ -194,6 +179,37 @@
       </div>
       <p class="muted">Пароли генерируются автоматически. Все пользователи создаются одной операцией и одним перезапуском WDTT.</p>
       <div class="dialog-actions"><button value="cancel" formnovalidate class="secondary">Отмена</button><button id="save-bulk-users" value="default" class="primary">Создать</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="xray-route-dialog">
+    <form id="xray-route-form">
+      <div class="dialog-head"><div><p class="eyebrow">XRAY ROUTE</p><h2 id="xray-route-dialog-title">Новый VLESS‑маршрут</h2></div><button type="button" value="cancel" class="icon-button">×</button></div>
+      <input id="xray-route-index" type="hidden">
+      <div class="form-grid">
+        <label>Название маршрута<input id="xray-route-name" maxlength="80" placeholder="EU сервер" required></label>
+        <label>Короткий tag<input id="xray-route-tag" maxlength="64" pattern="[A-Za-z0-9_.-]+" placeholder="eu-vless-1" required></label>
+        <label class="wide">VLESS‑ссылка<textarea id="xray-route-vless" class="compact-textarea mono" spellcheck="false" placeholder="vless://UUID@eu.example.com:443?type=tcp&amp;security=reality&amp;pbk=...#EU" required></textarea></label>
+        <label class="checkbox wide"><input id="xray-route-enabled" type="checkbox" checked> Включить маршрут</label>
+      </div>
+      <div class="dialog-actions"><button type="button" value="cancel" class="secondary">Отмена</button><button type="submit" class="primary">Сохранить маршрут</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="xray-rule-dialog">
+    <form id="xray-rule-form">
+      <div class="dialog-head"><div><p class="eyebrow">XRAY RULE</p><h2 id="xray-rule-dialog-title">Новое правило</h2></div><button type="button" value="cancel" class="icon-button">×</button></div>
+      <input id="xray-rule-index" type="hidden">
+      <div class="form-grid">
+        <label>Название правила<input id="xray-rule-name" maxlength="80" placeholder="Google AI через WARP" required></label>
+        <label>Направлять через<select id="xray-rule-outbound"></select></label>
+        <label class="wide">Домены<textarea id="xray-rule-domains" class="compact-textarea" spellcheck="false" placeholder="youtube.com&#10;googlevideo.com"></textarea></label>
+        <label>IP или CIDR<textarea id="xray-rule-ip-cidrs" class="compact-textarea mono" spellcheck="false" placeholder="203.0.113.10&#10;198.51.100.0/24"></textarea></label>
+        <label>GeoSite‑категории<textarea id="xray-rule-geosite" class="compact-textarea mono" spellcheck="false" placeholder="ru-blocked"></textarea></label>
+        <label>GeoIP‑категории<textarea id="xray-rule-geoip" class="compact-textarea mono" spellcheck="false" placeholder="ru-blocked"></textarea></label>
+        <label class="checkbox wide"><input id="xray-rule-enabled" type="checkbox" checked> Включить правило</label>
+      </div>
+      <div class="dialog-actions"><select id="xray-rule-preset"><option value="">Готовая настройка…</option><option value="google_ai">Google AI</option><option value="ai">Все популярные AI‑сервисы</option><option value="video">Видео: YouTube, Twitch</option><option value="social">Соцсети и Discord</option><option value="music">Музыка: Spotify, SoundCloud</option><option value="popular">Все популярные сервисы</option></select><button id="apply-xray-rule-preset" type="button" class="secondary">Заполнить</button><button type="button" value="cancel" class="secondary">Отмена</button><button type="submit" class="primary">Сохранить правило</button></div>
     </form>
   </dialog>
 

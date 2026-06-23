@@ -10,6 +10,18 @@
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
+
+  function renderSidebarState() {
+    const collapsed = document.body.classList.contains("sidebar-collapsed");
+    $("#sidebar-toggle").textContent = collapsed ? "Показать меню" : "Свернуть меню";
+    $("#sidebar-toggle").setAttribute("aria-expanded", String(!collapsed));
+  }
+
+  function restoreSidebarState() {
+    try { document.body.classList.toggle("sidebar-collapsed", localStorage.getItem("wdtt-sidebar-collapsed") === "1"); }
+    catch (_) { /* Browser storage can be disabled. */ }
+    renderSidebarState();
+  }
   const formatBytes = (bytes) => {
     const value = Number(bytes || 0);
     if (value < 1024) return `${value} B`;
@@ -459,31 +471,126 @@
       known.add(tag); targets.push({ tag, label });
     };
     (state.xray.outbounds || []).forEach((item) => add(item.tag, item.tag === "warp" ? "Cloudflare WARP" : `${item.tag} — экспертный ${item.protocol || "маршрут"}`));
+    add("warp", "Cloudflare WARP — создайте профиль выше");
     (state.xray.routes || []).filter((item) => item.enabled !== false).forEach((item) => add(item.tag, item.name || item.tag));
     if (selected && !known.has(selected)) targets.push({ tag: selected, label: `${selected} — не настроен` });
     return targets.map((item) => `<option value="${escapeHtml(item.tag)}" ${item.tag === selected ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("");
   }
 
   function collectFriendlyRoutes() {
-    return $$("[data-friendly-route]").map((node) => ({
-      name: node.querySelector('[data-route-field="name"]').value.trim(),
-      tag: node.querySelector('[data-route-field="tag"]').value.trim(),
-      type: "vless",
-      vless_uri: node.querySelector('[data-route-field="vless_uri"]').value.trim(),
-      enabled: node.querySelector('[data-route-field="enabled"]').checked,
-    }));
+    return JSON.parse(JSON.stringify(state.xray.routes || []));
   }
 
   function collectFriendlyRules() {
-    return $$("[data-friendly-rule]").map((node) => ({
-      name: node.querySelector('[data-rule-field="name"]').value.trim(),
-      enabled: node.querySelector('[data-rule-field="enabled"]').checked,
-      outbound: node.querySelector('[data-rule-field="outbound"]').value,
-      domains: node.querySelector('[data-rule-field="domains"]').value,
-      ip_cidrs: node.querySelector('[data-rule-field="ip_cidrs"]').value,
-      geosite: node.querySelector('[data-rule-field="geosite"]').value,
-      geoip: node.querySelector('[data-rule-field="geoip"]').value,
-    }));
+    return JSON.parse(JSON.stringify(state.xray.friendly_rules || []));
+  }
+
+  function xrayTargetLabel(tag) {
+    if (tag === "direct") return "Напрямую";
+    if (tag === "block") return "Блокировка";
+    if (tag === "warp") return "Cloudflare WARP";
+    const route = (state.xray.routes || []).find((item) => item.tag === tag);
+    const outbound = (state.xray.outbounds || []).find((item) => item.tag === tag);
+    return route?.name || outbound?.tag || tag;
+  }
+
+  function ruleValues(value) {
+    if (Array.isArray(value)) return value.filter(Boolean);
+    return String(value || "").split(/[\s,;]+/).filter(Boolean);
+  }
+
+  function ruleSummary(rule) {
+    const domains = ruleValues(rule.domains).length;
+    const domainLabel = domains % 10 === 1 && domains % 100 !== 11 ? "домен" : (domains % 10 >= 2 && domains % 10 <= 4 && (domains % 100 < 10 || domains % 100 >= 20) ? "домена" : "доменов");
+    const parts = [
+      [domains, domainLabel], [ruleValues(rule.ip_cidrs).length, "IP/CIDR"],
+      [ruleValues(rule.geosite).length, "GeoSite"], [ruleValues(rule.geoip).length, "GeoIP"],
+    ].filter(([count]) => count).map(([count, label]) => `${count} ${label}`);
+    return parts.join(" · ") || "Условия не указаны";
+  }
+
+  function renderCompactFriendlyRoutes() {
+    const warpReady = (state.xray.outbounds || []).some((item) => item.tag === "warp");
+    const standard = [
+      ["Напрямую", "direct", "IP этого сервера", "ok", "готов"],
+      ["Блокировка", "block", "Запретить выбранный трафик", "warn", "готов"],
+      ["Cloudflare WARP", "warp", warpReady ? "Доступен для правил" : "Создайте профиль выше", warpReady ? "ok" : "warn", warpReady ? "готов" : "не настроен"],
+    ].map(([name, tag, note, stateClass, stateLabel]) => `<article class="friendly-card builtin-route"><div><strong>${name}</strong><small><code>${tag}</code> · ${note}</small></div><span class="badge ${stateClass}">${stateLabel}</span></article>`);
+    const routes = (state.xray.routes || []).map((route, index) => `<article class="friendly-card" data-friendly-route="${index}"><div><strong>${escapeHtml(route.name || route.tag || "VLESS маршрут")}</strong><small><code>${escapeHtml(route.tag || "")}</code> · VLESS</small></div><div class="inline-actions"><span class="badge ${route.enabled === false ? "warn" : "ok"}">${route.enabled === false ? "выключен" : "готов"}</span><button data-edit-friendly-route="${index}" class="secondary">Редактировать</button><button data-remove-friendly-route="${index}" class="danger">Удалить</button></div></article>`).join("");
+    $("#xray-friendly-routes").innerHTML = [...standard, routes || `<p class="muted">Дополнительных VLESS‑маршрутов нет.</p>`].join("");
+  }
+
+  function renderCompactFriendlyRules() {
+    $("#xray-friendly-rules").innerHTML = (state.xray.friendly_rules || []).map((rule, index) => `<article class="friendly-card" data-friendly-rule="${index}"><div><strong>${escapeHtml(rule.name || `Правило ${index + 1}`)}</strong><small>${escapeHtml(ruleSummary(rule))} · через ${escapeHtml(xrayTargetLabel(rule.outbound || "direct"))}</small></div><div class="inline-actions"><span class="badge ${rule.enabled === false ? "warn" : "ok"}">${rule.enabled === false ? "выключено" : "включено"}</span><button data-edit-friendly-rule="${index}" class="secondary">Редактировать</button><button data-move-friendly-rule="up" data-friendly-rule-index="${index}" class="secondary" ${index === 0 ? "disabled" : ""}>↑</button><button data-move-friendly-rule="down" data-friendly-rule-index="${index}" class="secondary" ${index === state.xray.friendly_rules.length - 1 ? "disabled" : ""}>↓</button><button data-remove-friendly-rule="${index}" class="danger">Удалить</button></div></article>`).join("") || `<p class="muted">Правил пока нет. Добавьте правило или используйте заготовку популярных сервисов.</p>`;
+  }
+
+  const ROUTE_PRESETS = {
+    google_ai: {
+      name: "Google AI через WARP",
+      domains: ["gemini.google.com", "aistudio.google.com", "ai.google.dev", "generativelanguage.googleapis.com", "content-gemini.googleapis.com", "accounts.google.com", "ogs.google.com", "gstatic.com", "googleusercontent.com"],
+    },
+    ai: {
+      name: "AI‑сервисы через WARP",
+      domains: ["gemini.google.com", "aistudio.google.com", "ai.google.dev", "generativelanguage.googleapis.com", "content-gemini.googleapis.com", "accounts.google.com", "ogs.google.com", "gstatic.com", "googleusercontent.com", "chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com", "claude.ai", "anthropic.com", "perplexity.ai", "x.ai"],
+    },
+    video: {
+      name: "Видео через WARP",
+      domains: ["youtube.com", "googlevideo.com", "ytimg.com", "youtube-nocookie.com", "twitch.tv", "ttvnw.net", "jtvnw.net", "vimeo.com"],
+    },
+    social: {
+      name: "Соцсети и сообщества через WARP",
+      domains: ["discord.com", "discordapp.com", "discordapp.net", "discord.media", "x.com", "twitter.com", "t.co", "facebook.com", "fbcdn.net", "instagram.com", "cdninstagram.com", "reddit.com", "redd.it", "redditmedia.com", "linkedin.com"],
+    },
+    music: {
+      name: "Музыкальные сервисы через WARP",
+      domains: ["spotify.com", "scdn.co", "soundcloud.com", "sndcdn.com", "bandcamp.com"],
+    },
+  };
+  ROUTE_PRESETS.popular = {
+    name: "Популярные сервисы через WARP",
+    domains: [...new Set(Object.values(ROUTE_PRESETS).flatMap((preset) => preset.domains))],
+  };
+
+  function openXrayRouteDialog(index = -1) {
+    const route = index >= 0 ? state.xray.routes[index] : { name: "", tag: "", vless_uri: "", enabled: true };
+    $("#xray-route-dialog-title").textContent = index >= 0 ? "Редактировать VLESS‑маршрут" : "Новый VLESS‑маршрут";
+    $("#xray-route-index").value = index >= 0 ? String(index) : "";
+    $("#xray-route-name").value = route.name || ""; $("#xray-route-tag").value = route.tag || "";
+    $("#xray-route-vless").value = route.vless_uri || ""; $("#xray-route-enabled").checked = route.enabled !== false;
+    $("#xray-route-dialog").showModal();
+  }
+
+  function openXrayRuleDialog(index = -1) {
+    const rule = index >= 0 ? state.xray.friendly_rules[index] : { name: "", outbound: "direct", enabled: true };
+    $("#xray-rule-dialog-title").textContent = index >= 0 ? "Редактировать правило" : "Новое правило";
+    $("#xray-rule-index").value = index >= 0 ? String(index) : "";
+    $("#xray-rule-name").value = rule.name || ""; $("#xray-rule-outbound").innerHTML = xrayTargets(rule.outbound || "direct");
+    $("#xray-rule-domains").value = ruleValues(rule.domains).join("\n"); $("#xray-rule-ip-cidrs").value = ruleValues(rule.ip_cidrs).join("\n");
+    $("#xray-rule-geosite").value = ruleValues(rule.geosite).join("\n"); $("#xray-rule-geoip").value = ruleValues(rule.geoip).join("\n");
+    $("#xray-rule-enabled").checked = rule.enabled !== false;
+    $("#xray-rule-preset").value = "";
+    $("#xray-rule-dialog").showModal();
+  }
+
+  function saveXrayRouteDialog(event) {
+    event.preventDefault();
+    const rawIndex = $("#xray-route-index").value; const index = rawIndex === "" ? -1 : Number(rawIndex);
+    const route = { name: $("#xray-route-name").value.trim(), tag: $("#xray-route-tag").value.trim(), type: "vless", vless_uri: $("#xray-route-vless").value.trim(), enabled: $("#xray-route-enabled").checked };
+    if (!route.name || !route.tag || !route.vless_uri) { toast("Укажите название, tag и полную VLESS‑ссылку", true); return; }
+    if ((state.xray.routes || []).some((item, itemIndex) => item.tag === route.tag && itemIndex !== index) || ["direct", "block", "warp", "eu-vless"].includes(route.tag)) { toast("Такой tag уже занят или зарезервирован", true); return; }
+    if (index >= 0) state.xray.routes[index] = route; else state.xray.routes.push(route);
+    $("#xray-route-dialog").close(); renderCompactFriendlyRoutes(); renderCompactFriendlyRules();
+    toast("Маршрут сохранён. Нажмите «Сохранить и применить».");
+  }
+
+  function saveXrayRuleDialog(event) {
+    event.preventDefault();
+    const rawIndex = $("#xray-rule-index").value; const index = rawIndex === "" ? -1 : Number(rawIndex);
+    const rule = { name: $("#xray-rule-name").value.trim(), outbound: $("#xray-rule-outbound").value, enabled: $("#xray-rule-enabled").checked, domains: $("#xray-rule-domains").value.trim(), ip_cidrs: $("#xray-rule-ip-cidrs").value.trim(), geosite: $("#xray-rule-geosite").value.trim(), geoip: $("#xray-rule-geoip").value.trim() };
+    if (!rule.name || (!rule.domains && !rule.ip_cidrs && !rule.geosite && !rule.geoip)) { toast("Укажите название и хотя бы один домен, IP/CIDR или Geo‑набор", true); return; }
+    if (index >= 0) state.xray.friendly_rules[index] = rule; else state.xray.friendly_rules.push(rule);
+    $("#xray-rule-dialog").close(); renderCompactFriendlyRules();
+    toast("Правило сохранено. Нажмите «Сохранить и применить».");
   }
 
   function renderFriendlyRoutes() {
@@ -528,7 +635,7 @@
       $("#xray-runtime-info").textContent = result.installed ? `${result.version || "Xray установлен"} · ${result.config_exists ? "конфигурация создана" : "конфигурация ещё не создана"}` : "Нажмите «Установить Xray», затем создайте конфигурацию.";
       $("#install-xray").textContent = result.installed ? (result.version || "Xray установлен") : "Установить Xray";
       $("#xray-log").textContent = (result.logs || []).join("\n") || "Нет записей.";
-      renderXrayMode(); renderFriendlyRoutes(); renderFriendlyRules(); renderXrayItems(); renderXrayGeofiles();
+      renderXrayMode(); renderCompactFriendlyRoutes(); renderCompactFriendlyRules(); renderXrayItems(); renderXrayGeofiles();
     } catch (error) { toast(error.message, true); }
   }
 
@@ -672,6 +779,12 @@
       if (button.dataset.tab === "system") { loadBackups(); loadAudit(); loadPanelVersion(); }
     }));
     $("#refresh").addEventListener("click", () => Promise.all([loadOverview(), loadUsers()]).catch((error) => toast(error.message, true)));
+    $("#sidebar-toggle").addEventListener("click", () => {
+      document.body.classList.toggle("sidebar-collapsed");
+      try { localStorage.setItem("wdtt-sidebar-collapsed", document.body.classList.contains("sidebar-collapsed") ? "1" : "0"); }
+      catch (_) { /* Browser storage can be disabled. */ }
+      renderSidebarState();
+    });
     $("#new-user").addEventListener("click", () => openUserDialog());
     $("#bulk-users").addEventListener("click", openBulkUserDialog);
     $("#user-form").addEventListener("submit", saveUser);
@@ -719,6 +832,7 @@
     $("#restart-cascade").addEventListener("click", restartCascade);
     $("#xray-mode").addEventListener("change", renderXrayMode);
     $("#add-xray-vless-route").addEventListener("click", () => {
+      openXrayRouteDialog(); return;
       state.xray.routes = collectFriendlyRoutes();
       const name = $("#xray-route-name").value.trim();
       const tag = $("#xray-route-tag").value.trim();
@@ -731,6 +845,7 @@
       toast("Маршрут добавлен. Нажмите «Сохранить и применить».");
     });
     $("#add-xray-friendly-rule").addEventListener("click", () => {
+      openXrayRuleDialog(); return;
       state.xray.routes = collectFriendlyRoutes(); state.xray.friendly_rules = collectFriendlyRules();
       const rule = {
         name: $("#xray-rule-name").value.trim(), enabled: true, outbound: $("#xray-rule-outbound").value,
@@ -744,9 +859,11 @@
       renderFriendlyRules(); toast("Правило добавлено. Нажмите «Сохранить и применить».");
     });
     $("#xray-friendly-routes").addEventListener("change", () => {
+      return;
       state.xray.routes = collectFriendlyRoutes(); renderFriendlyRules();
     });
     $("#xray-friendly-routes").addEventListener("click", (event) => {
+      return;
       const button = event.target.closest("[data-remove-friendly-route]"); if (!button) return;
       const index = Number(button.dataset.removeFriendlyRoute); const route = state.xray.routes[index];
       if (!route || !confirm(`Удалить маршрут «${route.name || route.tag}»?`)) return;
@@ -758,6 +875,7 @@
       toast(reassigned ? "Маршрут удалён; связанные правила переключены на direct." : "Маршрут удалён. Нажмите «Сохранить и применить».");
     });
     $("#xray-friendly-rules").addEventListener("click", (event) => {
+      return;
       const remove = event.target.closest("[data-remove-friendly-rule]");
       const move = event.target.closest("[data-move-friendly-rule]");
       if (!remove && !move) return;
@@ -768,6 +886,42 @@
         if (next >= 0 && next < state.xray.friendly_rules.length) [state.xray.friendly_rules[index], state.xray.friendly_rules[next]] = [state.xray.friendly_rules[next], state.xray.friendly_rules[index]];
       }
       renderFriendlyRules();
+    });
+    $("#xray-route-form").addEventListener("submit", saveXrayRouteDialog);
+    $("#xray-rule-form").addEventListener("submit", saveXrayRuleDialog);
+    $("#apply-xray-rule-preset").addEventListener("click", () => {
+      const preset = ROUTE_PRESETS[$("#xray-rule-preset").value];
+      if (!preset) { toast("Выберите готовую настройку", true); return; }
+      $("#xray-rule-name").value = preset.name;
+      $("#xray-rule-domains").value = preset.domains.join("\n");
+      $("#xray-rule-ip-cidrs").value = ""; $("#xray-rule-geosite").value = ""; $("#xray-rule-geoip").value = "";
+      $("#xray-rule-outbound").value = "warp";
+      toast("Домены заполнены. При необходимости отредактируйте список перед сохранением.");
+    });
+    $("#xray-friendly-routes").addEventListener("click", (event) => {
+      const edit = event.target.closest("[data-edit-friendly-route]");
+      const remove = event.target.closest("[data-remove-friendly-route]");
+      if (edit) { openXrayRouteDialog(Number(edit.dataset.editFriendlyRoute)); return; }
+      if (!remove) return;
+      const index = Number(remove.dataset.removeFriendlyRoute); const route = state.xray.routes[index];
+      if (!route || !confirm(`Удалить маршрут «${route.name || route.tag}»?`)) return;
+      state.xray.routes.splice(index, 1);
+      let reassigned = 0;
+      state.xray.friendly_rules.forEach((rule) => { if (rule.outbound === route.tag) { rule.outbound = "direct"; reassigned += 1; } });
+      renderCompactFriendlyRoutes(); renderCompactFriendlyRules();
+      toast(reassigned ? "Маршрут удалён; связанные правила переключены на direct." : "Маршрут удалён. Нажмите «Сохранить и применить».");
+    });
+    $("#xray-friendly-rules").addEventListener("click", (event) => {
+      const edit = event.target.closest("[data-edit-friendly-rule]");
+      const remove = event.target.closest("[data-remove-friendly-rule]");
+      const move = event.target.closest("[data-move-friendly-rule]");
+      if (edit) { openXrayRuleDialog(Number(edit.dataset.editFriendlyRule)); return; }
+      if (remove) state.xray.friendly_rules.splice(Number(remove.dataset.removeFriendlyRule), 1);
+      if (move) {
+        const index = Number(move.dataset.friendlyRuleIndex); const next = move.dataset.moveFriendlyRule === "up" ? index - 1 : index + 1;
+        if (next >= 0 && next < state.xray.friendly_rules.length) [state.xray.friendly_rules[index], state.xray.friendly_rules[next]] = [state.xray.friendly_rules[next], state.xray.friendly_rules[index]];
+      }
+      if (remove || move) renderCompactFriendlyRules();
     });
     $("#add-xray-inbound").addEventListener("click", () => { state.xray.inbounds.push(xrayInboundTemplate($("#xray-inbound-template").value)); renderXrayItems(); });
     $("#add-xray-outbound").addEventListener("click", () => { state.xray.outbounds.push(xrayOutboundTemplate($("#xray-outbound-template").value)); renderXrayItems(); });
@@ -801,6 +955,7 @@
     window.addEventListener("resize", () => { if (state.overview) loadHistory().catch(() => {}); });
   }
 
+  restoreSidebarState();
   bindEvents();
   Promise.all([loadOverview(), loadUsers(), loadPanelVersion()]).catch((error) => toast(error.message, true));
   setInterval(() => loadOverview().catch(() => {}), 10000);

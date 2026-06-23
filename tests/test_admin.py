@@ -1,6 +1,7 @@
 import json
 import base64
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -180,6 +181,18 @@ class AdminDatabaseTests(unittest.TestCase):
             result = admin.list_users()
         self.assertEqual(result["admins"][0]["role"], "admin")
         self.assertTrue(result["admins"][0]["connected"])
+
+    def test_admin_device_is_online_from_embedded_wireguard_handshake(self):
+        data = admin.load_database()
+        data["devices"]["admin-phone"] = {"device_id": "admin-phone", "ip": "10.66.66.2", "pub_key": "admin-public"}
+        admin.save_database(data)
+        with mock.patch.object(admin, "wireguard_handshakes", return_value={"admin-public": int(time.time())}), mock.patch.object(admin, "active_tunnel_ips", return_value=set()):
+            result = admin.list_users()
+        self.assertTrue(result["admins"][0]["connected"])
+
+    def test_userspace_wireguard_handshakes_are_used_when_wg_tools_are_missing(self):
+        with mock.patch.object(admin, "SKIP_SYSTEMD", False), mock.patch.object(admin.shutil, "which", return_value=None), mock.patch.object(admin, "userspace_wireguard_handshakes", return_value={"public-key": 123}):
+            self.assertEqual(admin.wireguard_handshakes(), {"public-key": 123})
 
     def test_full_diagnostics_log_sources_are_limited(self):
         result = admin.journal_logs({"source": "all", "limit": 9999})
