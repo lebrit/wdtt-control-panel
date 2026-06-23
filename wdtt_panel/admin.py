@@ -27,6 +27,7 @@ from .core import (
     generate_password,
     is_expired,
     normalize_hashes,
+    normalize_user_label,
     parse_expiration,
     user_view,
     validate_password,
@@ -43,6 +44,9 @@ SKIP_SYSTEMD = os.environ.get("WDTT_SKIP_SYSTEMD") == "1"
 MAX_INPUT = 90 * 1024 * 1024
 PANEL_UPDATE_COMMAND = Path(os.environ.get("WDTT_PANEL_UPDATE_COMMAND", "/usr/local/sbin/wdtt-panel-update"))
 PANEL_RENEW_COMMAND = Path(os.environ.get("WDTT_PANEL_RENEW_COMMAND", "/opt/wdtt-panel/install.sh"))
+WDTT_EXTENSION_COMMAND = Path(
+    os.environ.get("WDTT_EXTENSION_COMMAND", "/opt/wdtt-panel/install.sh")
+)
 PANEL_VERSION_URL = os.environ.get(
     "WDTT_PANEL_VERSION_URL",
     "https://raw.githubusercontent.com/lebrit/wdtt-control-panel/main/install.sh",
@@ -307,6 +311,7 @@ def list_users() -> dict[str, Any]:
         if isinstance(entry, dict) and entry.get("device_id")
     }
     admins = []
+    main_traffic_supported = "main_down_bytes" in data or "main_up_bytes" in data
     for device_id, device in data["devices"].items():
         if device_id in user_devices or not isinstance(device, dict):
             continue
@@ -320,9 +325,11 @@ def list_users() -> dict[str, Any]:
                 "device": device,
                 "connected": str(device.get("ip") or "") in active_ips or handshake_is_active(last_handshake),
                 "last_handshake": last_handshake,
-                "down_bytes": 0,
-                "up_bytes": 0,
+                "down_bytes": int(data.get("main_down_bytes") or 0),
+                "up_bytes": int(data.get("main_up_bytes") or 0),
+                "traffic_supported": main_traffic_supported,
                 "expires_at": 0,
+                "label": "Администратор WDTT",
                 "vk_hash": "Администратор WDTT",
                 "ports": "",
                 "is_deactivated": False,
@@ -454,6 +461,7 @@ def create_user(payload: dict[str, Any]) -> dict[str, Any]:
     expires_at = parse_expiration(payload)
     vk_hash = normalize_hashes(str(payload.get("vk_hash") or ""))
     ports = validate_ports(str(payload.get("ports") or "56000,56001,9000"))
+    label = normalize_user_label(str(payload.get("label") or ""))
 
     def apply(data: dict[str, Any]) -> dict[str, Any]:
         purge_expired(data)
@@ -466,6 +474,7 @@ def create_user(payload: dict[str, Any]) -> dict[str, Any]:
             "expires_at": expires_at,
             "down_bytes": 0,
             "up_bytes": 0,
+            "label": label,
             "vk_hash": vk_hash,
             "ports": ports,
             "is_deactivated": bool(payload.get("is_deactivated", False)),
@@ -491,6 +500,7 @@ def create_users_bulk(payload: dict[str, Any]) -> dict[str, Any]:
     expires_at = parse_expiration(payload)
     ports = validate_ports(str(payload.get("ports") or "56000,56001,9000"))
     is_deactivated = bool(payload.get("is_deactivated", False))
+    label_prefix = normalize_user_label(str(payload.get("label_prefix") or ""))
 
     def apply(data: dict[str, Any]) -> dict[str, Any]:
         purge_expired(data)
@@ -507,11 +517,16 @@ def create_users_bulk(payload: dict[str, Any]) -> dict[str, Any]:
                 password = generate_password()
             reserved.add(password)
             assigned_hashes = hashes if hash_mode == "shared" else [hashes[index % len(hashes)]]
+            label = ""
+            if label_prefix:
+                suffix = f" {index + 1}" if count > 1 else ""
+                label = normalize_user_label(f"{label_prefix}{suffix}")
             entry = {
                 "device_id": "",
                 "expires_at": expires_at,
                 "down_bytes": 0,
                 "up_bytes": 0,
+                "label": label,
                 "vk_hash": ",".join(assigned_hashes),
                 "ports": ports,
                 "is_deactivated": is_deactivated,
@@ -541,6 +556,8 @@ def update_user(payload: dict[str, Any]) -> dict[str, Any]:
             entry["vk_hash"] = normalize_hashes(str(payload["vk_hash"]))
         if "ports" in payload:
             entry["ports"] = validate_ports(str(payload["ports"]))
+        if "label" in payload:
+            entry["label"] = normalize_user_label(str(payload["label"] or ""))
         if any(key in payload for key in ("days", "expires_at", "unlimited")):
             entry["expires_at"] = parse_expiration(payload)
         if "is_deactivated" in payload:
@@ -593,6 +610,52 @@ def reset_traffic(payload: dict[str, Any]) -> dict[str, Any]:
         return user_view(password, entry, data["devices"]).as_dict()
 
     return mutate_database("traffic-reset", apply)
+
+
+def bulk_user_action(payload: dict[str, Any]) -> dict[str, Any]:
+    action = str(payload.get("action") or "")
+    actions = {
+        "activate": "Активация",
+        "deactivate": "Деактивация",
+        "reset_traffic": "Сброс трафика",
+        "unbind": "Отвязка устройств",
+        "delete": "Удаление",
+    }
+    if action not in actions:
+        raise ValidationError("Неизвестное массовое действие")
+    raw_passwords = payload.get("passwords")
+    if not isinstance(raw_passwords, list):
+        raise ValidationError("Выберите хотя бы одного пользователя")
+    passwords = list(dict.fromkeys(validate_password(str(item)) for item in raw_passwords))
+    if not passwords or len(passwords) > MAX_USERS:
+        raise ValidationError(f"Можно выбрать от 1 до {MAX_USERS} пользователей")
+
+    def apply(data: dict[str, Any]) -> dict[str, Any]:
+        missing = [password for password in passwords if not isinstance(data["passwords"].get(password), dict)]
+        if missing:
+            raise ValidationError("Часть выбранных пользователей уже не существует")
+        for password in passwords:
+            entry = data["passwords"][password]
+            if action == "activate":
+                entry["is_deactivated"] = False
+            elif action == "deactivate":
+                entry["is_deactivated"] = True
+            elif action == "reset_traffic":
+                entry["down_bytes"] = 0
+                entry["up_bytes"] = 0
+            elif action == "unbind":
+                device_id = str(entry.get("device_id") or "")
+                if device_id:
+                    data["devices"].pop(device_id, None)
+                entry["device_id"] = ""
+            elif action == "delete":
+                device_id = str(entry.get("device_id") or "")
+                if device_id:
+                    data["devices"].pop(device_id, None)
+                del data["passwords"][password]
+        return {"action": action, "count": len(passwords)}
+
+    return mutate_database(f"bulk-{action}", apply)
 
 
 def list_backups() -> dict[str, Any]:
@@ -1996,6 +2059,35 @@ def schedule_xray_runtime(payload: dict[str, Any]) -> dict[str, Any]:
     return {"scheduled": True, "unit": unit}
 
 
+def schedule_wdtt_extensions(payload: dict[str, Any]) -> dict[str, Any]:
+    """Build the compatible WDTT core after the request has returned to the panel.
+
+    The stock WDTT database has no user label or main-password counters.  This
+    optional in-place update keeps /etc/wdtt and the existing service intact,
+    replacing only the executable after a successful build.
+    """
+    if not WDTT_EXTENSION_COMMAND.exists():
+        raise AdminError(f"Команда обновления WDTT не найдена: {WDTT_EXTENSION_COMMAND}")
+    if SKIP_SYSTEMD:
+        return {"scheduled": True, "state": "test"}
+    unit = f"wdtt-panel-core-extension-{int(time.time())}"
+    result = run(
+        [
+            "systemd-run",
+            "--quiet",
+            "--collect",
+            f"--unit={unit}",
+            "--on-active=2s",
+            str(WDTT_EXTENSION_COMMAND),
+            "enable-wdtt-extensions",
+        ],
+        timeout=20,
+    )
+    if result.returncode != 0:
+        raise AdminError(result.stderr.strip() or "Не удалось запланировать обновление WDTT")
+    return {"scheduled": True, "unit": unit}
+
+
 def warp_profile_details() -> dict[str, Any]:
     profile = WARP_DIR / "wgcf-profile.conf"
     if not profile.is_file():
@@ -2626,6 +2718,8 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "users.delete": delete_user,
     "users.unbind": unbind_user,
     "users.reset_traffic": reset_traffic,
+    "users.bulk_action": bulk_user_action,
+    "wdtt.extensions.enable": schedule_wdtt_extensions,
     "service.action": lambda payload: service_action(str(payload.get("service_action") or "")),
     "logs": journal_logs,
     "backups.list": lambda payload: list_backups(),

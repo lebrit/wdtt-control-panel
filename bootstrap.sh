@@ -10,7 +10,7 @@ INTERACTIVE=0
 
 usage() {
   cat <<EOF
-Usage: bootstrap.sh [install|update|uninstall|status|renew-cert|change-password] [options]
+Usage: bootstrap.sh [install|update|uninstall|status|renew-cert|change-password|enable-wdtt-extensions] [options]
 
 Without arguments an interactive management menu is shown.
 
@@ -45,7 +45,8 @@ WDTT Control Panel
 3) Показать статус и адрес
 4) Проверить/обновить сертификат
 5) Сменить пароль входа в панель
-6) Удалить панель
+6) Включить метки Telegram и трафик главного пароля
+7) Удалить панель
 0) Выход
 EOF
   printf 'Выберите действие [1]: ' >/dev/tty
@@ -56,7 +57,8 @@ EOF
     3) ACTION="status" ;;
     4) ACTION="renew-cert" ;;
     5) ACTION="change-password" ;;
-    6)
+    6) ACTION="enable-wdtt-extensions" ;;
+    7)
       printf 'Удалить web-панель? WDTT и его пользователи останутся [y/N]: ' >/dev/tty
       IFS= read -r confirm </dev/tty || true
       case "$confirm" in y|Y|yes|YES|да|Да|ДА) ACTION="uninstall" ;; *) echo 'Отменено.' >/dev/tty; ACTION="" ;; esac
@@ -140,7 +142,7 @@ EOF
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    install|update|uninstall|status|renew-cert|change-password) ACTION="$1"; shift ;;
+    install|update|uninstall|status|renew-cert|change-password|enable-wdtt-extensions) ACTION="$1"; shift ;;
     --domain|--host) [ "$#" -ge 2 ] || { usage; exit 2; }; PANEL_HOST="$2"; shift 2 ;;
     --ip) [ "$#" -ge 2 ] || { usage; exit 2; }; PANEL_HOST="$2"; shift 2 ;;
     --user) [ "$#" -ge 2 ] || { usage; exit 2; }; PANEL_USER="$2"; shift 2 ;;

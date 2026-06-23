@@ -11,6 +11,7 @@ from typing import Any
 MAX_USERS = 10
 PASSWORD_RE = re.compile(r"^[A-Za-z0-9._~-]{8,64}$")
 HASH_RE = re.compile(r"^[A-Za-z0-9_-]{3,256}$")
+MAX_USER_LABEL_LENGTH = 64
 
 
 class ValidationError(ValueError):
@@ -29,6 +30,16 @@ def validate_password(value: str) -> str:
             "Пароль должен содержать 8-64 символа: латиница, цифры, . _ ~ -"
         )
     return value
+
+
+def normalize_user_label(value: str) -> str:
+    """Return a safe human-readable label shared with the WDTT Telegram bot."""
+    label = (value or "").strip()
+    if len(label) > MAX_USER_LABEL_LENGTH:
+        raise ValidationError(f"Метка пользователя может содержать до {MAX_USER_LABEL_LENGTH} символов")
+    if any(ord(char) < 32 or ord(char) == 127 for char in label):
+        raise ValidationError("Метка пользователя не должна содержать служебные символы")
+    return label
 
 
 def normalize_hash(value: str) -> str:
@@ -120,6 +131,7 @@ def quick_link(host: str, password: str, entry: dict[str, Any]) -> str:
 @dataclass(frozen=True)
 class UserView:
     password: str
+    label: str
     device_id: str
     expires_at: int
     down_bytes: int
@@ -138,6 +150,7 @@ def user_view(password: str, entry: dict[str, Any], devices: dict[str, Any]) -> 
     device_id = str(entry.get("device_id") or "")
     return UserView(
         password=password,
+        label=str(entry.get("label") or ""),
         device_id=device_id,
         expires_at=int(entry.get("expires_at") or 0),
         down_bytes=int(entry.get("down_bytes") or 0),

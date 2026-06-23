@@ -19,6 +19,7 @@ elif action == "users.list":
         "users": [
             {
                 "password": "DemoUserA123",
+                "label": "Демо — Pixel 8",
                 "device_id": "pixel-8-demo",
                 "expires_at": 1798761600,
                 "down_bytes": 419430400,
@@ -31,6 +32,7 @@ elif action == "users.list":
             },
             {
                 "password": "WaitingUser123",
+                "label": "Ожидает выдачи",
                 "device_id": "",
                 "expires_at": 0,
                 "down_bytes": 0,
@@ -43,7 +45,7 @@ elif action == "users.list":
             },
         ],
         "main_password_present": True,
-        "admins": [{"password": "Главный пароль", "role": "admin", "device_id": "admin-device", "device": {"device_id": "admin-device", "ip": "10.66.66.1"}, "connected": True, "expires_at": 0, "down_bytes": 0, "up_bytes": 0, "vk_hash": "Администратор WDTT", "is_deactivated": False, "expired": False}],
+        "admins": [{"password": "Главный пароль", "label": "Администратор WDTT", "role": "admin", "device_id": "admin-device", "device": {"device_id": "admin-device", "ip": "10.66.66.1"}, "connected": True, "expires_at": 0, "down_bytes": 0, "up_bytes": 0, "traffic_supported": True, "vk_hash": "Администратор WDTT", "is_deactivated": False, "expired": False}],
         "limit": 10,
     }
 elif action == "users.create_bulk":
@@ -67,6 +69,8 @@ elif action == "users.create_bulk":
             for index in range(count)
         ],
     }
+elif action == "users.bulk_action":
+    result = {"action": (request.get("payload") or {}).get("action"), "count": len((request.get("payload") or {}).get("passwords") or [])}
 elif action == "logs":
     result = {
         "source": "wdtt",
@@ -95,7 +99,7 @@ elif action == "cascade.status":
     result = {"settings": {"enabled": False, "source_cidr": "10.66.66.0/24", "inbound_port": 12345, "eu_vless_uri": "", "geosite_category": "ru-blocked", "geoip_category": "ru-blocked", "domains": [], "ip_cidrs": []}, "xray_active": False, "service_active": False, "rules_active": False, "eu_summary": ""}
 elif action == "warp.ping":
     result = {"ok": True, "latency_ms": 42, "warp": "on", "ip": "198.51.100.10", "colo": "FRA"}
-elif action in {"xray.save", "xray.install", "xray.geofiles.refresh", "xray.geofiles.refresh_auto", "warp.install", "warp.create", "warp.restart", "cascade.save", "cascade.restart", "certificate.renew"}:
+elif action in {"xray.save", "xray.install", "xray.geofiles.refresh", "xray.geofiles.refresh_auto", "warp.install", "warp.create", "warp.restart", "cascade.save", "cascade.restart", "certificate.renew", "wdtt.extensions.enable"}:
     result = {"scheduled": True, "state": "test"}
 elif action == "certificate.export":
     result = {"name": "wdtt-panel-certificate.pem", "content": "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n"}

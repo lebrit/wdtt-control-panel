@@ -161,6 +161,55 @@ class AdminDatabaseTests(unittest.TestCase):
         )
         self.assertTrue(all(item["expires_at"] == 0 for item in result["users"]))
 
+    def test_labels_are_saved_for_single_and_bulk_users(self):
+        created = admin.create_user(
+            {
+                "password": "NamedUser123",
+                "label": "Иван — Pixel",
+                "days": 30,
+                "vk_hash": "hash_one",
+                "ports": "56000,56001,9000",
+            }
+        )
+        self.assertEqual(created["label"], "Иван — Pixel")
+        updated = admin.update_user(
+            {"current_password": "NamedUser123", "password": "NamedUser123", "label": "Иван дома"}
+        )
+        self.assertEqual(updated["label"], "Иван дома")
+        result = admin.create_users_bulk(
+            {
+                "count": 2,
+                "label_prefix": "Семья",
+                "days": 30,
+                "vk_hash": "hash_two",
+                "ports": "56000,56001,9000",
+            }
+        )
+        self.assertEqual([item["label"] for item in result["users"]], ["Семья 1", "Семья 2"])
+
+    def test_bulk_user_actions_apply_in_one_database_update(self):
+        for password in ("FirstUser123", "SecondUser12"):
+            admin.create_user(
+                {"password": password, "days": 30, "vk_hash": "hash_one", "ports": "56000,56001,9000"}
+            )
+        data = admin.load_database()
+        data["passwords"]["FirstUser123"].update({"device_id": "first-device", "down_bytes": 100, "up_bytes": 50})
+        data["devices"]["first-device"] = {"device_id": "first-device", "ip": "10.66.66.2"}
+        admin.save_database(data)
+
+        result = admin.bulk_user_action(
+            {"action": "deactivate", "passwords": ["FirstUser123", "SecondUser12"]}
+        )
+        self.assertEqual(result["count"], 2)
+        self.assertTrue(all(entry["is_deactivated"] for entry in admin.load_database()["passwords"].values()))
+        admin.bulk_user_action({"action": "reset_traffic", "passwords": ["FirstUser123"]})
+        self.assertEqual(admin.load_database()["passwords"]["FirstUser123"]["down_bytes"], 0)
+        admin.bulk_user_action({"action": "unbind", "passwords": ["FirstUser123"]})
+        self.assertEqual(admin.load_database()["passwords"]["FirstUser123"]["device_id"], "")
+        self.assertNotIn("first-device", admin.load_database()["devices"])
+        admin.bulk_user_action({"action": "delete", "passwords": ["SecondUser12"]})
+        self.assertNotIn("SecondUser12", admin.load_database()["passwords"])
+
     def test_database_file_is_valid_json(self):
         parsed = json.loads(self.db_file.read_text(encoding="utf-8"))
         self.assertIn("passwords", parsed)
@@ -179,12 +228,16 @@ class AdminDatabaseTests(unittest.TestCase):
 
     def test_admin_device_is_listed_separately(self):
         data = admin.load_database()
+        data["main_down_bytes"] = 200
+        data["main_up_bytes"] = 100
         data["devices"]["admin-phone"] = {"device_id": "admin-phone", "ip": "10.66.66.2", "pub_key": "admin-public"}
         admin.save_database(data)
         with mock.patch.object(admin, "wireguard_handshakes", return_value={}), mock.patch.object(admin, "active_tunnel_ips", return_value={"10.66.66.2"}):
             result = admin.list_users()
         self.assertEqual(result["admins"][0]["role"], "admin")
         self.assertTrue(result["admins"][0]["connected"])
+        self.assertEqual(result["admins"][0]["down_bytes"], 200)
+        self.assertTrue(result["admins"][0]["traffic_supported"])
 
     def test_admin_device_is_online_from_embedded_wireguard_handshake(self):
         data = admin.load_database()

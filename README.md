@@ -1,8 +1,8 @@
 # WDTT Control Panel
 
-**Текущая версия: 0.9.8**
+**Текущая версия: 0.10.0**
 
-Отдельная web-панель для [amurcanov/proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android). Исходники Android-приложения и `server.go` не изменяются.
+Отдельная web-панель для [amurcanov/proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android). По умолчанию она не меняет WDTT; отдельная команда «Включить метки и трафик главного пароля» безопасно собирает совместимое расширение ядра с резервной копией прежнего бинарника.
 
 ## Возможности
 

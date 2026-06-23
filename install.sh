@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.9.8"
+PANEL_VERSION="0.10.0"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,6 +43,7 @@ INSTALL_WDTT="${INSTALL_WDTT:-auto}"
 WDTT_MAIN_PASSWORD="${WDTT_MAIN_PASSWORD:-}"
 WDTT_REF="${WDTT_REF:-main}"
 GO_VERSION="${GO_VERSION:-1.25.0}"
+WDTT_SERVICE="wdtt.service"
 
 log() { printf '[wdtt-panel] %s\n' "$*" | tee -a "$LOG_FILE"; }
 die() { log "ERROR: $*"; exit 1; }
@@ -225,6 +226,151 @@ install_clean_wdtt() {
   chmod 0755 /tmp/wdtt-server
   WDTT_ARGS="-password $WDTT_MAIN_PASSWORD" bash "$WDTT_SOURCE/app/src/main/assets/deploy.sh" install >>"$LOG_FILE" 2>&1
   log "WDTT установлен официальным deploy.sh"
+}
+
+install_wdtt_extensions() {
+  require_root
+  wdtt_installed || die "WDTT не найден: сначала установите или разверните WDTT"
+  [ -x /usr/local/bin/wdtt-server ] || die "Не найден /usr/local/bin/wdtt-server"
+
+  local work source go_arch go_tarball backup target
+  work="$(mktemp -d)"
+  trap 'rm -rf "${work:-}"' RETURN
+  target="/usr/local/bin/wdtt-server"
+
+  case "$(uname -m)" in
+    x86_64|amd64) go_arch="amd64" ;;
+    aarch64|arm64) go_arch="arm64" ;;
+    *) die "Сборка WDTT поддержана для amd64 и arm64" ;;
+  esac
+
+  log "Сборка расширения WDTT: общие метки Telegram и счётчики главного пароля"
+  go_tarball="go${GO_VERSION}.linux-${go_arch}.tar.gz"
+  curl -fsSL --retry 3 "https://go.dev/dl/${go_tarball}" -o "$work/$go_tarball"
+  curl -fsSL --retry 3 "https://go.dev/dl/${go_tarball}.sha256" -o "$work/$go_tarball.sha256"
+  printf '%s  %s\n' "$(tr -d '[:space:]' < "$work/$go_tarball.sha256")" "$work/$go_tarball" | sha256sum -c - >>"$LOG_FILE"
+  tar -xzf "$work/$go_tarball" -C "$work"
+  curl -fsSL --retry 3 "https://github.com/amurcanov/proxy-turn-vk-android/archive/refs/heads/${WDTT_REF}.zip" -o "$work/wdtt.zip"
+  unzip -q "$work/wdtt.zip" -d "$work/source"
+  source="$(find "$work/source" -mindepth 1 -maxdepth 1 -type d | head -1)"
+  [ -f "$source/server.go" ] || die "В архиве WDTT не найден server.go"
+
+  python3 - "$source/server.go" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+source = path.read_text(encoding="utf-8")
+
+def replace_once(old, new, title):
+    global source
+    if old not in source:
+        raise SystemExit(f"WDTT source changed: cannot apply {title}")
+    source = source.replace(old, new, 1)
+
+replace_once(
+    '\tIsDeactivated bool   `json:"is_deactivated,omitempty"`\n}',
+    '\tIsDeactivated bool   `json:"is_deactivated,omitempty"`\n\tLabel         string `json:"label,omitempty"`\n}',
+    "user label field",
+)
+replace_once(
+    '\tMainPassword string                    `json:"main_password"`\n',
+    '\tMainPassword string                    `json:"main_password"`\n\tMainDownBytes int64                     `json:"main_down_bytes,omitempty"`\n\tMainUpBytes   int64                     `json:"main_up_bytes,omitempty"`\n',
+    "main traffic fields",
+)
+replace_once(
+    '\tvar waitingForHash bool\n',
+    '\tvar waitingForHash bool\n\tvar waitingForLabel bool\n',
+    "label input state",
+)
+replace_once(
+    '\t\t\t\t\ttxt := fmt.Sprintf("🔑 *Пароль:* `%s`\\n", pass)\n',
+    '\t\t\t\t\ttxt := fmt.Sprintf("🔑 *Пароль:* `%s`\\n", pass)\n\t\t\t\t\tif entry.Label != "" {\n\t\t\t\t\t\ttxt += fmt.Sprintf("🏷 *Метка:* %s\\n", telegramLabel(entry.Label))\n\t\t\t\t\t}\n',
+    "label in Telegram details",
+)
+replace_once(
+    '\t\t\t\t\tif entry.DeviceID == "" {\n',
+    '\t\t\t\t\tkb = append(kb, map[string]interface{}{\n\t\t\t\t\t\t"text":          "🏷 Изменить метку",\n\t\t\t\t\t\t"callback_data": "label_" + pass,\n\t\t\t\t\t})\n\t\t\t\t\tif entry.DeviceID == "" {\n',
+    "label button",
+)
+replace_once(
+    '\t\t\t\t} else if strings.HasPrefix(data, "deact_") {\n',
+    '\t\t\t\t} else if strings.HasPrefix(data, "label_") {\n\t\t\t\t\tpass := strings.TrimPrefix(data, "label_")\n\t\t\t\t\tdbMutex.Lock()\n\t\t\t\t\t_, exists := db.Passwords[pass]\n\t\t\t\t\tdbMutex.Unlock()\n\t\t\t\t\tif !exists {\n\t\t\t\t\t\tsendTelegram(token, adminID, "❌ Пароль не найден", nil)\n\t\t\t\t\t\tcontinue\n\t\t\t\t\t}\n\t\t\t\t\ttargetPassword = pass\n\t\t\t\t\twaitingForLabel = true\n\t\t\t\t\tsendTelegram(token, adminID, "🏷 Отправьте метку до 64 символов. Отправьте - чтобы очистить.", nil)\n\n\t\t\t\t} else if strings.HasPrefix(data, "deact_") {\n',
+    "label callback",
+)
+replace_once(
+    '\t\t\t// Обработка ввода количества дней\n\t\t\tif waitingForDays {\n',
+    '\t\t\tif waitingForLabel {\n\t\t\t\twaitingForLabel = false\n\t\t\t\tlabel, labelErr := normalizeUserLabel(cmd)\n\t\t\t\tif labelErr != nil {\n\t\t\t\t\tsendTelegram(token, adminID, "❌ Метка должна быть не длиннее 64 символов и без служебных символов.", nil)\n\t\t\t\t\tcontinue\n\t\t\t\t}\n\t\t\t\tdbMutex.Lock()\n\t\t\t\tentry, exists := db.Passwords[targetPassword]\n\t\t\t\tif exists && entry != nil {\n\t\t\t\t\tentry.Label = label\n\t\t\t\t\tsaveDB()\n\t\t\t\t}\n\t\t\t\tdbMutex.Unlock()\n\t\t\t\tif !exists || entry == nil {\n\t\t\t\t\tsendTelegram(token, adminID, "❌ Пароль не найден", nil)\n\t\t\t\t} else if label == "" {\n\t\t\t\t\tsendTelegram(token, adminID, "✅ Метка очищена", nil)\n\t\t\t\t} else {\n\t\t\t\t\tsendTelegram(token, adminID, fmt.Sprintf("✅ Метка сохранена: %s", telegramLabel(label)), nil)\n\t\t\t\t}\n\t\t\t\ttargetPassword = ""\n\t\t\t\tcontinue\n\t\t\t}\n\n\t\t\t// Обработка ввода количества дней\n\t\t\tif waitingForDays {\n',
+    "label input",
+)
+replace_once(
+    '\t\t\ttxt += fmt.Sprintf("%s `%s` (%s)\\n", status, p, expiry)\n\t\t\tinlineKb = append(inlineKb, map[string]interface{}{\n\t\t\t\t"text":          "🔍 " + p,\n',
+    '\t\t\tlabelSuffix := ""\n\t\t\tif entry.Label != "" {\n\t\t\t\tlabelSuffix = " — " + telegramLabel(entry.Label)\n\t\t\t}\n\t\t\ttxt += fmt.Sprintf("%s `%s`%s (%s)\\n", status, p, labelSuffix, expiry)\n\t\t\tbuttonText := "🔍 " + p\n\t\t\tif entry.Label != "" {\n\t\t\t\tbuttonText = "🔍 " + entry.Label\n\t\t\t}\n\t\t\tinlineKb = append(inlineKb, map[string]interface{}{\n\t\t\t\t"text":          buttonText,\n',
+    "label in Telegram list",
+)
+replace_once(
+    '\t\t\t// Per-password upload tracking\n\t\t\tif connPassword != "" && !connIsMainPass {\n\t\t\t\tdbMutex.Lock()\n\t\t\t\te, ok := db.Passwords[connPassword]\n\t\t\t\tif !ok || e == nil || isPasswordExpired(e) || e.IsDeactivated {\n\t\t\t\t\tdbMutex.Unlock()\n\t\t\t\t\treturn\n\t\t\t\t}\n\t\t\t\te.UpBytes += int64(nn)\n\t\t\t\tdbMutex.Unlock()\n\t\t\t}\n',
+    '\t\t\t// Per-password and main-password upload tracking\n\t\t\tif connPassword != "" {\n\t\t\t\tdbMutex.Lock()\n\t\t\t\tif connIsMainPass {\n\t\t\t\t\tdb.MainUpBytes += int64(nn)\n\t\t\t\t} else {\n\t\t\t\t\te, ok := db.Passwords[connPassword]\n\t\t\t\t\tif !ok || e == nil || isPasswordExpired(e) || e.IsDeactivated {\n\t\t\t\t\t\tdbMutex.Unlock()\n\t\t\t\t\t\treturn\n\t\t\t\t\t}\n\t\t\t\t\te.UpBytes += int64(nn)\n\t\t\t\t}\n\t\t\t\tdbMutex.Unlock()\n\t\t\t}\n',
+    "main upload counter",
+)
+replace_once(
+    '\t\t\t// Per-password download tracking\n\t\t\tif connPassword != "" && !connIsMainPass {\n\t\t\t\tdbMutex.Lock()\n\t\t\t\te, ok := db.Passwords[connPassword]\n\t\t\t\tif !ok || e == nil || isPasswordExpired(e) || e.IsDeactivated {\n\t\t\t\t\tdbMutex.Unlock()\n\t\t\t\t\treturn\n\t\t\t\t}\n\t\t\t\te.DownBytes += int64(nn)\n\t\t\t\tdbMutex.Unlock()\n\t\t\t}\n',
+    '\t\t\t// Per-password and main-password download tracking\n\t\t\tif connPassword != "" {\n\t\t\t\tdbMutex.Lock()\n\t\t\t\tif connIsMainPass {\n\t\t\t\t\tdb.MainDownBytes += int64(nn)\n\t\t\t\t} else {\n\t\t\t\t\te, ok := db.Passwords[connPassword]\n\t\t\t\t\tif !ok || e == nil || isPasswordExpired(e) || e.IsDeactivated {\n\t\t\t\t\t\tdbMutex.Unlock()\n\t\t\t\t\t\treturn\n\t\t\t\t\t}\n\t\t\t\t\te.DownBytes += int64(nn)\n\t\t\t\t}\n\t\t\t\tdbMutex.Unlock()\n\t\t\t}\n',
+    "main download counter",
+)
+replace_once(
+    '\t\t\tnumDevices := len(db.Devices)\n\t\t\tdbMutex.Unlock()\n',
+    '\t\t\tnumDevices := len(db.Devices)\n\t\t\tsaveDB()\n\t\t\tdbMutex.Unlock()\n',
+    "periodic counter persistence",
+)
+marker = 'func getNextIP() string {'
+if marker not in source:
+    raise SystemExit("WDTT source changed: cannot add label validation")
+helpers = '''func normalizeUserLabel(value string) (string, error) {
+\tlabel := strings.TrimSpace(value)
+\tif label == "-" {
+\t\treturn "", nil
+\t}
+\tif len([]rune(label)) > 64 {
+\t\treturn "", errors.New("label is too long")
+\t}
+\tfor _, char := range label {
+\t\tif char < 32 || char == 127 {
+\t\t\treturn "", errors.New("label contains a control character")
+\t\t}
+\t}
+\treturn label, nil
+}
+
+func telegramLabel(value string) string {
+\treplacer := strings.NewReplacer("\\\\", "\\\\\\\\", "_", "\\\\_", "*", "\\\\*", "`", "\\\\`", "[", "\\\\[")
+\treturn replacer.Replace(value)
+}
+
+'''
+source = source.replace(marker, helpers + marker, 1)
+path.write_text(source, encoding="utf-8")
+PY
+
+  (
+    cd "$source"
+    PATH="$work/go/bin:$PATH" CGO_ENABLED=0 "$work/go/bin/go" build -trimpath -ldflags='-s -w' -o "$work/wdtt-server" ./server.go
+  ) >>"$LOG_FILE" 2>&1 || die "Не удалось собрать расширенный WDTT; действующий сервер не изменён"
+
+  install -d -m 0700 "$PRIVATE_STATE_DIR"
+  backup="$PRIVATE_STATE_DIR/wdtt-server-before-extension-$(date +%Y%m%d-%H%M%S)"
+  install -m 0700 "$target" "$backup"
+  install -m 0755 "$work/wdtt-server" "$target.new"
+  mv -f "$target.new" "$target"
+  if ! systemctl restart "$WDTT_SERVICE" >>"$LOG_FILE" 2>&1; then
+    install -m 0755 "$backup" "$target"
+    systemctl restart "$WDTT_SERVICE" >>"$LOG_FILE" 2>&1 || true
+    die "Обновлённый WDTT не запустился; прежний бинарный файл восстановлен"
+  fi
+  printf '{"enabled_at": %s, "features": ["labels", "main_traffic"]}\n' "$(date +%s)" > "$PRIVATE_STATE_DIR/wdtt-extensions.json"
+  chmod 0600 "$PRIVATE_STATE_DIR/wdtt-extensions.json"
+  log "Расширение WDTT включено: метки общие с Telegram-ботом, трафик главного пароля учитывается"
 }
 
 install_panel_files() {
@@ -947,5 +1093,6 @@ case "${1:-install}" in
   uninstall|--uninstall|-u) require_root; uninstall_panel ;;
   install-xray-runtime) install_xray_runtime ;;
   install-warp-runtime) install_warp_runtime ;;
-  *) die "Использование: $0 [install|update|renew-cert|status|change-password|uninstall|install-xray-runtime|install-warp-runtime]" ;;
+  enable-wdtt-extensions) install_wdtt_extensions ;;
+  *) die "Использование: $0 [install|update|renew-cert|status|change-password|uninstall|install-xray-runtime|install-warp-runtime|enable-wdtt-extensions]" ;;
 esac

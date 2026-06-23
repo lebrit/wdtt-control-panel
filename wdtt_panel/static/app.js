@@ -6,7 +6,7 @@
   const CSRF = meta("csrf-token");
   const PUBLIC_HOST = meta("public-host");
   const PANEL_VERSION = meta("panel-version");
-  const state = { overview: null, users: [], logs: [], logsMeta: null, editing: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null };
+  const state = { overview: null, users: [], selectedUsers: new Set(), logs: [], logsMeta: null, editing: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null };
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -157,6 +157,8 @@
   async function loadUsers() {
     const result = await api("users");
     state.users = [...(result.admins || []), ...(result.users || [])];
+    const available = new Set((result.users || []).map((user) => user.password));
+    state.selectedUsers.forEach((password) => { if (!available.has(password)) state.selectedUsers.delete(password); });
     $("#user-limit").textContent = `${(result.users || []).length} / ${result.limit || 10}`;
     renderUsers();
   }
@@ -174,10 +176,14 @@
     const users = state.users.filter((user) => JSON.stringify(user).toLowerCase().includes(query));
     $("#users-body").innerHTML = users.map((user) => {
       const [statusClass, status] = userStatus(user);
-      const traffic = `${formatBytes(user.down_bytes)} ↓ / ${formatBytes(user.up_bytes)} ↑`;
+      const traffic = user.traffic_supported === false ? "Появится после включения" : `${formatBytes(user.down_bytes)} ↓ / ${formatBytes(user.up_bytes)} ↑`;
       const device = user.device ? `${escapeHtml(user.device.device_id || user.device_id)}<br><small>${escapeHtml(user.device.ip || "")}</small>` : "Не привязан";
+      const title = user.label || user.password;
+      const passwordLine = user.label ? `<br><small class="mono">Пароль: ${escapeHtml(user.password)}</small>` : "";
+      const selectable = user.role !== "admin";
       return `<tr>
-        <td><strong class="mono">${escapeHtml(user.password)}</strong><br><small>${escapeHtml(user.vk_hash)}</small></td>
+        <td>${selectable ? `<input type="checkbox" data-select-user="${escapeHtml(user.password)}" aria-label="Выбрать ${escapeHtml(title)}" ${state.selectedUsers.has(user.password) ? "checked" : ""}>` : ""}</td>
+        <td><strong${user.label ? "" : " class=\"mono\""}>${escapeHtml(title)}</strong>${passwordLine}<br><small>${escapeHtml(user.vk_hash)}</small></td>
         <td><span class="badge ${statusClass}">${status}</span></td>
         <td>${escapeHtml(formatDate(user.expires_at))}</td>
         <td class="mono">${device}</td><td>${escapeHtml(traffic)}</td>
@@ -189,7 +195,19 @@
           <button data-reset="${escapeHtml(user.password)}">Сброс трафика</button>
           <button data-delete="${escapeHtml(user.password)}">Удалить</button>`}
         </div></td></tr>`;
-    }).join("") || `<tr><td colspan="6" class="muted">Пользователи не найдены.</td></tr>`;
+    }).join("") || `<tr><td colspan="7" class="muted">Пользователи не найдены.</td></tr>`;
+    renderSelectedUsersControls();
+  }
+
+  function renderSelectedUsersControls() {
+    const selected = state.selectedUsers.size;
+    $("#selected-users").textContent = `Выбрано: ${selected}`;
+    $("#apply-bulk-user-action").disabled = !selected || !$("#bulk-user-action").value;
+    const query = $("#user-search").value.toLowerCase();
+    const visible = state.users.filter((user) => user.role !== "admin" && JSON.stringify(user).toLowerCase().includes(query));
+    const all = $("#select-all-users");
+    all.checked = visible.length > 0 && visible.every((user) => state.selectedUsers.has(user.password));
+    all.indeterminate = visible.some((user) => state.selectedUsers.has(user.password)) && !all.checked;
   }
 
   function openUserDialog(user = null) {
@@ -199,6 +217,7 @@
     $("#edit-password").value = user?.password || "";
     $("#edit-password").placeholder = user ? "Пароль доступа" : "Пусто = создать автоматически";
     $("#edit-hashes").value = user?.vk_hash || "";
+    $("#edit-label").value = user?.role === "admin" ? "" : (user?.label || "");
     $("#edit-ports").value = user?.ports || "56000,56001,9000";
     $("#edit-unlimited").checked = Boolean(user && !user.expires_at);
     $("#edit-disabled").checked = Boolean(user?.is_deactivated);
@@ -214,6 +233,7 @@
     setBusy(button, true);
     const payload = {
       password: $("#edit-password").value,
+      label: $("#edit-label").value,
       vk_hash: $("#edit-hashes").value,
       ports: $("#edit-ports").value,
       days: Number($("#edit-days").value),
@@ -231,7 +251,7 @@
   }
 
   function openBulkUserDialog() {
-    const remaining = Math.max(0, 10 - state.users.length);
+    const remaining = Math.max(0, 10 - state.users.filter((user) => user.role !== "admin").length);
     if (!remaining) { toast("Достигнут лимит 10 пользователей", true); return; }
     $("#bulk-count").max = remaining;
     $("#bulk-count").value = Math.min(2, remaining);
@@ -247,6 +267,7 @@
       count: Number($("#bulk-count").value),
       vk_hash: $("#bulk-hashes").value,
       hash_mode: $("#bulk-hash-mode").value,
+      label_prefix: $("#bulk-label-prefix").value,
       ports: $("#bulk-ports").value,
       days: Number($("#bulk-days").value),
       unlimited: $("#bulk-unlimited").checked,
@@ -278,6 +299,42 @@
       toast("Операция выполнена");
       await Promise.all([loadUsers(), loadOverview()]);
     } catch (error) { toast(error.message, true); }
+  }
+
+  async function applyBulkUserAction() {
+    const action = $("#bulk-user-action").value;
+    const passwords = [...state.selectedUsers];
+    if (!action || !passwords.length) return;
+    const descriptions = {
+      activate: "Активировать",
+      deactivate: "Деактивировать",
+      reset_traffic: "Сбросить трафик у",
+      unbind: "Отвязать устройства у",
+      delete: "Удалить",
+    };
+    const destructive = action === "delete" ? " Это действие нельзя отменить." : "";
+    if (!confirm(`${descriptions[action]} пользователей: ${passwords.length}?${destructive}`)) return;
+    const button = $("#apply-bulk-user-action");
+    setBusy(button, true);
+    try {
+      const result = await api("users/bulk-action", { method: "POST", body: { action, passwords } });
+      state.selectedUsers.clear();
+      $("#bulk-user-action").value = "";
+      toast(`Выполнено: ${result.count || passwords.length}`);
+      await Promise.all([loadUsers(), loadOverview()]);
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function enableWdttExtensions() {
+    if (!confirm("Обновить только ядро WDTT? Это добавит общие метки с Telegram-ботом и учёт трафика главного пароля. Настройки и пользователи сохранятся, подключение прервётся на несколько секунд.")) return;
+    const button = $("#enable-wdtt-extensions");
+    setBusy(button, true);
+    try {
+      await api("wdtt/extensions/enable", { method: "POST" });
+      toast("Обновление WDTT запущено. Через минуту обновите список пользователей.");
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
   }
 
   function quickLink(user) {
@@ -813,6 +870,24 @@
     $("#bulk-user-form").addEventListener("submit", saveBulkUsers);
     $("#copy-bulk-links").addEventListener("click", copyBulkLinks);
     $("#user-search").addEventListener("input", renderUsers);
+    $("#bulk-user-action").addEventListener("change", renderSelectedUsersControls);
+    $("#apply-bulk-user-action").addEventListener("click", applyBulkUserAction);
+    $("#enable-wdtt-extensions").addEventListener("click", enableWdttExtensions);
+    $("#select-all-users").addEventListener("change", (event) => {
+      const query = $("#user-search").value.toLowerCase();
+      state.users.filter((user) => user.role !== "admin" && JSON.stringify(user).toLowerCase().includes(query)).forEach((user) => {
+        if (event.target.checked) state.selectedUsers.add(user.password);
+        else state.selectedUsers.delete(user.password);
+      });
+      renderUsers();
+    });
+    $("#users-body").addEventListener("change", (event) => {
+      const input = event.target.closest("[data-select-user]");
+      if (!input) return;
+      if (input.checked) state.selectedUsers.add(input.dataset.selectUser);
+      else state.selectedUsers.delete(input.dataset.selectUser);
+      renderSelectedUsersControls();
+    });
     $("#users-body").addEventListener("click", async (event) => {
       const button = event.target.closest("button"); if (!button) return;
       const find = (password) => state.users.find((item) => item.password === password);

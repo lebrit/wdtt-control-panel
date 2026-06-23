@@ -10,9 +10,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.9.8"', installer)
-        self.assertIn('__version__ = "0.9.8"', package)
-        self.assertIn("Текущая версия: 0.9.8", readme)
+        self.assertIn('PANEL_VERSION="0.10.0"', installer)
+        self.assertIn('__version__ = "0.10.0"', package)
+        self.assertIn("Текущая версия: 0.10.0", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -31,6 +31,10 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("write_maintenance_scripts", script)
         self.assertIn("install_xray_runtime()", script)
         self.assertIn("install_warp_runtime()", script)
+        self.assertIn("install_wdtt_extensions()", script)
+        self.assertIn("enable-wdtt-extensions) install_wdtt_extensions ;;", script)
+        self.assertIn('json:"label,omitempty"', script)
+        self.assertIn('json:"main_down_bytes,omitempty"', script)
         self.assertIn("wdtt-xray-cascade.service", script)
         self.assertIn("wdtt-xray-gateway.service", script)
         self.assertIn("wdtt-panel-geofiles-update.timer", script)
@@ -112,6 +116,17 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('static/app.js?v={{VERSION}}', html)
         self.assertNotIn('id="repair-wdtt"', html)
         self.assertNotIn('api("service/repair"', script)
+
+    def test_user_labels_and_bulk_actions_are_exposed(self):
+        html = (ROOT / "wdtt_panel" / "templates" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "wdtt_panel" / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="edit-label"', html)
+        self.assertIn('id="bulk-label-prefix"', html)
+        self.assertIn('id="select-all-users"', html)
+        self.assertIn('id="bulk-user-action"', html)
+        self.assertIn('id="enable-wdtt-extensions"', html)
+        self.assertIn('api("users/bulk-action"', script)
+        self.assertIn('api("wdtt/extensions/enable"', script)
 
     def test_admin_lock_is_in_writable_private_state(self):
         script = (ROOT / "wdtt_panel" / "admin.py").read_text(encoding="utf-8")

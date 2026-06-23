@@ -114,10 +114,10 @@
     </section>
 
     <section class="tab" id="tab-users">
-      <div class="section-head"><div><p class="eyebrow">ACCESS DATABASE</p><h2>Пользователи WDTT</h2><p class="muted">Изменения перезапускают WDTT на несколько секунд.</p></div><div class="inline-actions"><button id="bulk-users" class="secondary">Создать несколько</button><button id="new-user" class="primary">Создать пользователя</button></div></div>
+      <div class="section-head"><div><p class="eyebrow">ACCESS DATABASE</p><h2>Пользователи WDTT</h2><p class="muted">Метка — понятное имя пользователя; после включения расширения WDTT она синхронна с Telegram-ботом. Изменения перезапускают WDTT на несколько секунд.</p></div><div class="inline-actions"><button id="enable-wdtt-extensions" class="secondary">Включить метки и трафик главного пароля</button><button id="bulk-users" class="secondary">Создать несколько</button><button id="new-user" class="primary">Создать пользователя</button></div></div>
       <article class="panel-card table-card">
-        <div class="table-toolbar"><input id="user-search" placeholder="Поиск по паролю, устройству или IP"><span id="user-limit">0 / 10</span></div>
-        <div class="table-wrap"><table><thead><tr><th>Доступ</th><th>Статус</th><th>Истекает</th><th>Устройство</th><th>Трафик</th><th></th></tr></thead><tbody id="users-body"></tbody></table></div>
+        <div class="table-toolbar user-toolbar"><input id="user-search" placeholder="Поиск по метке, паролю, устройству или IP"><div class="user-bulk-controls"><span id="selected-users">Выбрано: 0</span><select id="bulk-user-action" aria-label="Массовое действие"><option value="">Действие над выбранными…</option><option value="activate">Активировать</option><option value="deactivate">Деактивировать</option><option value="reset_traffic">Сбросить трафик</option><option value="unbind">Отвязать устройства</option><option value="delete">Удалить</option></select><button id="apply-bulk-user-action" class="secondary" disabled>Применить</button><span id="user-limit">0 / 10</span></div></div>
+        <div class="table-wrap"><table><thead><tr><th><input id="select-all-users" type="checkbox" aria-label="Выбрать всех пользователей"></th><th>Доступ</th><th>Статус</th><th>Истекает</th><th>Устройство</th><th>Трафик</th><th></th></tr></thead><tbody id="users-body"></tbody></table></div>
       </article>
     </section>
 
@@ -157,6 +157,7 @@
       <input type="hidden" id="current-password">
       <div class="form-grid">
         <label class="wide">Пароль<input id="edit-password" pattern="[A-Za-z0-9._~-]{8,64}" placeholder="Оставьте пустым для автогенерации"></label>
+        <label class="wide">Метка пользователя<input id="edit-label" maxlength="64" placeholder="Например: Иван — Pixel 8"></label>
         <label class="wide">VK-хеши<input id="edit-hashes" required placeholder="До 4 хешей через запятую"></label>
         <label>Срок, дней<input id="edit-days" type="number" min="1" max="3650" value="30"></label>
         <label>Порты<input id="edit-ports" value="56000,56001,9000" required></label>
@@ -174,6 +175,7 @@
         <label>Количество<input id="bulk-count" type="number" min="1" max="10" value="2" required></label>
         <label>Назначение хешей<select id="bulk-hash-mode"><option value="shared">Все хеши каждому</option><option value="rotate">По одному по кругу</option></select></label>
         <label class="wide">VK-хеши<input id="bulk-hashes" required placeholder="Один или до 4 хешей через запятую"></label>
+        <label class="wide">Префикс меток<input id="bulk-label-prefix" maxlength="61" placeholder="Например: Семья — будут «Семья 1», «Семья 2»"></label>
         <label>Срок, дней<input id="bulk-days" type="number" min="1" max="3650" value="30"></label>
         <label>Порты<input id="bulk-ports" value="56000,56001,9000" required></label>
         <label class="checkbox wide"><input id="bulk-unlimited" type="checkbox"> Бессрочный доступ</label>
