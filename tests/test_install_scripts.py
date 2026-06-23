@@ -10,18 +10,20 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.10.3"', installer)
-        self.assertIn('__version__ = "0.10.3"', package)
-        self.assertIn("Текущая версия: 0.10.3", readme)
+        self.assertIn('PANEL_VERSION="0.10.4"', installer)
+        self.assertIn('__version__ = "0.10.4"', package)
+        self.assertIn("Текущая версия: 0.10.4", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
-        for action in ("install", "update", "status", "renew-cert", "change-password", "uninstall"):
+        for action in ("install", "update", "rollback", "status", "renew-cert", "change-password", "uninstall"):
             self.assertIn(action, script)
         self.assertIn("/dev/tty", script)
         self.assertIn("--domain", script)
         self.assertIn("--password", script)
         self.assertIn("while true", script)
+        self.assertIn("github_versions()", script)
+        self.assertIn("refs/tags/${ROLLBACK_VERSION}", script)
 
     def test_installer_has_update_and_certificate_renewal(self):
         script = (ROOT / "install.sh").read_text(encoding="utf-8")
@@ -36,6 +38,8 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("write_wdtt_extensions_timer", script)
         self.assertIn("TimeoutStartSec=20min", script)
         self.assertIn("OnUnitActiveSec=10min", script)
+        self.assertIn("OnUnitInactiveSec=10min", script)
+        self.assertIn("Restart=on-failure", script)
         self.assertIn("WDTT_EXTENSION_MARKER", script)
         self.assertIn("wdtt_extensions_binary_is_current", script)
         self.assertIn('grep -aFq "$WDTT_EXTENSION_MARKER"', script)

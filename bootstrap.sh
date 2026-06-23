@@ -3,14 +3,14 @@ set -Eeuo pipefail
 
 REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 BRANCH="${WDTT_PANEL_BRANCH:-main}"
-ARCHIVE_URL="https://github.com/${REPOSITORY}/archive/refs/heads/${BRANCH}.tar.gz"
 WORK_DIR=""
 ACTION=""
 INTERACTIVE=0
+ROLLBACK_VERSION=""
 
 usage() {
   cat <<EOF
-Usage: bootstrap.sh [install|update|uninstall|status|renew-cert|change-password] [options]
+Usage: bootstrap.sh [install|update|rollback|uninstall|status|renew-cert|change-password] [options]
 
 Without arguments an interactive management menu is shown.
 
@@ -28,6 +28,9 @@ Install options:
 
 Change-password options:
   --password VALUE    New panel administrator password (12+ characters)
+
+Rollback options:
+  --version TAG       Version tag from GitHub, for example v0.10.3
 EOF
 }
 
@@ -46,6 +49,7 @@ WDTT Control Panel
 4) Проверить/обновить сертификат
 5) Сменить пароль входа в панель
 6) Удалить панель
+7) Откатить панель к прошлой версии
 0) Выход
 EOF
   printf 'Выберите действие [1]: ' >/dev/tty
@@ -61,9 +65,49 @@ EOF
       IFS= read -r confirm </dev/tty || true
       case "$confirm" in y|Y|yes|YES|да|Да|ДА) ACTION="uninstall" ;; *) echo 'Отменено.' >/dev/tty; ACTION="" ;; esac
       ;;
+    7) ACTION="rollback" ;;
     0) ACTION="exit" ;;
     *) echo 'Неизвестный пункт меню.' >/dev/tty; ACTION="" ;;
   esac
+}
+
+github_versions() {
+  curl -fsSL --retry 3 "https://api.github.com/repos/${REPOSITORY}/tags?per_page=100" | python3 -c '
+import json, sys
+try:
+    tags = json.load(sys.stdin)
+except json.JSONDecodeError:
+    tags = []
+for item in tags:
+    name = item.get("name") if isinstance(item, dict) else ""
+    if isinstance(name, str) and name.startswith("v"):
+        print(name)
+'
+}
+
+prompt_rollback_version() {
+  [ -n "$ROLLBACK_VERSION" ] && return 0
+  [ "${NON_INTERACTIVE:-0}" != "1" ] || { echo "Для отката укажите --version vX.Y.Z" >&2; return 1; }
+  [ -r /dev/tty ] && [ -w /dev/tty ] || { echo "Для отката укажите --version vX.Y.Z" >&2; return 1; }
+  command -v python3 >/dev/null 2>&1 || { echo "Для списка версий нужен python3" >&2; return 1; }
+  local -a versions=()
+  mapfile -t versions < <(github_versions || true)
+  [ "${#versions[@]}" -gt 0 ] || { echo "Не удалось получить список версий GitHub" >&2; return 1; }
+  printf '\nДоступные версии:\n' >/dev/tty
+  local index=1 version choice
+  for version in "${versions[@]}"; do
+    printf '%d) %s\n' "$index" "$version" >/dev/tty
+    index=$((index + 1))
+  done
+  printf 'Выберите версию [1]: ' >/dev/tty
+  IFS= read -r choice </dev/tty || true
+  choice="${choice:-1}"
+  [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#versions[@]}" ] || { echo "Некорректный номер версии" >&2; return 1; }
+  ROLLBACK_VERSION="${versions[$((choice - 1))]}"
+}
+
+validate_rollback_version() {
+  [[ "$ROLLBACK_VERSION" =~ ^v[0-9][0-9A-Za-z._-]*$ ]] || { echo "Некорректный тег версии: $ROLLBACK_VERSION" >&2; return 1; }
 }
 
 prompt_password_change() {
@@ -140,7 +184,7 @@ EOF
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    install|update|uninstall|status|renew-cert|change-password) ACTION="$1"; shift ;;
+    install|update|rollback|uninstall|status|renew-cert|change-password) ACTION="$1"; shift ;;
     --domain|--host) [ "$#" -ge 2 ] || { usage; exit 2; }; PANEL_HOST="$2"; shift 2 ;;
     --ip) [ "$#" -ge 2 ] || { usage; exit 2; }; PANEL_HOST="$2"; shift 2 ;;
     --user) [ "$#" -ge 2 ] || { usage; exit 2; }; PANEL_USER="$2"; shift 2 ;;
@@ -150,6 +194,7 @@ while [ "$#" -gt 0 ]; do
     --path) [ "$#" -ge 2 ] || { usage; exit 2; }; PANEL_PATH="$2"; shift 2 ;;
     --wdtt) [ "$#" -ge 2 ] || { usage; exit 2; }; INSTALL_WDTT="$2"; shift 2 ;;
     --wdtt-password) [ "$#" -ge 2 ] || { usage; exit 2; }; WDTT_MAIN_PASSWORD="$2"; shift 2 ;;
+    --version) [ "$#" -ge 2 ] || { usage; exit 2; }; ROLLBACK_VERSION="$2"; shift 2 ;;
     --non-interactive) NON_INTERACTIVE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 2 ;;
@@ -184,6 +229,9 @@ run_action() {
     prompt_install_options
   elif [ "$ACTION" = "change-password" ]; then
     prompt_password_change
+  elif [ "$ACTION" = "rollback" ]; then
+    prompt_rollback_version
+    validate_rollback_version
   fi
 
   export PANEL_HOST="${PANEL_HOST:-}"
@@ -197,14 +245,23 @@ run_action() {
 
   cleanup
   WORK_DIR="$(mktemp -d)"
-  echo "[wdtt-panel] Downloading ${REPOSITORY}@${BRANCH}"
-  curl -fsSL --retry 3 "$ARCHIVE_URL" | tar -xz -C "$WORK_DIR"
+  local archive_url install_action source_ref
+  if [ "$ACTION" = "rollback" ]; then
+    source_ref="refs/tags/${ROLLBACK_VERSION}"
+    install_action="update"
+  else
+    source_ref="refs/heads/${BRANCH}"
+    install_action="$ACTION"
+  fi
+  archive_url="https://github.com/${REPOSITORY}/archive/${source_ref}.tar.gz"
+  echo "[wdtt-panel] Downloading ${REPOSITORY}@${source_ref}"
+  curl -fsSL --retry 3 "$archive_url" | tar -xz -C "$WORK_DIR"
   SOURCE_DIR="$(find "$WORK_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
   [ -f "$SOURCE_DIR/install.sh" ] || {
     echo "Invalid project archive: install.sh not found" >&2
     return 1
   }
-  bash "$SOURCE_DIR/install.sh" "$ACTION"
+  bash "$SOURCE_DIR/install.sh" "$install_action"
 }
 
 if [ "$INTERACTIVE" = "1" ]; then

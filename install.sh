@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.10.3"
+PANEL_VERSION="0.10.4"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -1059,6 +1059,8 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 TimeoutStartSec=20min
+Restart=on-failure
+RestartSec=10min
 ExecStart=/bin/bash $INSTALL_DIR/install.sh enable-wdtt-extensions
 EOF
   cat > "/etc/systemd/system/$WDTT_EXTENSIONS_TIMER" <<EOF
@@ -1068,6 +1070,7 @@ Description=Retry WDTT Panel traffic and label extensions
 [Timer]
 OnBootSec=20s
 OnUnitActiveSec=10min
+OnUnitInactiveSec=10min
 RandomizedDelaySec=30s
 Persistent=true
 Unit=$WDTT_EXTENSIONS_SERVICE
