@@ -24,6 +24,8 @@ class AdminDatabaseTests(unittest.TestCase):
         self.xray_config = root / "xray-config.json"
         self.xray_assets = root / "xray-assets"
         self.xray_cascade_settings = root / "xray-cascade.json"
+        self.xray_access_log = root / "xray-access.log"
+        self.xray_error_log = root / "xray-error.log"
         self.patchers = [
             mock.patch.object(admin, "DB_FILE", self.db_file),
             mock.patch.object(admin, "BACKUP_DIR", self.backups),
@@ -36,6 +38,8 @@ class AdminDatabaseTests(unittest.TestCase):
             mock.patch.object(admin, "XRAY_CONFIG", self.xray_config),
             mock.patch.object(admin, "XRAY_ASSETS", self.xray_assets),
             mock.patch.object(admin, "XRAY_CASCADE_SETTINGS", self.xray_cascade_settings),
+            mock.patch.object(admin, "XRAY_ACCESS_LOG", self.xray_access_log),
+            mock.patch.object(admin, "XRAY_ERROR_LOG", self.xray_error_log),
             mock.patch.object(admin, "SKIP_SYSTEMD", True),
         ]
         for patcher in self.patchers:
@@ -190,6 +194,18 @@ class AdminDatabaseTests(unittest.TestCase):
             result = admin.list_users()
         self.assertTrue(result["admins"][0]["connected"])
 
+    def test_overview_counts_the_main_administrator_and_its_device(self):
+        data = admin.load_database()
+        data["main_password"] = "admin"
+        data["devices"]["admin-phone"] = {"device_id": "admin-phone", "ip": "10.66.66.2"}
+        admin.save_database(data)
+        disk = mock.Mock(total=100, used=10, free=90)
+        with mock.patch.object(admin, "read_stats", return_value={}), mock.patch.object(admin.shutil, "disk_usage", return_value=disk), mock.patch.object(admin, "cpu_usage", return_value=0), mock.patch.object(admin, "memory_usage", return_value={}), mock.patch.object(admin.os, "getloadavg", return_value=(0, 0, 0), create=True):
+            result = admin.overview({})
+        self.assertEqual(result["users"], 1)
+        self.assertEqual(result["devices"], 1)
+        self.assertEqual(result["admin_devices"], 1)
+
     def test_userspace_wireguard_handshakes_are_used_when_wg_tools_are_missing(self):
         with mock.patch.object(admin, "SKIP_SYSTEMD", False), mock.patch.object(admin.shutil, "which", return_value=None), mock.patch.object(admin, "userspace_wireguard_handshakes", return_value={"public-key": 123}):
             self.assertEqual(admin.wireguard_handshakes(), {"public-key": 123})
@@ -199,6 +215,16 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual(result["source"], "all")
         self.assertEqual(result["limit"], 5000)
         self.assertEqual(result["lines"], [])
+
+    def test_xray_access_log_is_available_as_a_diagnostic_source(self):
+        self.xray_access_log.write_text("accepted tcp:gemini.google.com:443 [eu-vless]", encoding="utf-8")
+        result = admin.journal_logs({"source": "xray-access", "limit": 100})
+        self.assertEqual(result["title"], "Xray: домены и маршруты")
+        self.assertEqual(result["lines"], ["accepted tcp:gemini.google.com:443 [eu-vless]"])
+        self.xray_error_log.write_text("connection failed: gemini.google.com", encoding="utf-8")
+        errors = admin.journal_logs({"source": "xray-errors", "limit": 100})
+        self.assertEqual(errors["title"], "Xray: ошибки соединений")
+        self.assertEqual(errors["lines"], ["connection failed: gemini.google.com"])
 
     def test_xray_managed_config_has_safe_default_outbounds(self):
         settings = admin.normalize_xray_settings(
@@ -218,6 +244,39 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual([item["tag"] for item in config["outbounds"]], ["direct", "block", "vless-out"])
         self.assertEqual(config["routing"]["rules"][0]["outboundTag"], "vless-out")
         self.assertIn("runetfreedom", settings["geofiles"][0]["url"])
+        self.assertTrue(config["inbounds"] == [] or config["inbounds"][0]["sniffing"]["enabled"])
+
+    def test_xray_access_logging_writes_to_private_panel_state(self):
+        settings = admin.normalize_xray_settings(
+            {
+                "enabled": True,
+                "mode": "managed",
+                "log_level": "info",
+                "access_log": True,
+                "inbounds": [],
+                "outbounds": [],
+                "routing_rules": [],
+                "geofiles": admin.default_xray_settings()["geofiles"],
+            }
+        )
+        config = admin.build_xray_config(settings)
+        self.assertEqual(config["log"]["access"], str(self.xray_access_log))
+        self.assertEqual(config["log"]["error"], str(self.xray_error_log))
+
+    def test_xray_access_logging_also_applies_to_raw_config(self):
+        settings = admin.normalize_xray_settings(
+            {
+                "enabled": True,
+                "mode": "raw",
+                "log_level": "warning",
+                "access_log": True,
+                "raw_config": '{"log": {"loglevel": "error"}, "inbounds": [], "outbounds": []}',
+                "geofiles": admin.default_xray_settings()["geofiles"],
+            }
+        )
+        config = admin.build_xray_config(settings)
+        self.assertEqual(config["log"]["loglevel"], "error")
+        self.assertEqual(config["log"]["access"], str(self.xray_access_log))
 
     def test_xray_friendly_routes_and_rules_build_without_json_editor(self):
         settings = admin.normalize_xray_settings(
@@ -286,6 +345,33 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual(config["routing"]["rules"][1]["ip"], ["203.0.113.10/32", "198.51.100.0/24"])
         self.assertEqual(config["routing"]["rules"][2]["domain"], ["geosite:ru-blocked"])
         self.assertEqual(config["routing"]["rules"][3]["ip"], ["geoip:ru-blocked"])
+
+    def test_friendly_rule_can_use_enabled_eu_vless_cascade(self):
+        xray = admin.normalize_xray_settings(
+            {
+                "enabled": True,
+                "mode": "managed",
+                "log_level": "warning",
+                "inbounds": [],
+                "outbounds": [],
+                "routing_rules": [],
+                "friendly_rules": [{"name": "Google AI", "outbound": "eu-vless", "domains": "gemini.google.com"}],
+                "geofiles": admin.default_xray_settings()["geofiles"],
+            }
+        )
+        routing = admin.normalize_xray_cascade_settings(
+            {
+                "enabled": True,
+                "source_cidr": "10.66.66.0/24",
+                "inbound_port": 12345,
+                "geosite_category": "ru-blocked",
+                "geoip_category": "ru-blocked",
+                "eu_vless_uri": "vless://00000000-0000-4000-8000-000000000000@eu.example.com:443?type=tcp&security=tls&sni=eu.example.com",
+            }
+        )
+        config = admin.build_effective_xray_config(xray, routing)
+        google_rule = next(rule for rule in config["routing"]["rules"] if rule.get("domain") == ["domain:gemini.google.com"])
+        self.assertEqual(google_rule["outboundTag"], "eu-vless")
 
     def test_warp_profile_becomes_xray_wireguard_outbound(self):
         self.warp_dir.mkdir()

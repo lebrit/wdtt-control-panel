@@ -81,6 +81,12 @@ XRAY_CASCADE_SETTINGS = Path(
     os.environ.get("WDTT_XRAY_CASCADE_SETTINGS", "/var/lib/wdtt-panel-private/xray-cascade.json")
 )
 XRAY_CASCADE_SERVICE = os.environ.get("WDTT_XRAY_CASCADE_SERVICE", "wdtt-xray-cascade.service")
+XRAY_ACCESS_LOG = Path(
+    os.environ.get("WDTT_XRAY_ACCESS_LOG", "/var/lib/wdtt-panel-private/xray-access.log")
+)
+XRAY_ERROR_LOG = Path(
+    os.environ.get("WDTT_XRAY_ERROR_LOG", "/var/lib/wdtt-panel-private/xray-error.log")
+)
 XRAY_DEFAULT_GEOFILES = (
     {
         "tag": "geoip",
@@ -745,6 +751,30 @@ def journal_logs(payload: dict[str, Any]) -> dict[str, Any]:
         except OSError as exc:
             raise AdminError(f"Не удалось прочитать журнал установщика: {exc}") from exc
         return {"lines": lines, "source": source, "title": "Установщик", "units": [], "limit": limit}
+    if source == "xray-access":
+        try:
+            lines = XRAY_ACCESS_LOG.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:] if XRAY_ACCESS_LOG.is_file() else []
+        except OSError as exc:
+            raise AdminError(f"Не удалось прочитать журнал маршрутов Xray: {exc}") from exc
+        return {
+            "lines": lines,
+            "source": source,
+            "title": "Xray: домены и маршруты",
+            "units": [] if SKIP_SYSTEMD else [{"unit": XRAY_SERVICE, "active": run(["systemctl", "is-active", "--quiet", XRAY_SERVICE], timeout=15).returncode == 0}],
+            "limit": limit,
+        }
+    if source == "xray-errors":
+        try:
+            lines = XRAY_ERROR_LOG.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:] if XRAY_ERROR_LOG.is_file() else []
+        except OSError as exc:
+            raise AdminError(f"Не удалось прочитать журнал ошибок Xray: {exc}") from exc
+        return {
+            "lines": lines,
+            "source": source,
+            "title": "Xray: ошибки соединений",
+            "units": [] if SKIP_SYSTEMD else [{"unit": XRAY_SERVICE, "active": run(["systemctl", "is-active", "--quiet", XRAY_SERVICE], timeout=15).returncode == 0}],
+            "limit": limit,
+        }
     if source not in sources:
         raise ValidationError("Неизвестный источник журнала")
     units, title = sources[source]
@@ -1299,6 +1329,7 @@ def default_xray_settings() -> dict[str, Any]:
         "enabled": False,
         "mode": "managed",
         "log_level": "warning",
+        "access_log": False,
         "inbounds": [],
         "outbounds": [],
         "routing_rules": [],
@@ -1348,6 +1379,7 @@ def load_xray_settings() -> dict[str, Any]:
             pass
     settings["mode"] = settings.get("mode") if settings.get("mode") in {"managed", "raw"} else "managed"
     settings["log_level"] = str(settings.get("log_level") or "warning")
+    settings["access_log"] = bool(settings.get("access_log", False))
     for key in ("inbounds", "outbounds", "routing_rules", "routes", "friendly_rules", "geofiles"):
         settings[key] = settings.get(key) if isinstance(settings.get(key), list) else []
     settings["raw_config"] = str(settings.get("raw_config") or "")
@@ -1502,6 +1534,7 @@ def normalize_xray_settings(payload: dict[str, Any]) -> dict[str, Any]:
     settings["log_level"] = str(payload.get("log_level") or "warning")
     if settings["log_level"] not in {"debug", "info", "warning", "error", "none"}:
         raise ValidationError("Некорректный уровень журнала Xray")
+    settings["access_log"] = bool(payload.get("access_log", False))
     settings["geofiles"] = normalize_xray_geofiles(payload.get("geofiles", settings["geofiles"]))
     settings["routes"] = normalize_xray_routes(payload.get("routes", []))
     settings["friendly_rules"] = normalize_xray_friendly_rules(payload.get("friendly_rules", []))
@@ -1525,13 +1558,27 @@ def normalize_xray_settings(payload: dict[str, Any]) -> dict[str, Any]:
     return settings
 
 
-def build_xray_config(settings: dict[str, Any]) -> dict[str, Any]:
+def build_xray_config(settings: dict[str, Any], extra_outbound_tags: set[str] | None = None) -> dict[str, Any]:
     if settings["mode"] == "raw":
-        parsed = json.loads(settings["raw_config"])
-        return xray_object(parsed, "Raw Xray-конфигурация")
+        parsed = xray_object(json.loads(settings["raw_config"]), "Raw Xray-конфигурация")
+        if settings.get("access_log"):
+            raw_log = parsed.get("log") or {}
+            if not isinstance(raw_log, dict):
+                raise ValidationError("Raw Xray-конфигурация: log должен быть объектом")
+            parsed["log"] = {**raw_log, "access": str(XRAY_ACCESS_LOG), "error": str(XRAY_ERROR_LOG)}
+        return parsed
 
-    inbounds = settings["inbounds"]
-    outbound_tags = {"direct", "block"}
+    inbounds: list[dict[str, Any]] = []
+    for source in settings["inbounds"]:
+        inbound = json.loads(json.dumps(source))
+        if "sniffing" not in inbound:
+            inbound["sniffing"] = {
+                "enabled": True,
+                "destOverride": ["http", "tls", "quic"],
+                "routeOnly": True,
+            }
+        inbounds.append(inbound)
+    outbound_tags = {"direct", "block", *(extra_outbound_tags or set())}
     inbound_tags: set[str] = set()
     for item in inbounds:
         tag = xray_tag(item.get("tag"), "tag входящего")
@@ -1583,8 +1630,11 @@ def build_xray_config(settings: dict[str, Any]) -> dict[str, Any]:
         if target and target not in outbound_tags:
             raise ValidationError(f"Правило {index + 1}: исходящий {target} не настроен")
         rules.append(rule)
+    log = {"loglevel": settings["log_level"]}
+    if settings.get("access_log"):
+        log.update({"access": str(XRAY_ACCESS_LOG), "error": str(XRAY_ERROR_LOG)})
     config: dict[str, Any] = {
-        "log": {"loglevel": settings["log_level"]},
+        "log": log,
         "inbounds": inbounds,
         "outbounds": outbounds,
         "routing": {"domainStrategy": "AsIs", "rules": rules},
@@ -1767,7 +1817,8 @@ def build_effective_xray_config(settings: dict[str, Any], routing: dict[str, Any
     routing = routing or load_xray_cascade_settings()
     if routing.get("enabled") and settings.get("mode") != "managed":
         raise ValidationError("Каскад RU→EU работает только в Managed-режиме Xray")
-    return apply_xray_cascade(build_xray_config(settings), routing)
+    extra_outbound_tags = {"eu-vless"} if routing.get("enabled") and settings.get("mode") == "managed" else set()
+    return apply_xray_cascade(build_xray_config(settings, extra_outbound_tags), routing)
 
 
 def persist_xray_configuration(settings: dict[str, Any], config: dict[str, Any]) -> None:
@@ -2312,6 +2363,17 @@ def cascade_restart(payload: dict[str, Any]) -> dict[str, Any]:
 
 def overview(payload: dict[str, Any]) -> dict[str, Any]:
     data = load_database()
+    passwords = data.get("passwords", {})
+    user_device_ids = {
+        str(entry.get("device_id") or "")
+        for entry in passwords.values()
+        if isinstance(entry, dict) and entry.get("device_id")
+    }
+    admin_devices = sum(
+        1
+        for device_id, device in data.get("devices", {}).items()
+        if device_id not in user_device_ids and isinstance(device, dict)
+    )
     stats = read_stats()
     ip_forward = "unknown"
     if not SKIP_SYSTEMD:
@@ -2337,8 +2399,10 @@ def overview(payload: dict[str, Any]) -> dict[str, Any]:
             "binary": Path("/usr/local/bin/wdtt-server").is_file(),
         },
         "stats": stats,
-        "users": len(data.get("passwords", {})),
+        "users": len(passwords) + (1 if data.get("main_password") else 0),
+        "managed_users": len(passwords),
         "devices": len(data.get("devices", {})),
+        "admin_devices": admin_devices,
         "system": {
             "cpu_percent": cpu_usage(),
             "memory": memory_usage(),
