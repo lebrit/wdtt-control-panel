@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.10.6"
+PANEL_VERSION="0.10.7"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -238,6 +238,7 @@ install_clean_wdtt() {
   [[ "$GO_CHECKSUM" =~ ^[a-fA-F0-9]{64}$ ]] || die "Некорректная контрольная сумма Go"
   printf '%s  %s\n' "$GO_CHECKSUM" "$BUILD_DIR/$GO_TARBALL" | sha256sum -c - >>"$LOG_FILE"
   tar -xzf "$BUILD_DIR/$GO_TARBALL" -C "$BUILD_DIR"
+  install -d "$BUILD_DIR/gopath/pkg/mod" "$BUILD_DIR/go-cache"
 
   curl -fsSL "https://github.com/amurcanov/proxy-turn-vk-android/archive/refs/heads/${WDTT_REF}.zip" -o "$BUILD_DIR/wdtt.zip"
   unzip -q "$BUILD_DIR/wdtt.zip" -d "$BUILD_DIR/source"
@@ -245,7 +246,7 @@ install_clean_wdtt() {
   [ -f "$WDTT_SOURCE/server.go" ] || die "В архиве WDTT не найден server.go"
   (
     cd "$WDTT_SOURCE"
-    PATH="$BUILD_DIR/go/bin:$PATH" CGO_ENABLED=0 "$BUILD_DIR/go/bin/go" build -mod=mod -trimpath -ldflags='-s -w' -o /tmp/wdtt-server ./server.go
+    PATH="$BUILD_DIR/go/bin:$PATH" GOPATH="$BUILD_DIR/gopath" GOMODCACHE="$BUILD_DIR/gopath/pkg/mod" GOCACHE="$BUILD_DIR/go-cache" CGO_ENABLED=0 "$BUILD_DIR/go/bin/go" build -mod=mod -trimpath -ldflags='-s -w' -o /tmp/wdtt-server ./server.go
   ) >>"$LOG_FILE" 2>&1
   chmod 0755 /tmp/wdtt-server
   WDTT_ARGS="-password $WDTT_MAIN_PASSWORD" bash "$WDTT_SOURCE/app/src/main/assets/deploy.sh" install >>"$LOG_FILE" 2>&1
@@ -280,6 +281,7 @@ install_wdtt_extensions() {
   [[ "$go_checksum" =~ ^[a-fA-F0-9]{64}$ ]] || die "Некорректная контрольная сумма Go"
   printf '%s  %s\n' "$go_checksum" "$work/$go_tarball" | sha256sum -c - >>"$LOG_FILE"
   tar -xzf "$work/$go_tarball" -C "$work"
+  install -d "$work/gopath/pkg/mod" "$work/go-cache"
   curl -fsSL --retry 3 "https://github.com/amurcanov/proxy-turn-vk-android/archive/refs/heads/${WDTT_REF}.zip" -o "$work/wdtt.zip"
   unzip -q "$work/wdtt.zip" -d "$work/source"
   source="$(find "$work/source" -mindepth 1 -maxdepth 1 -type d | head -1)"
@@ -391,7 +393,7 @@ PY
 
   (
     cd "$source"
-    PATH="$work/go/bin:$PATH" CGO_ENABLED=0 "$work/go/bin/go" build -mod=mod -trimpath -ldflags='-s -w' -o "$work/wdtt-server" ./server.go
+    PATH="$work/go/bin:$PATH" GOPATH="$work/gopath" GOMODCACHE="$work/gopath/pkg/mod" GOCACHE="$work/go-cache" CGO_ENABLED=0 "$work/go/bin/go" build -mod=mod -trimpath -ldflags='-s -w' -o "$work/wdtt-server" ./server.go
   ) >>"$LOG_FILE" 2>&1 || die "Не удалось собрать расширенный WDTT; действующий сервер не изменён"
 
   install -d -m 0700 "$PRIVATE_STATE_DIR"
