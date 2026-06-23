@@ -187,6 +187,51 @@ class AdminDatabaseTests(unittest.TestCase):
         )
         self.assertEqual([item["label"] for item in result["users"]], ["Семья 1", "Семья 2"])
 
+    def test_legacy_telegram_label_is_shown_in_the_panel(self):
+        data = admin.load_database()
+        data["passwords"]["LegacyUser12"] = {
+            "device_id": "",
+            "expires_at": 0,
+            "down_bytes": 0,
+            "up_bytes": 0,
+            "remark": "Старый бот — Ольга",
+            "vk_hash": "hash_one",
+            "ports": "56000,56001,9000",
+        }
+        admin.save_database(data)
+        self.assertEqual(admin.list_users()["users"][0]["label"], "Старый бот — Ольга")
+
+    def test_legacy_telegram_label_map_is_shown_in_the_panel(self):
+        data = admin.load_database()
+        data["passwords"]["MappedUser123"] = {
+            "device_id": "",
+            "expires_at": 0,
+            "down_bytes": 0,
+            "up_bytes": 0,
+            "vk_hash": "hash_one",
+            "ports": "56000,56001,9000",
+        }
+        data["labels"] = {"MappedUser123": "Telegram — Сергей"}
+        admin.save_database(data)
+        self.assertEqual(admin.list_users()["users"][0]["label"], "Telegram — Сергей")
+
+    def test_user_traffic_activity_is_returned_with_the_user(self):
+        data = admin.load_database()
+        data["passwords"]["ActiveUser123"] = {
+            "device_id": "",
+            "expires_at": 0,
+            "down_bytes": 512,
+            "up_bytes": 256,
+            "last_upload_at": 1_700_000_001,
+            "last_download_at": 1_700_000_002,
+            "vk_hash": "hash_one",
+            "ports": "56000,56001,9000",
+        }
+        admin.save_database(data)
+        user = admin.list_users()["users"][0]
+        self.assertEqual(user["last_upload_at"], 1_700_000_001)
+        self.assertEqual(user["last_download_at"], 1_700_000_002)
+
     def test_bulk_user_actions_apply_in_one_database_update(self):
         for password in ("FirstUser123", "SecondUser12"):
             admin.create_user(
@@ -202,6 +247,10 @@ class AdminDatabaseTests(unittest.TestCase):
         )
         self.assertEqual(result["count"], 2)
         self.assertTrue(all(entry["is_deactivated"] for entry in admin.load_database()["passwords"].values()))
+        before_renewal = int(time.time())
+        admin.bulk_user_action({"action": "set_expiration", "passwords": ["FirstUser123", "SecondUser12"], "days": 45})
+        renewed = admin.load_database()["passwords"]
+        self.assertTrue(all(entry["expires_at"] >= before_renewal + 44 * 86400 for entry in renewed.values()))
         admin.bulk_user_action({"action": "reset_traffic", "passwords": ["FirstUser123"]})
         self.assertEqual(admin.load_database()["passwords"]["FirstUser123"]["down_bytes"], 0)
         admin.bulk_user_action({"action": "unbind", "passwords": ["FirstUser123"]})

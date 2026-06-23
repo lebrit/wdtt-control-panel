@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.10.0"
+PANEL_VERSION="0.10.1"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -230,10 +230,23 @@ install_clean_wdtt() {
 
 install_wdtt_extensions() {
   require_root
+  if python3 - "$PRIVATE_STATE_DIR/wdtt-extensions.json" <<'PY'
+import json
+import sys
+try:
+    features = json.load(open(sys.argv[1], encoding="utf-8")).get("features", [])
+    raise SystemExit(0 if {"labels", "main_traffic", "activity"}.issubset(features) else 1)
+except (OSError, ValueError, AttributeError):
+    raise SystemExit(1)
+PY
+  then
+    log "Расширение WDTT уже установлено"
+    return 0
+  fi
   wdtt_installed || die "WDTT не найден: сначала установите или разверните WDTT"
   [ -x /usr/local/bin/wdtt-server ] || die "Не найден /usr/local/bin/wdtt-server"
 
-  local work source go_arch go_tarball backup target
+  local work source go_arch go_tarball backup database_backup target was_active=0
   work="$(mktemp -d)"
   trap 'rm -rf "${work:-}"' RETURN
   target="/usr/local/bin/wdtt-server"
@@ -271,12 +284,12 @@ def replace_once(old, new, title):
 
 replace_once(
     '\tIsDeactivated bool   `json:"is_deactivated,omitempty"`\n}',
-    '\tIsDeactivated bool   `json:"is_deactivated,omitempty"`\n\tLabel         string `json:"label,omitempty"`\n}',
+    '\tIsDeactivated bool   `json:"is_deactivated,omitempty"`\n\tLabel         string `json:"label,omitempty"`\n\tLastUploadAt  int64  `json:"last_upload_at,omitempty"`\n\tLastDownloadAt int64  `json:"last_download_at,omitempty"`\n}',
     "user label field",
 )
 replace_once(
     '\tMainPassword string                    `json:"main_password"`\n',
-    '\tMainPassword string                    `json:"main_password"`\n\tMainDownBytes int64                     `json:"main_down_bytes,omitempty"`\n\tMainUpBytes   int64                     `json:"main_up_bytes,omitempty"`\n',
+    '\tMainPassword string                    `json:"main_password"`\n\tMainDownBytes int64                     `json:"main_down_bytes,omitempty"`\n\tMainUpBytes   int64                     `json:"main_up_bytes,omitempty"`\n\tMainLastUploadAt int64                  `json:"main_last_upload_at,omitempty"`\n\tMainLastDownloadAt int64                `json:"main_last_download_at,omitempty"`\n',
     "main traffic fields",
 )
 replace_once(
@@ -311,12 +324,12 @@ replace_once(
 )
 replace_once(
     '\t\t\t// Per-password upload tracking\n\t\t\tif connPassword != "" && !connIsMainPass {\n\t\t\t\tdbMutex.Lock()\n\t\t\t\te, ok := db.Passwords[connPassword]\n\t\t\t\tif !ok || e == nil || isPasswordExpired(e) || e.IsDeactivated {\n\t\t\t\t\tdbMutex.Unlock()\n\t\t\t\t\treturn\n\t\t\t\t}\n\t\t\t\te.UpBytes += int64(nn)\n\t\t\t\tdbMutex.Unlock()\n\t\t\t}\n',
-    '\t\t\t// Per-password and main-password upload tracking\n\t\t\tif connPassword != "" {\n\t\t\t\tdbMutex.Lock()\n\t\t\t\tif connIsMainPass {\n\t\t\t\t\tdb.MainUpBytes += int64(nn)\n\t\t\t\t} else {\n\t\t\t\t\te, ok := db.Passwords[connPassword]\n\t\t\t\t\tif !ok || e == nil || isPasswordExpired(e) || e.IsDeactivated {\n\t\t\t\t\t\tdbMutex.Unlock()\n\t\t\t\t\t\treturn\n\t\t\t\t\t}\n\t\t\t\t\te.UpBytes += int64(nn)\n\t\t\t\t}\n\t\t\t\tdbMutex.Unlock()\n\t\t\t}\n',
+    '\t\t\t// Per-password and main-password upload tracking\n\t\t\tif connPassword != "" {\n\t\t\t\tdbMutex.Lock()\n\t\t\t\tnow := time.Now().Unix()\n\t\t\t\tif connIsMainPass {\n\t\t\t\t\tdb.MainUpBytes += int64(nn)\n\t\t\t\t\tdb.MainLastUploadAt = now\n\t\t\t\t} else {\n\t\t\t\t\te, ok := db.Passwords[connPassword]\n\t\t\t\t\tif !ok || e == nil || isPasswordExpired(e) || e.IsDeactivated {\n\t\t\t\t\t\tdbMutex.Unlock()\n\t\t\t\t\t\treturn\n\t\t\t\t\t}\n\t\t\t\t\te.UpBytes += int64(nn)\n\t\t\t\t\te.LastUploadAt = now\n\t\t\t\t}\n\t\t\t\tdbMutex.Unlock()\n\t\t\t}\n',
     "main upload counter",
 )
 replace_once(
     '\t\t\t// Per-password download tracking\n\t\t\tif connPassword != "" && !connIsMainPass {\n\t\t\t\tdbMutex.Lock()\n\t\t\t\te, ok := db.Passwords[connPassword]\n\t\t\t\tif !ok || e == nil || isPasswordExpired(e) || e.IsDeactivated {\n\t\t\t\t\tdbMutex.Unlock()\n\t\t\t\t\treturn\n\t\t\t\t}\n\t\t\t\te.DownBytes += int64(nn)\n\t\t\t\tdbMutex.Unlock()\n\t\t\t}\n',
-    '\t\t\t// Per-password and main-password download tracking\n\t\t\tif connPassword != "" {\n\t\t\t\tdbMutex.Lock()\n\t\t\t\tif connIsMainPass {\n\t\t\t\t\tdb.MainDownBytes += int64(nn)\n\t\t\t\t} else {\n\t\t\t\t\te, ok := db.Passwords[connPassword]\n\t\t\t\t\tif !ok || e == nil || isPasswordExpired(e) || e.IsDeactivated {\n\t\t\t\t\t\tdbMutex.Unlock()\n\t\t\t\t\t\treturn\n\t\t\t\t\t}\n\t\t\t\t\te.DownBytes += int64(nn)\n\t\t\t\t}\n\t\t\t\tdbMutex.Unlock()\n\t\t\t}\n',
+    '\t\t\t// Per-password and main-password download tracking\n\t\t\tif connPassword != "" {\n\t\t\t\tdbMutex.Lock()\n\t\t\t\tnow := time.Now().Unix()\n\t\t\t\tif connIsMainPass {\n\t\t\t\t\tdb.MainDownBytes += int64(nn)\n\t\t\t\t\tdb.MainLastDownloadAt = now\n\t\t\t\t} else {\n\t\t\t\t\te, ok := db.Passwords[connPassword]\n\t\t\t\t\tif !ok || e == nil || isPasswordExpired(e) || e.IsDeactivated {\n\t\t\t\t\t\tdbMutex.Unlock()\n\t\t\t\t\t\treturn\n\t\t\t\t\t}\n\t\t\t\t\te.DownBytes += int64(nn)\n\t\t\t\t\te.LastDownloadAt = now\n\t\t\t\t}\n\t\t\t\tdbMutex.Unlock()\n\t\t\t}\n',
     "main download counter",
 )
 replace_once(
@@ -361,16 +374,86 @@ PY
   install -d -m 0700 "$PRIVATE_STATE_DIR"
   backup="$PRIVATE_STATE_DIR/wdtt-server-before-extension-$(date +%Y%m%d-%H%M%S)"
   install -m 0700 "$target" "$backup"
+  if systemctl is-active --quiet "$WDTT_SERVICE"; then
+    was_active=1
+    systemctl stop "$WDTT_SERVICE" >>"$LOG_FILE" 2>&1 || die "Не удалось остановить WDTT перед обновлением"
+  fi
+  if [ -f /etc/wdtt/passwords.json ]; then
+    database_backup="$PRIVATE_STATE_DIR/passwords-before-extension-$(date +%Y%m%d-%H%M%S).json"
+    install -m 0600 /etc/wdtt/passwords.json "$database_backup"
+    python3 - /etc/wdtt/passwords.json <<'PY'
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+changed = False
+for entry in (data.get("passwords") or {}).values():
+    if not isinstance(entry, dict) or str(entry.get("label") or "").strip():
+        continue
+    for key in ("remark", "name", "comment", "tag", "mark", "user_label", "userLabel", "user_name", "userName", "note", "description"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            entry["label"] = value.strip()
+            changed = True
+            break
+for password, entry in (data.get("passwords") or {}).items():
+    if not isinstance(entry, dict) or str(entry.get("label") or "").strip():
+        continue
+    for field in ("labels", "remarks", "user_labels", "userLabels", "names", "comments", "tags", "marks"):
+        labels = data.get(field)
+        value = labels.get(password) if isinstance(labels, dict) else None
+        if isinstance(value, str) and value.strip():
+            entry["label"] = value.strip()
+            changed = True
+            break
+if changed:
+    fd, temporary = tempfile.mkstemp(prefix="passwords.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+PY
+  fi
   install -m 0755 "$work/wdtt-server" "$target.new"
   mv -f "$target.new" "$target"
-  if ! systemctl restart "$WDTT_SERVICE" >>"$LOG_FILE" 2>&1; then
+  if [ "$was_active" = "1" ] && ! systemctl start "$WDTT_SERVICE" >>"$LOG_FILE" 2>&1; then
     install -m 0755 "$backup" "$target"
-    systemctl restart "$WDTT_SERVICE" >>"$LOG_FILE" 2>&1 || true
+    if [ -n "$database_backup" ]; then install -m 0600 "$database_backup" /etc/wdtt/passwords.json; fi
+    systemctl start "$WDTT_SERVICE" >>"$LOG_FILE" 2>&1 || true
     die "Обновлённый WDTT не запустился; прежний бинарный файл восстановлен"
   fi
-  printf '{"enabled_at": %s, "features": ["labels", "main_traffic"]}\n' "$(date +%s)" > "$PRIVATE_STATE_DIR/wdtt-extensions.json"
+  printf '{"enabled_at": %s, "features": ["labels", "main_traffic", "activity"]}\n' "$(date +%s)" > "$PRIVATE_STATE_DIR/wdtt-extensions.json"
   chmod 0600 "$PRIVATE_STATE_DIR/wdtt-extensions.json"
-  log "Расширение WDTT включено: метки общие с Telegram-ботом, трафик главного пароля учитывается"
+  log "Расширение WDTT включено: метки общие с Telegram-ботом, трафик и последняя активность пользователей учитываются"
+}
+
+schedule_wdtt_extensions() {
+  if python3 - "$PRIVATE_STATE_DIR/wdtt-extensions.json" <<'PY'
+import json
+import sys
+try:
+    features = json.load(open(sys.argv[1], encoding="utf-8")).get("features", [])
+    raise SystemExit(0 if {"labels", "main_traffic", "activity"}.issubset(features) else 1)
+except (OSError, ValueError, AttributeError):
+    raise SystemExit(1)
+PY
+  then
+    log "Расширение WDTT уже установлено"
+    return 0
+  fi
+  local unit="wdtt-panel-core-extension-$(date +%s)"
+  systemd-run --quiet --collect --property=TimeoutStartSec=15min --unit="$unit" --on-active=2s \
+    "$INSTALL_DIR/install.sh" enable-wdtt-extensions || die "Не удалось запланировать автоматическое обновление WDTT"
+  log "Автоматическое обновление WDTT запланировано: метки Telegram и трафик главного пароля будут включены через несколько секунд"
 }
 
 install_panel_files() {
@@ -1039,6 +1122,7 @@ update_panel() {
   write_final_nginx
   write_renew_timer
   write_xray_services
+  schedule_wdtt_extensions
   systemctl restart "$PANEL_SERVICE"
   log "Панель обновлена; адрес, пароль, сертификаты и данные сохранены"
   status_panel
@@ -1057,6 +1141,7 @@ install_panel() {
   prepare_secrets
   install_clean_wdtt
   install_panel_files
+  install_wdtt_extensions
   write_maintenance_scripts
 
   if request_certificate; then

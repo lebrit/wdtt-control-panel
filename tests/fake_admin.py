@@ -24,6 +24,8 @@ elif action == "users.list":
                 "expires_at": 1798761600,
                 "down_bytes": 419430400,
                 "up_bytes": 73400320,
+                "last_upload_at": 1781510410,
+                "last_download_at": 1781510420,
                 "vk_hash": "vk_hash_demo",
                 "ports": "56000,56001,9000",
                 "is_deactivated": False,
@@ -45,7 +47,7 @@ elif action == "users.list":
             },
         ],
         "main_password_present": True,
-        "admins": [{"password": "Главный пароль", "label": "Администратор WDTT", "role": "admin", "device_id": "admin-device", "device": {"device_id": "admin-device", "ip": "10.66.66.1"}, "connected": True, "expires_at": 0, "down_bytes": 0, "up_bytes": 0, "traffic_supported": True, "vk_hash": "Администратор WDTT", "is_deactivated": False, "expired": False}],
+        "admins": [{"password": "Главный пароль", "label": "Администратор WDTT", "role": "admin", "device_id": "admin-device", "device": {"device_id": "admin-device", "ip": "10.66.66.1"}, "connected": True, "last_handshake": 1781510400, "expires_at": 0, "down_bytes": 0, "up_bytes": 0, "last_upload_at": 1781510430, "last_download_at": 1781510440, "traffic_supported": True, "vk_hash": "Администратор WDTT", "is_deactivated": False, "expired": False}],
         "limit": 10,
     }
 elif action == "users.create_bulk":
@@ -99,7 +101,7 @@ elif action == "cascade.status":
     result = {"settings": {"enabled": False, "source_cidr": "10.66.66.0/24", "inbound_port": 12345, "eu_vless_uri": "", "geosite_category": "ru-blocked", "geoip_category": "ru-blocked", "domains": [], "ip_cidrs": []}, "xray_active": False, "service_active": False, "rules_active": False, "eu_summary": ""}
 elif action == "warp.ping":
     result = {"ok": True, "latency_ms": 42, "warp": "on", "ip": "198.51.100.10", "colo": "FRA"}
-elif action in {"xray.save", "xray.install", "xray.geofiles.refresh", "xray.geofiles.refresh_auto", "warp.install", "warp.create", "warp.restart", "cascade.save", "cascade.restart", "certificate.renew", "wdtt.extensions.enable"}:
+elif action in {"xray.save", "xray.install", "xray.geofiles.refresh", "xray.geofiles.refresh_auto", "warp.install", "warp.create", "warp.restart", "cascade.save", "cascade.restart", "certificate.renew"}:
     result = {"scheduled": True, "state": "test"}
 elif action == "certificate.export":
     result = {"name": "wdtt-panel-certificate.pem", "content": "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n"}

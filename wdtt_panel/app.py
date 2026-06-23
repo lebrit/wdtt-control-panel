@@ -197,7 +197,6 @@ class Panel:
             "users/unbind": "users.unbind",
             "users/reset-traffic": "users.reset_traffic",
             "users/bulk-action": "users.bulk_action",
-            "wdtt/extensions/enable": "wdtt.extensions.enable",
             "service": "service.action",
             "logs": "logs",
             "backups": "backups.list",

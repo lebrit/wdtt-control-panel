@@ -29,6 +29,7 @@ from .core import (
     normalize_hashes,
     normalize_user_label,
     parse_expiration,
+    user_label_from_entry,
     user_view,
     validate_password,
     validate_ports,
@@ -44,9 +45,6 @@ SKIP_SYSTEMD = os.environ.get("WDTT_SKIP_SYSTEMD") == "1"
 MAX_INPUT = 90 * 1024 * 1024
 PANEL_UPDATE_COMMAND = Path(os.environ.get("WDTT_PANEL_UPDATE_COMMAND", "/usr/local/sbin/wdtt-panel-update"))
 PANEL_RENEW_COMMAND = Path(os.environ.get("WDTT_PANEL_RENEW_COMMAND", "/opt/wdtt-panel/install.sh"))
-WDTT_EXTENSION_COMMAND = Path(
-    os.environ.get("WDTT_EXTENSION_COMMAND", "/opt/wdtt-panel/install.sh")
-)
 PANEL_VERSION_URL = os.environ.get(
     "WDTT_PANEL_VERSION_URL",
     "https://raw.githubusercontent.com/lebrit/wdtt-control-panel/main/install.sh",
@@ -292,13 +290,28 @@ def purge_expired(data: dict[str, Any]) -> int:
     return removed
 
 
+def entry_with_legacy_label(data: dict[str, Any], password: str, entry: dict[str, Any]) -> dict[str, Any]:
+    if user_label_from_entry(entry):
+        return entry
+    for field in ("labels", "remarks", "user_labels", "userLabels", "names", "comments", "tags", "marks"):
+        labels = data.get(field)
+        value = labels.get(password) if isinstance(labels, dict) else None
+        if isinstance(value, str) and value.strip():
+            return {**entry, "label": value.strip()}
+    return entry
+
+
 def list_users() -> dict[str, Any]:
     data = load_database()
     handshakes = wireguard_handshakes()
     active_ips = active_tunnel_ips()
     users = [
         connected_user_view(
-            user_view(password, entry if isinstance(entry, dict) else {}, data["devices"]).as_dict(),
+            user_view(
+                password,
+                entry_with_legacy_label(data, password, entry) if isinstance(entry, dict) else {},
+                data["devices"],
+            ).as_dict(),
             handshakes,
             active_ips,
         )
@@ -327,6 +340,8 @@ def list_users() -> dict[str, Any]:
                 "last_handshake": last_handshake,
                 "down_bytes": int(data.get("main_down_bytes") or 0),
                 "up_bytes": int(data.get("main_up_bytes") or 0),
+                "last_upload_at": int(data.get("main_last_upload_at") or 0),
+                "last_download_at": int(data.get("main_last_download_at") or 0),
                 "traffic_supported": main_traffic_supported,
                 "expires_at": 0,
                 "label": "Администратор WDTT",
@@ -617,6 +632,7 @@ def bulk_user_action(payload: dict[str, Any]) -> dict[str, Any]:
     actions = {
         "activate": "Активация",
         "deactivate": "Деактивация",
+        "set_expiration": "Изменение срока",
         "reset_traffic": "Сброс трафика",
         "unbind": "Отвязка устройств",
         "delete": "Удаление",
@@ -629,6 +645,7 @@ def bulk_user_action(payload: dict[str, Any]) -> dict[str, Any]:
     passwords = list(dict.fromkeys(validate_password(str(item)) for item in raw_passwords))
     if not passwords or len(passwords) > MAX_USERS:
         raise ValidationError(f"Можно выбрать от 1 до {MAX_USERS} пользователей")
+    expires_at = parse_expiration({"days": payload.get("days")}) if action == "set_expiration" else None
 
     def apply(data: dict[str, Any]) -> dict[str, Any]:
         missing = [password for password in passwords if not isinstance(data["passwords"].get(password), dict)]
@@ -640,6 +657,8 @@ def bulk_user_action(payload: dict[str, Any]) -> dict[str, Any]:
                 entry["is_deactivated"] = False
             elif action == "deactivate":
                 entry["is_deactivated"] = True
+            elif action == "set_expiration":
+                entry["expires_at"] = expires_at
             elif action == "reset_traffic":
                 entry["down_bytes"] = 0
                 entry["up_bytes"] = 0
@@ -2059,35 +2078,6 @@ def schedule_xray_runtime(payload: dict[str, Any]) -> dict[str, Any]:
     return {"scheduled": True, "unit": unit}
 
 
-def schedule_wdtt_extensions(payload: dict[str, Any]) -> dict[str, Any]:
-    """Build the compatible WDTT core after the request has returned to the panel.
-
-    The stock WDTT database has no user label or main-password counters.  This
-    optional in-place update keeps /etc/wdtt and the existing service intact,
-    replacing only the executable after a successful build.
-    """
-    if not WDTT_EXTENSION_COMMAND.exists():
-        raise AdminError(f"Команда обновления WDTT не найдена: {WDTT_EXTENSION_COMMAND}")
-    if SKIP_SYSTEMD:
-        return {"scheduled": True, "state": "test"}
-    unit = f"wdtt-panel-core-extension-{int(time.time())}"
-    result = run(
-        [
-            "systemd-run",
-            "--quiet",
-            "--collect",
-            f"--unit={unit}",
-            "--on-active=2s",
-            str(WDTT_EXTENSION_COMMAND),
-            "enable-wdtt-extensions",
-        ],
-        timeout=20,
-    )
-    if result.returncode != 0:
-        raise AdminError(result.stderr.strip() or "Не удалось запланировать обновление WDTT")
-    return {"scheduled": True, "unit": unit}
-
-
 def warp_profile_details() -> dict[str, Any]:
     profile = WARP_DIR / "wgcf-profile.conf"
     if not profile.is_file():
@@ -2719,7 +2709,6 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "users.unbind": unbind_user,
     "users.reset_traffic": reset_traffic,
     "users.bulk_action": bulk_user_action,
-    "wdtt.extensions.enable": schedule_wdtt_extensions,
     "service.action": lambda payload: service_action(str(payload.get("service_action") or "")),
     "logs": journal_logs,
     "backups.list": lambda payload: list_backups(),

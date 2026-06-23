@@ -42,6 +42,28 @@ def normalize_user_label(value: str) -> str:
     return label
 
 
+def user_label_from_entry(entry: dict[str, Any]) -> str:
+    """Read labels written by both current and earlier WDTT Telegram bots."""
+    for key in (
+        "label",
+        "remark",
+        "name",
+        "comment",
+        "tag",
+        "mark",
+        "user_label",
+        "userLabel",
+        "user_name",
+        "userName",
+        "note",
+        "description",
+    ):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def normalize_hash(value: str) -> str:
     value = (value or "").strip()
     if "/" in value:
@@ -136,6 +158,8 @@ class UserView:
     expires_at: int
     down_bytes: int
     up_bytes: int
+    last_upload_at: int
+    last_download_at: int
     vk_hash: str
     ports: str
     is_deactivated: bool
@@ -150,11 +174,13 @@ def user_view(password: str, entry: dict[str, Any], devices: dict[str, Any]) -> 
     device_id = str(entry.get("device_id") or "")
     return UserView(
         password=password,
-        label=str(entry.get("label") or ""),
+        label=user_label_from_entry(entry),
         device_id=device_id,
         expires_at=int(entry.get("expires_at") or 0),
         down_bytes=int(entry.get("down_bytes") or 0),
         up_bytes=int(entry.get("up_bytes") or 0),
+        last_upload_at=int(entry.get("last_upload_at") or 0),
+        last_download_at=int(entry.get("last_download_at") or 0),
         vk_hash=str(entry.get("vk_hash") or ""),
         ports=str(entry.get("ports") or "56000,56001,9000"),
         is_deactivated=bool(entry.get("is_deactivated", False)),

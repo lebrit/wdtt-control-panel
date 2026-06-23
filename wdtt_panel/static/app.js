@@ -32,6 +32,7 @@
     return `${size.toFixed(size >= 10 ? 1 : 2)} ${units[unit]}`;
   };
   const formatDate = (stamp) => stamp ? new Date(stamp * 1000).toLocaleString("ru-RU") : "Бессрочно";
+  const formatActivityDate = (stamp) => stamp ? new Date(stamp * 1000).toLocaleString("ru-RU") : "ещё не было";
   const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char]));
 
   async function api(route, options = {}) {
@@ -179,15 +180,16 @@
       const traffic = user.traffic_supported === false ? "Появится после включения" : `${formatBytes(user.down_bytes)} ↓ / ${formatBytes(user.up_bytes)} ↑`;
       const device = user.device ? `${escapeHtml(user.device.device_id || user.device_id)}<br><small>${escapeHtml(user.device.ip || "")}</small>` : "Не привязан";
       const title = user.label || user.password;
-      const passwordLine = user.label ? `<br><small class="mono">Пароль: ${escapeHtml(user.password)}</small>` : "";
       const selectable = user.role !== "admin";
       return `<tr>
         <td>${selectable ? `<input type="checkbox" data-select-user="${escapeHtml(user.password)}" aria-label="Выбрать ${escapeHtml(title)}" ${state.selectedUsers.has(user.password) ? "checked" : ""}>` : ""}</td>
-        <td><strong${user.label ? "" : " class=\"mono\""}>${escapeHtml(title)}</strong>${passwordLine}<br><small>${escapeHtml(user.vk_hash)}</small></td>
+        <td>${user.label ? `<strong>${escapeHtml(user.label)}</strong>` : "<span class=\"muted\">—</span>"}</td>
+        <td><strong class="mono">${escapeHtml(user.password)}</strong><br><small>${escapeHtml(user.vk_hash)}</small></td>
         <td><span class="badge ${statusClass}">${status}</span></td>
         <td>${escapeHtml(formatDate(user.expires_at))}</td>
         <td class="mono">${device}</td><td>${escapeHtml(traffic)}</td>
         <td><div class="row-actions">
+          <button data-activity="${escapeHtml(user.password)}">Активность</button>
           ${user.role === "admin" ? "" : `<button data-copy="${escapeHtml(user.password)}" title="Скопировать wdtt:// ссылку">Ссылка</button>`}
           ${user.role === "admin" ? "" : `
           <button data-edit="${escapeHtml(user.password)}">Изменить</button>
@@ -195,14 +197,16 @@
           <button data-reset="${escapeHtml(user.password)}">Сброс трафика</button>
           <button data-delete="${escapeHtml(user.password)}">Удалить</button>`}
         </div></td></tr>`;
-    }).join("") || `<tr><td colspan="7" class="muted">Пользователи не найдены.</td></tr>`;
+    }).join("") || `<tr><td colspan="8" class="muted">Пользователи не найдены.</td></tr>`;
     renderSelectedUsersControls();
   }
 
   function renderSelectedUsersControls() {
     const selected = state.selectedUsers.size;
+    const action = $("#bulk-user-action").value;
     $("#selected-users").textContent = `Выбрано: ${selected}`;
-    $("#apply-bulk-user-action").disabled = !selected || !$("#bulk-user-action").value;
+    $("#bulk-user-days-control").hidden = action !== "set_expiration";
+    $("#apply-bulk-user-action").disabled = !selected || !action;
     const query = $("#user-search").value.toLowerCase();
     const visible = state.users.filter((user) => user.role !== "admin" && JSON.stringify(user).toLowerCase().includes(query));
     const all = $("#select-all-users");
@@ -224,6 +228,27 @@
     const days = user?.expires_at ? Math.max(1, Math.ceil((user.expires_at - Date.now() / 1000) / 86400)) : 30;
     $("#edit-days").value = days;
     $("#user-dialog").showModal();
+  }
+
+  function openUserActivity(user) {
+    if (!user) return;
+    const device = user.device || {};
+    const title = user.label || user.password;
+    const rows = [
+      ["Метка", user.label || "—"],
+      ["Пароль", user.password],
+      ["Статус", userStatus(user)[1]],
+      ["Устройство", device.device_id || user.device_id || "не привязано"],
+      ["IP устройства", device.ip || "—"],
+      ["Последнее подключение", formatActivityDate(user.last_handshake)],
+      ["Последняя отправка", formatActivityDate(user.last_upload_at)],
+      ["Последняя загрузка", formatActivityDate(user.last_download_at)],
+      ["Отправлено всего", formatBytes(user.up_bytes)],
+      ["Загружено всего", formatBytes(user.down_bytes)],
+    ];
+    $("#user-activity-title").textContent = `Активность: ${title}`;
+    $("#user-activity-details").innerHTML = rows.map(([label, value]) => `<div class="detail-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+    $("#user-activity-dialog").showModal();
   }
 
   async function saveUser(event) {
@@ -308,6 +333,7 @@
     const descriptions = {
       activate: "Активировать",
       deactivate: "Деактивировать",
+      set_expiration: `Установить срок ${Number($("#bulk-user-days").value)} дней для`,
       reset_traffic: "Сбросить трафик у",
       unbind: "Отвязать устройства у",
       delete: "Удалить",
@@ -317,22 +343,13 @@
     const button = $("#apply-bulk-user-action");
     setBusy(button, true);
     try {
-      const result = await api("users/bulk-action", { method: "POST", body: { action, passwords } });
+      const payload = { action, passwords };
+      if (action === "set_expiration") payload.days = Number($("#bulk-user-days").value);
+      const result = await api("users/bulk-action", { method: "POST", body: payload });
       state.selectedUsers.clear();
       $("#bulk-user-action").value = "";
       toast(`Выполнено: ${result.count || passwords.length}`);
       await Promise.all([loadUsers(), loadOverview()]);
-    } catch (error) { toast(error.message, true); }
-    finally { setBusy(button, false); }
-  }
-
-  async function enableWdttExtensions() {
-    if (!confirm("Обновить только ядро WDTT? Это добавит общие метки с Telegram-ботом и учёт трафика главного пароля. Настройки и пользователи сохранятся, подключение прервётся на несколько секунд.")) return;
-    const button = $("#enable-wdtt-extensions");
-    setBusy(button, true);
-    try {
-      await api("wdtt/extensions/enable", { method: "POST" });
-      toast("Обновление WDTT запущено. Через минуту обновите список пользователей.");
     } catch (error) { toast(error.message, true); }
     finally { setBusy(button, false); }
   }
@@ -872,7 +889,6 @@
     $("#user-search").addEventListener("input", renderUsers);
     $("#bulk-user-action").addEventListener("change", renderSelectedUsersControls);
     $("#apply-bulk-user-action").addEventListener("click", applyBulkUserAction);
-    $("#enable-wdtt-extensions").addEventListener("click", enableWdttExtensions);
     $("#select-all-users").addEventListener("change", (event) => {
       const query = $("#user-search").value.toLowerCase();
       state.users.filter((user) => user.role !== "admin" && JSON.stringify(user).toLowerCase().includes(query)).forEach((user) => {
@@ -891,6 +907,7 @@
     $("#users-body").addEventListener("click", async (event) => {
       const button = event.target.closest("button"); if (!button) return;
       const find = (password) => state.users.find((item) => item.password === password);
+      if (button.dataset.activity) openUserActivity(find(button.dataset.activity));
       if (button.dataset.edit) openUserDialog(find(button.dataset.edit));
       if (button.dataset.unbind) userAction("users/unbind", button.dataset.unbind, "Отвязать устройство? Следующее подключение создаст новую привязку.");
       if (button.dataset.reset) userAction("users/reset-traffic", button.dataset.reset, "Сбросить счетчики трафика пользователя?");

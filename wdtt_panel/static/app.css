@@ -85,6 +85,8 @@ button:disabled { opacity: .5; cursor: wait; }
 .user-bulk-controls select { width: 205px; }
 .user-bulk-controls button { min-height: 38px; }
 .user-bulk-controls span { white-space: nowrap; }
+.user-bulk-controls label { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.user-bulk-controls label input { width: 86px; min-height: 38px; }
 input, select { width: 100%; min-height: 41px; padding: 0 12px; border: 1px solid #28364a; border-radius: 9px; color: var(--text); background: #0a1019; outline: none; }
 input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(89,225,194,.08); }
 textarea { width: 100%; min-height: 240px; padding: 12px; resize: vertical; border: 1px solid #28364a; border-radius: 9px; color: var(--text); background: #0a1019; outline: none; line-height: 1.55; }
