@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.10.1"
+PANEL_VERSION="0.10.2"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,6 +44,8 @@ WDTT_MAIN_PASSWORD="${WDTT_MAIN_PASSWORD:-}"
 WDTT_REF="${WDTT_REF:-main}"
 GO_VERSION="${GO_VERSION:-1.25.0}"
 WDTT_SERVICE="wdtt.service"
+WDTT_EXTENSIONS_SERVICE="wdtt-panel-wdtt-extensions.service"
+WDTT_EXTENSIONS_TIMER="wdtt-panel-wdtt-extensions.timer"
 
 log() { printf '[wdtt-panel] %s\n' "$*" | tee -a "$LOG_FILE"; }
 die() { log "ERROR: $*"; exit 1; }
@@ -450,10 +452,8 @@ PY
     log "Расширение WDTT уже установлено"
     return 0
   fi
-  local unit="wdtt-panel-core-extension-$(date +%s)"
-  systemd-run --quiet --collect --property=TimeoutStartSec=15min --unit="$unit" --on-active=2s \
-    "$INSTALL_DIR/install.sh" enable-wdtt-extensions || die "Не удалось запланировать автоматическое обновление WDTT"
-  log "Автоматическое обновление WDTT запланировано: метки Telegram и трафик главного пароля будут включены через несколько секунд"
+  systemctl start --no-block "$WDTT_EXTENSIONS_SERVICE" >>"$LOG_FILE" 2>&1 || die "Не удалось запустить автоматическое обновление WDTT"
+  log "Автоматическое обновление WDTT запущено; при временной ошибке оно повторится автоматически"
 }
 
 install_panel_files() {
@@ -1022,6 +1022,36 @@ open_firewall() {
   fi
 }
 
+write_wdtt_extensions_timer() {
+  cat > "/etc/systemd/system/$WDTT_EXTENSIONS_SERVICE" <<EOF
+[Unit]
+Description=Install WDTT Panel traffic and label extensions
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=20min
+ExecStart=/bin/bash $INSTALL_DIR/install.sh enable-wdtt-extensions
+EOF
+  cat > "/etc/systemd/system/$WDTT_EXTENSIONS_TIMER" <<EOF
+[Unit]
+Description=Retry WDTT Panel traffic and label extensions
+
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=10min
+RandomizedDelaySec=30s
+Persistent=true
+Unit=$WDTT_EXTENSIONS_SERVICE
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now "$WDTT_EXTENSIONS_TIMER" >>"$LOG_FILE" 2>&1
+}
+
 change_panel_password() {
   require_root
   load_panel_config
@@ -1099,8 +1129,8 @@ uninstall_panel() {
     panel_port="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("https_port", ""))' "$CONFIG_FILE" 2>/dev/null || true)"
   fi
   log "Удаление только web-панели; WDTT не затрагивается"
-  systemctl disable --now "$PANEL_SERVICE" wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service 2>/dev/null || true
-  rm -f "/etc/systemd/system/$PANEL_SERVICE" /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer
+  systemctl disable --now "$PANEL_SERVICE" wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service "$WDTT_EXTENSIONS_TIMER" "$WDTT_EXTENSIONS_SERVICE" 2>/dev/null || true
+  rm -f "/etc/systemd/system/$PANEL_SERVICE" /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer "/etc/systemd/system/$WDTT_EXTENSIONS_SERVICE" "/etc/systemd/system/$WDTT_EXTENSIONS_TIMER"
   systemctl disable --now "$LEGACY_CASCADE_SERVICE" "$XRAY_SERVICE" "$XRAY_CASCADE_SERVICE" "$XRAY_GATEWAY_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service 2>/dev/null || true
   rm -f "/etc/systemd/system/$LEGACY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_SERVICE" "/etc/systemd/system/$XRAY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_GATEWAY_SERVICE" /etc/systemd/system/wdtt-panel-geofiles-update.service /etc/systemd/system/wdtt-panel-geofiles-update.timer
   rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$GEOFILES_UPDATE_WRAPPER" "$CASCADE_RULES_WRAPPER" "$GATEWAY_RULES_WRAPPER"
@@ -1121,6 +1151,7 @@ update_panel() {
   write_panel_service
   write_final_nginx
   write_renew_timer
+  write_wdtt_extensions_timer
   write_xray_services
   schedule_wdtt_extensions
   systemctl restart "$PANEL_SERVICE"
@@ -1155,6 +1186,7 @@ install_panel() {
   write_panel_service
   write_final_nginx
   write_renew_timer
+  write_wdtt_extensions_timer
   write_xray_services
   open_firewall
   systemctl restart "$PANEL_SERVICE"

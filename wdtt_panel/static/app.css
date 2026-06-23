@@ -86,7 +86,15 @@ button:disabled { opacity: .5; cursor: wait; }
 .user-bulk-controls button { min-height: 38px; }
 .user-bulk-controls span { white-space: nowrap; }
 .user-bulk-controls label { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.user-bulk-controls label[hidden] { display: none; }
 .user-bulk-controls label input { width: 86px; min-height: 38px; }
+.user-refresh-menu { position: relative; }
+.user-refresh-menu summary, .user-actions-menu summary { min-height: 38px; padding: 0 12px; border: 1px solid var(--line); border-radius: 9px; background: #121b28; color: var(--text); display: flex; align-items: center; cursor: pointer; list-style: none; white-space: nowrap; }
+.user-refresh-menu summary::-webkit-details-marker, .user-actions-menu summary::-webkit-details-marker { display: none; }
+.user-refresh-popup { position: absolute; z-index: 4; top: calc(100% + 7px); right: 0; width: 190px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: #111a28; box-shadow: 0 14px 30px rgba(0,0,0,.28); }
+.user-refresh-popup label { display: grid; gap: 6px; white-space: normal; }
+.user-refresh-popup select { width: 100%; }
+.user-refresh-popup small { display: block; margin-top: 9px; color: var(--muted); }
 input, select { width: 100%; min-height: 41px; padding: 0 12px; border: 1px solid #28364a; border-radius: 9px; color: var(--text); background: #0a1019; outline: none; }
 input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(89,225,194,.08); }
 textarea { width: 100%; min-height: 240px; padding: 12px; resize: vertical; border: 1px solid #28364a; border-radius: 9px; color: var(--text); background: #0a1019; outline: none; line-height: 1.55; }
@@ -96,6 +104,10 @@ textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(89,225,
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th { color: #6f8098; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; text-align: left; }
 th, td { padding: 14px 17px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+#tab-users table { min-width: 980px; table-layout: fixed; font-size: 12px; }
+#tab-users th, #tab-users td { padding: 11px 9px; white-space: normal; vertical-align: middle; }
+#tab-users th:nth-child(1) { width: 42px; } #tab-users th:nth-child(2) { width: 12%; } #tab-users th:nth-child(3) { width: 23%; } #tab-users th:nth-child(4) { width: 10%; } #tab-users th:nth-child(5) { width: 13%; } #tab-users th:nth-child(6) { width: 12%; } #tab-users th:nth-child(7) { width: 13%; } #tab-users th:nth-child(8) { width: 95px; }
+#tab-users td:nth-child(2), #tab-users td:nth-child(3), #tab-users td:nth-child(6) { overflow-wrap: anywhere; }
 #users-body input[type="checkbox"], #select-all-users { width: 17px; min-height: 17px; margin: 0; accent-color: var(--accent); }
 tbody tr:hover { background: rgba(255,255,255,.018); }
 .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
@@ -105,6 +117,10 @@ tbody tr:hover { background: rgba(255,255,255,.018); }
 .badge.bad { color: var(--danger); background: rgba(255,105,120,.1); }
 .row-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .row-actions button, .icon-button { min-height: 32px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: #121b28; color: var(--muted); }
+#tab-users .user-actions-menu { min-width: 0; }
+#tab-users .user-actions-menu .row-actions { display: none; min-width: 145px; margin-top: 6px; }
+#tab-users .user-actions-menu[open] .row-actions { display: grid; gap: 5px; }
+#tab-users .user-actions-menu .row-actions button { width: 100%; text-align: left; font-size: 12px; }
 .log-view { min-height: 620px; border: 1px solid var(--line); border-radius: 16px; background: #05080d; overflow: auto; }
 .log-view pre { margin: 0; padding: 20px; color: #a7b5c8; line-height: 1.65; font: 12px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
 .system-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }

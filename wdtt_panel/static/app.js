@@ -6,7 +6,7 @@
   const CSRF = meta("csrf-token");
   const PUBLIC_HOST = meta("public-host");
   const PANEL_VERSION = meta("panel-version");
-  const state = { overview: null, users: [], selectedUsers: new Set(), logs: [], logsMeta: null, editing: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null };
+  const state = { overview: null, users: [], selectedUsers: new Set(), logs: [], logsMeta: null, editing: null, userRefreshTimer: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null };
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -21,6 +21,50 @@
     try { document.body.classList.toggle("sidebar-collapsed", localStorage.getItem("wdtt-sidebar-collapsed") === "1"); }
     catch (_) { /* Browser storage can be disabled. */ }
     renderSidebarState();
+  }
+
+  function activateTab(tabName, persist = true) {
+    const button = $$(".nav-item").find((item) => item.dataset.tab === tabName) || $(".nav-item");
+    const name = button.dataset.tab;
+    $$(".nav-item").forEach((item) => item.classList.toggle("active", item === button));
+    $$(".tab").forEach((tab) => tab.classList.toggle("active", tab.id === `tab-${name}`));
+    $("#page-title").textContent = button.textContent;
+    if (persist) {
+      try { localStorage.setItem("wdtt-active-tab", name); }
+      catch (_) { /* Browser storage can be disabled. */ }
+    }
+    if (name === "logs") loadLogs();
+    if (name === "xray") Promise.all([loadXray(), loadWarp(), loadCascadeRouting()]);
+    if (name === "system") { loadBackups(); loadAudit(); loadPanelVersion(); }
+  }
+
+  function restoreActiveTab() {
+    let tabName = "overview";
+    try { tabName = localStorage.getItem("wdtt-active-tab") || tabName; }
+    catch (_) { /* Browser storage can be disabled. */ }
+    activateTab(tabName, false);
+  }
+
+  function setUserAutoRefresh(persist = true) {
+    const select = $("#user-auto-refresh-interval");
+    const seconds = Number(select.value) || 0;
+    if (state.userRefreshTimer) clearInterval(state.userRefreshTimer);
+    state.userRefreshTimer = null;
+    $("#user-auto-refresh-status").textContent = seconds ? `Каждые ${seconds} сек.` : "Выключено";
+    if (seconds) state.userRefreshTimer = setInterval(() => loadUsers().catch(() => {}), seconds * 1000);
+    if (persist) {
+      try { localStorage.setItem("wdtt-user-auto-refresh", String(seconds)); }
+      catch (_) { /* Browser storage can be disabled. */ }
+    }
+  }
+
+  function restoreUserAutoRefresh() {
+    const select = $("#user-auto-refresh-interval");
+    try {
+      const saved = Number(localStorage.getItem("wdtt-user-auto-refresh"));
+      if ([0, 5, 10, 30, 60].includes(saved)) select.value = String(saved);
+    } catch (_) { /* Browser storage can be disabled. */ }
+    setUserAutoRefresh(false);
   }
   const formatBytes = (bytes) => {
     const value = Number(bytes || 0);
@@ -188,7 +232,7 @@
         <td><span class="badge ${statusClass}">${status}</span></td>
         <td>${escapeHtml(formatDate(user.expires_at))}</td>
         <td class="mono">${device}</td><td>${escapeHtml(traffic)}</td>
-        <td><div class="row-actions">
+        <td><details class="user-actions-menu"><summary>Действия</summary><div class="row-actions">
           <button data-activity="${escapeHtml(user.password)}">Активность</button>
           ${user.role === "admin" ? "" : `<button data-copy="${escapeHtml(user.password)}" title="Скопировать wdtt:// ссылку">Ссылка</button>`}
           ${user.role === "admin" ? "" : `
@@ -196,7 +240,7 @@
           ${user.device_id ? `<button data-unbind="${escapeHtml(user.password)}">Отвязать</button>` : ""}
           <button data-reset="${escapeHtml(user.password)}">Сброс трафика</button>
           <button data-delete="${escapeHtml(user.password)}">Удалить</button>`}
-        </div></td></tr>`;
+        </div></details></td></tr>`;
     }).join("") || `<tr><td colspan="8" class="muted">Пользователи не найдены.</td></tr>`;
     renderSelectedUsersControls();
   }
@@ -866,14 +910,7 @@
   }
 
   function bindEvents() {
-    $$(".nav-item").forEach((button) => button.addEventListener("click", () => {
-      $$(".nav-item").forEach((item) => item.classList.toggle("active", item === button));
-      $$(".tab").forEach((tab) => tab.classList.toggle("active", tab.id === `tab-${button.dataset.tab}`));
-      $("#page-title").textContent = button.textContent;
-      if (button.dataset.tab === "logs") loadLogs();
-      if (button.dataset.tab === "xray") Promise.all([loadXray(), loadWarp(), loadCascadeRouting()]);
-      if (button.dataset.tab === "system") { loadBackups(); loadAudit(); loadPanelVersion(); }
-    }));
+    $$(".nav-item").forEach((button) => button.addEventListener("click", () => activateTab(button.dataset.tab)));
     $("#refresh").addEventListener("click", () => Promise.all([loadOverview(), loadUsers()]).catch((error) => toast(error.message, true)));
     $("#sidebar-toggle").addEventListener("click", () => {
       document.body.classList.toggle("sidebar-collapsed");
@@ -887,6 +924,7 @@
     $("#bulk-user-form").addEventListener("submit", saveBulkUsers);
     $("#copy-bulk-links").addEventListener("click", copyBulkLinks);
     $("#user-search").addEventListener("input", renderUsers);
+    $("#user-auto-refresh-interval").addEventListener("change", () => setUserAutoRefresh());
     $("#bulk-user-action").addEventListener("change", renderSelectedUsersControls);
     $("#apply-bulk-user-action").addEventListener("click", applyBulkUserAction);
     $("#select-all-users").addEventListener("change", (event) => {
@@ -1072,7 +1110,9 @@
   }
 
   restoreSidebarState();
+  restoreActiveTab();
   bindEvents();
+  restoreUserAutoRefresh();
   Promise.all([loadOverview(), loadUsers(), loadPanelVersion()]).catch((error) => toast(error.message, true));
   setInterval(() => loadOverview().catch(() => {}), 10000);
 })();
