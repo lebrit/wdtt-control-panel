@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.10.4"
+PANEL_VERSION="0.10.5"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -233,8 +233,10 @@ install_clean_wdtt() {
 
   GO_TARBALL="go${GO_VERSION}.linux-${GO_ARCH}.tar.gz"
   curl -fsSL "https://go.dev/dl/${GO_TARBALL}" -o "$BUILD_DIR/$GO_TARBALL"
-  curl -fsSL "https://go.dev/dl/${GO_TARBALL}.sha256" -o "$BUILD_DIR/$GO_TARBALL.sha256"
-  printf '%s  %s\n' "$(tr -d '[:space:]' < "$BUILD_DIR/$GO_TARBALL.sha256")" "$BUILD_DIR/$GO_TARBALL" | sha256sum -c - >>"$LOG_FILE"
+  curl -fsSL "https://dl.google.com/go/${GO_TARBALL}.sha256" -o "$BUILD_DIR/$GO_TARBALL.sha256"
+  GO_CHECKSUM="$(awk 'NR == 1 { print $1; exit }' "$BUILD_DIR/$GO_TARBALL.sha256")"
+  [[ "$GO_CHECKSUM" =~ ^[a-fA-F0-9]{64}$ ]] || die "Некорректная контрольная сумма Go"
+  printf '%s  %s\n' "$GO_CHECKSUM" "$BUILD_DIR/$GO_TARBALL" | sha256sum -c - >>"$LOG_FILE"
   tar -xzf "$BUILD_DIR/$GO_TARBALL" -C "$BUILD_DIR"
 
   curl -fsSL "https://github.com/amurcanov/proxy-turn-vk-android/archive/refs/heads/${WDTT_REF}.zip" -o "$BUILD_DIR/wdtt.zip"
@@ -259,7 +261,7 @@ install_wdtt_extensions() {
   wdtt_installed || die "WDTT не найден: сначала установите или разверните WDTT"
   [ -x /usr/local/bin/wdtt-server ] || die "Не найден /usr/local/bin/wdtt-server"
 
-  local work source go_arch go_tarball backup database_backup target was_active=0
+  local work source go_arch go_tarball go_checksum backup database_backup target was_active=0
   work="$(mktemp -d)"
   trap 'rm -rf "${work:-}"' RETURN
   target="/usr/local/bin/wdtt-server"
@@ -273,8 +275,10 @@ install_wdtt_extensions() {
   log "Сборка расширения WDTT: общие метки Telegram и счётчики главного пароля"
   go_tarball="go${GO_VERSION}.linux-${go_arch}.tar.gz"
   curl -fsSL --retry 3 "https://go.dev/dl/${go_tarball}" -o "$work/$go_tarball"
-  curl -fsSL --retry 3 "https://go.dev/dl/${go_tarball}.sha256" -o "$work/$go_tarball.sha256"
-  printf '%s  %s\n' "$(tr -d '[:space:]' < "$work/$go_tarball.sha256")" "$work/$go_tarball" | sha256sum -c - >>"$LOG_FILE"
+  curl -fsSL --retry 3 "https://dl.google.com/go/${go_tarball}.sha256" -o "$work/$go_tarball.sha256"
+  go_checksum="$(awk 'NR == 1 { print $1; exit }' "$work/$go_tarball.sha256")"
+  [[ "$go_checksum" =~ ^[a-fA-F0-9]{64}$ ]] || die "Некорректная контрольная сумма Go"
+  printf '%s  %s\n' "$go_checksum" "$work/$go_tarball" | sha256sum -c - >>"$LOG_FILE"
   tar -xzf "$work/$go_tarball" -C "$work"
   curl -fsSL --retry 3 "https://github.com/amurcanov/proxy-turn-vk-android/archive/refs/heads/${WDTT_REF}.zip" -o "$work/wdtt.zip"
   unzip -q "$work/wdtt.zip" -d "$work/source"

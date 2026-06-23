@@ -10,9 +10,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.10.4"', installer)
-        self.assertIn('__version__ = "0.10.4"', package)
-        self.assertIn("Текущая версия: 0.10.4", readme)
+        self.assertIn('PANEL_VERSION="0.10.5"', installer)
+        self.assertIn('__version__ = "0.10.5"', package)
+        self.assertIn("Текущая версия: 0.10.5", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -43,6 +43,9 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("WDTT_EXTENSION_MARKER", script)
         self.assertIn("wdtt_extensions_binary_is_current", script)
         self.assertIn('grep -aFq "$WDTT_EXTENSION_MARKER"', script)
+        self.assertIn("awk 'NR == 1 { print $1; exit }'", script)
+        self.assertIn("Некорректная контрольная сумма Go", script)
+        self.assertIn('https://dl.google.com/go/${go_tarball}.sha256', script)
         self.assertIn('json:"label,omitempty"', script)
         self.assertIn('json:"main_down_bytes,omitempty"', script)
         self.assertIn('json:"last_upload_at,omitempty"', script)
