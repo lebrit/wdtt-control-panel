@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.10.5"
+PANEL_VERSION="0.10.6"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -245,7 +245,7 @@ install_clean_wdtt() {
   [ -f "$WDTT_SOURCE/server.go" ] || die "В архиве WDTT не найден server.go"
   (
     cd "$WDTT_SOURCE"
-    PATH="$BUILD_DIR/go/bin:$PATH" CGO_ENABLED=0 "$BUILD_DIR/go/bin/go" build -trimpath -ldflags='-s -w' -o /tmp/wdtt-server ./server.go
+    PATH="$BUILD_DIR/go/bin:$PATH" CGO_ENABLED=0 "$BUILD_DIR/go/bin/go" build -mod=mod -trimpath -ldflags='-s -w' -o /tmp/wdtt-server ./server.go
   ) >>"$LOG_FILE" 2>&1
   chmod 0755 /tmp/wdtt-server
   WDTT_ARGS="-password $WDTT_MAIN_PASSWORD" bash "$WDTT_SOURCE/app/src/main/assets/deploy.sh" install >>"$LOG_FILE" 2>&1
@@ -391,7 +391,7 @@ PY
 
   (
     cd "$source"
-    PATH="$work/go/bin:$PATH" CGO_ENABLED=0 "$work/go/bin/go" build -trimpath -ldflags='-s -w' -o "$work/wdtt-server" ./server.go
+    PATH="$work/go/bin:$PATH" CGO_ENABLED=0 "$work/go/bin/go" build -mod=mod -trimpath -ldflags='-s -w' -o "$work/wdtt-server" ./server.go
   ) >>"$LOG_FILE" 2>&1 || die "Не удалось собрать расширенный WDTT; действующий сервер не изменён"
 
   install -d -m 0700 "$PRIVATE_STATE_DIR"
@@ -483,7 +483,7 @@ schedule_wdtt_extensions() {
     log "Расширение WDTT уже установлено"
     return 0
   fi
-  systemctl start --no-block "$WDTT_EXTENSIONS_SERVICE" >>"$LOG_FILE" 2>&1 || die "Не удалось запустить автоматическое обновление WDTT"
+  systemctl restart --no-block "$WDTT_EXTENSIONS_SERVICE" >>"$LOG_FILE" 2>&1 || die "Не удалось запустить автоматическое обновление WDTT"
   log "Автоматическое обновление WDTT запущено; при временной ошибке оно повторится автоматически"
 }
 
