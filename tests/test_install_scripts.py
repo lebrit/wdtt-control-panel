@@ -10,9 +10,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.9.6"', installer)
-        self.assertIn('__version__ = "0.9.6"', package)
-        self.assertIn("Текущая версия: 0.9.6", readme)
+        self.assertIn('PANEL_VERSION="0.9.7"', installer)
+        self.assertIn('__version__ = "0.9.7"', package)
+        self.assertIn("Текущая версия: 0.9.7", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -117,6 +117,10 @@ class InstallScriptTests(unittest.TestCase):
         script = (ROOT / "wdtt_panel" / "admin.py").read_text(encoding="utf-8")
         self.assertIn("/var/lib/wdtt-panel-private/admin.lock", script)
         self.assertNotIn("/run/lock/wdtt-panel-admin.lock", script)
+
+    def test_panel_service_allows_netlink_for_tproxy_policy_routing(self):
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK", script)
 
     def test_dialog_cancel_buttons_skip_required_field_validation(self):
         html = (ROOT / "wdtt_panel" / "templates" / "index.html").read_text(encoding="utf-8")
