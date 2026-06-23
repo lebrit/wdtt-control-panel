@@ -6,7 +6,7 @@
   const CSRF = meta("csrf-token");
   const PUBLIC_HOST = meta("public-host");
   const PANEL_VERSION = meta("panel-version");
-  const state = { overview: null, users: [], selectedUsers: new Set(), logs: [], logsMeta: null, editing: null, userRefreshTimer: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null };
+  const state = { overview: null, users: [], selectedUsers: new Set(), userSort: { key: "", direction: "asc" }, logs: [], logsMeta: null, editing: null, userRefreshTimer: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null };
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -216,9 +216,48 @@
     return ["ok", "свободен"];
   }
 
+  function userSortValue(user, key) {
+    if (key === "label") return user.label || "";
+    if (key === "access") return user.password || "";
+    if (key === "status") {
+      if (user.connected) return 0;
+      if (!user.expired && !user.is_deactivated && !user.device_id) return 1;
+      if (!user.expired && !user.is_deactivated) return 2;
+      if (user.is_deactivated) return 3;
+      return 4;
+    }
+    if (key === "expires") return user.expires_at || Number.MAX_SAFE_INTEGER;
+    if (key === "device") return `${user.device?.device_id || user.device_id || ""} ${user.device?.ip || ""}`;
+    if (key === "traffic") return Number(user.down_bytes || 0) + Number(user.up_bytes || 0);
+    return "";
+  }
+
+  function sortedUsers(users) {
+    const { key, direction } = state.userSort;
+    if (!key) return users;
+    const factor = direction === "desc" ? -1 : 1;
+    return [...users].sort((left, right) => {
+      const first = userSortValue(left, key);
+      const second = userSortValue(right, key);
+      const comparison = typeof first === "number" && typeof second === "number"
+        ? first - second : String(first).localeCompare(String(second), "ru", { numeric: true, sensitivity: "base" });
+      return comparison * factor || String(left.password).localeCompare(String(right.password), "ru", { numeric: true });
+    });
+  }
+
+  function renderUserSortControls() {
+    $$("[data-user-sort]").forEach((button) => {
+      const active = button.dataset.userSort === state.userSort.key;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-pressed", String(active));
+      const indicator = button.querySelector(".sort-indicator");
+      if (indicator) indicator.textContent = active ? (state.userSort.direction === "asc" ? "↑" : "↓") : "↕";
+    });
+  }
+
   function renderUsers() {
     const query = $("#user-search").value.toLowerCase();
-    const users = state.users.filter((user) => JSON.stringify(user).toLowerCase().includes(query));
+    const users = sortedUsers(state.users.filter((user) => JSON.stringify(user).toLowerCase().includes(query)));
     $("#users-body").innerHTML = users.map((user) => {
       const [statusClass, status] = userStatus(user);
       const traffic = user.traffic_supported === false ? "Появится после включения" : `${formatBytes(user.down_bytes)} ↓ / ${formatBytes(user.up_bytes)} ↑`;
@@ -242,6 +281,7 @@
           <button data-delete="${escapeHtml(user.password)}">Удалить</button>`}
         </div></details></td></tr>`;
     }).join("") || `<tr><td colspan="8" class="muted">Пользователи не найдены.</td></tr>`;
+    renderUserSortControls();
     renderSelectedUsersControls();
   }
 
@@ -925,6 +965,12 @@
     $("#copy-bulk-links").addEventListener("click", copyBulkLinks);
     $("#user-search").addEventListener("input", renderUsers);
     $("#user-auto-refresh-interval").addEventListener("change", () => setUserAutoRefresh());
+    $$("[data-user-sort]").forEach((button) => button.addEventListener("click", () => {
+      const key = button.dataset.userSort;
+      if (state.userSort.key === key) state.userSort.direction = state.userSort.direction === "asc" ? "desc" : "asc";
+      else state.userSort = { key, direction: "asc" };
+      renderUsers();
+    }));
     $("#bulk-user-action").addEventListener("change", renderSelectedUsersControls);
     $("#apply-bulk-user-action").addEventListener("click", applyBulkUserAction);
     $("#select-all-users").addEventListener("change", (event) => {

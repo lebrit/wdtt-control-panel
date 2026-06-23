@@ -14,6 +14,8 @@ class AdminDatabaseTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         self.db_file = root / "etc" / "passwords.json"
+        self.panel_labels = root / "user-labels.json"
+        self.extension_state = root / "wdtt-extensions.json"
         self.backups = root / "backups"
         self.lock_file = root / "admin.lock"
         self.cascade_settings = root / "cascade.json"
@@ -28,6 +30,8 @@ class AdminDatabaseTests(unittest.TestCase):
         self.xray_error_log = root / "xray-error.log"
         self.patchers = [
             mock.patch.object(admin, "DB_FILE", self.db_file),
+            mock.patch.object(admin, "PANEL_LABELS_FILE", self.panel_labels),
+            mock.patch.object(admin, "WDTT_EXTENSION_STATE", self.extension_state),
             mock.patch.object(admin, "BACKUP_DIR", self.backups),
             mock.patch.object(admin, "LOCK_FILE", self.lock_file),
             mock.patch.object(admin, "CASCADE_SETTINGS", self.cascade_settings),
@@ -214,6 +218,15 @@ class AdminDatabaseTests(unittest.TestCase):
         data["labels"] = {"MappedUser123": "Telegram — Сергей"}
         admin.save_database(data)
         self.assertEqual(admin.list_users()["users"][0]["label"], "Telegram — Сергей")
+
+    def test_panel_labels_survive_an_older_wdtt_rewriting_its_database(self):
+        admin.create_user(
+            {"password": "DurableUser12", "label": "Ноутбук Ольги", "days": 30, "vk_hash": "hash_one", "ports": "56000,56001,9000"}
+        )
+        data = admin.load_database()
+        data["passwords"]["DurableUser12"].pop("label", None)
+        admin.save_database(data)
+        self.assertEqual(admin.list_users()["users"][0]["label"], "Ноутбук Ольги")
 
     def test_user_traffic_activity_is_returned_with_the_user(self):
         data = admin.load_database()

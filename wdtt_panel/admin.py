@@ -37,6 +37,9 @@ from .core import (
 
 
 DB_FILE = Path(os.environ.get("WDTT_DB_FILE", "/etc/wdtt/passwords.json"))
+PANEL_LABELS_FILE = Path(os.environ.get("WDTT_PANEL_LABELS_FILE", "/var/lib/wdtt-panel-private/user-labels.json"))
+WDTT_EXTENSION_STATE = Path(os.environ.get("WDTT_EXTENSION_STATE", "/var/lib/wdtt-panel-private/wdtt-extensions.json"))
+WDTT_EXTENSION_MARKER = "wdtt-panel-extension-v3"
 STATS_FILE = Path(os.environ.get("WDTT_STATS_FILE", "/etc/wdtt/server.log"))
 BACKUP_DIR = Path(os.environ.get("WDTT_BACKUP_DIR", "/var/lib/wdtt-panel-private/backups"))
 LOCK_FILE = Path(os.environ.get("WDTT_LOCK_FILE", "/var/lib/wdtt-panel-private/admin.lock"))
@@ -237,6 +240,68 @@ def save_database(data: dict[str, Any]) -> None:
             os.unlink(temp_name)
 
 
+def load_panel_labels() -> dict[str, str]:
+    """Keep labels visible until an older WDTT binary is replaced."""
+    try:
+        raw = json.loads(PANEL_LABELS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(password): value.strip()
+        for password, value in raw.items()
+        if isinstance(value, str) and value.strip()
+    }
+
+
+def wdtt_extensions_are_verified() -> bool:
+    try:
+        state = json.loads(WDTT_EXTENSION_STATE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(state, dict) and state.get("marker") == WDTT_EXTENSION_MARKER
+
+
+def save_panel_labels(labels: dict[str, str]) -> None:
+    PANEL_LABELS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    encoded = json.dumps(labels, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
+    fd, temp_name = tempfile.mkstemp(prefix="user-labels.", suffix=".tmp", dir=PANEL_LABELS_FILE.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_name, 0o600)
+        os.replace(temp_name, PANEL_LABELS_FILE)
+        os.chmod(PANEL_LABELS_FILE, 0o600)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def update_panel_label(password: str, label: str, previous_password: str = "") -> None:
+    if wdtt_extensions_are_verified():
+        return
+    labels = load_panel_labels()
+    if previous_password and previous_password != password:
+        labels.pop(previous_password, None)
+    if label:
+        labels[password] = label
+    else:
+        labels.pop(password, None)
+    save_panel_labels(labels)
+
+
+def remove_panel_label(password: str) -> None:
+    if wdtt_extensions_are_verified():
+        return
+    labels = load_panel_labels()
+    if password in labels:
+        labels.pop(password, None)
+        save_panel_labels(labels)
+
+
 def create_backup(label: str = "auto") -> str:
     if not DB_FILE.exists():
         return ""
@@ -290,7 +355,7 @@ def purge_expired(data: dict[str, Any]) -> int:
     return removed
 
 
-def entry_with_legacy_label(data: dict[str, Any], password: str, entry: dict[str, Any]) -> dict[str, Any]:
+def entry_with_legacy_label(data: dict[str, Any], password: str, entry: dict[str, Any], panel_labels: dict[str, str] | None = None) -> dict[str, Any]:
     if user_label_from_entry(entry):
         return entry
     for field in ("labels", "remarks", "user_labels", "userLabels", "names", "comments", "tags", "marks"):
@@ -298,18 +363,22 @@ def entry_with_legacy_label(data: dict[str, Any], password: str, entry: dict[str
         value = labels.get(password) if isinstance(labels, dict) else None
         if isinstance(value, str) and value.strip():
             return {**entry, "label": value.strip()}
+    fallback = (panel_labels or {}).get(password)
+    if fallback:
+        return {**entry, "label": fallback}
     return entry
 
 
 def list_users() -> dict[str, Any]:
     data = load_database()
+    panel_labels = {} if wdtt_extensions_are_verified() else load_panel_labels()
     handshakes = wireguard_handshakes()
     active_ips = active_tunnel_ips()
     users = [
         connected_user_view(
             user_view(
                 password,
-                entry_with_legacy_label(data, password, entry) if isinstance(entry, dict) else {},
+                entry_with_legacy_label(data, password, entry, panel_labels) if isinstance(entry, dict) else {},
                 data["devices"],
             ).as_dict(),
             handshakes,
@@ -497,7 +566,9 @@ def create_user(payload: dict[str, Any]) -> dict[str, Any]:
         data["passwords"][password] = entry
         return user_view(password, entry, data["devices"]).as_dict()
 
-    return mutate_database("create", apply)
+    result = mutate_database("create", apply)
+    update_panel_label(password, label)
+    return result
 
 
 def create_users_bulk(payload: dict[str, Any]) -> dict[str, Any]:
@@ -550,7 +621,10 @@ def create_users_bulk(payload: dict[str, Any]) -> dict[str, Any]:
             created.append(user_view(password, entry, data["devices"]).as_dict())
         return {"users": created, "count": len(created)}
 
-    return mutate_database("bulk-create", apply)
+    result = mutate_database("bulk-create", apply)
+    for user in result["users"]:
+        update_panel_label(user["password"], str(user.get("label") or ""))
+    return result
 
 
 def update_user(payload: dict[str, Any]) -> dict[str, Any]:
@@ -579,7 +653,15 @@ def update_user(payload: dict[str, Any]) -> dict[str, Any]:
             entry["is_deactivated"] = bool(payload["is_deactivated"])
         return user_view(replacement, entry, data["devices"]).as_dict()
 
-    return mutate_database("update", apply)
+    result = mutate_database("update", apply)
+    if "label" in payload:
+        update_panel_label(replacement, normalize_user_label(str(payload["label"] or "")), current)
+    elif replacement != current:
+        labels = load_panel_labels()
+        if current in labels:
+            labels[replacement] = labels.pop(current)
+            save_panel_labels(labels)
+    return result
 
 
 def delete_user(payload: dict[str, Any]) -> dict[str, Any]:
@@ -594,7 +676,9 @@ def delete_user(payload: dict[str, Any]) -> dict[str, Any]:
             data["devices"].pop(device_id, None)
         return {"deleted": password}
 
-    return mutate_database("delete", apply)
+    result = mutate_database("delete", apply)
+    remove_panel_label(password)
+    return result
 
 
 def unbind_user(payload: dict[str, Any]) -> dict[str, Any]:

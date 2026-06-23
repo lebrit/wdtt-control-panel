@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.10.2"
+PANEL_VERSION="0.10.3"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,6 +46,7 @@ GO_VERSION="${GO_VERSION:-1.25.0}"
 WDTT_SERVICE="wdtt.service"
 WDTT_EXTENSIONS_SERVICE="wdtt-panel-wdtt-extensions.service"
 WDTT_EXTENSIONS_TIMER="wdtt-panel-wdtt-extensions.timer"
+WDTT_EXTENSION_MARKER="wdtt-panel-extension-v3"
 
 log() { printf '[wdtt-panel] %s\n' "$*" | tee -a "$LOG_FILE"; }
 die() { log "ERROR: $*"; exit 1; }
@@ -192,6 +193,25 @@ wdtt_installed() {
   systemctl cat wdtt.service >/dev/null 2>&1 || [ -x /usr/local/bin/wdtt-server ]
 }
 
+wdtt_extensions_binary_is_current() {
+  [ -x /usr/local/bin/wdtt-server ] || return 1
+  LC_ALL=C grep -aFq "$WDTT_EXTENSION_MARKER" /usr/local/bin/wdtt-server
+}
+
+wdtt_extensions_are_enabled() {
+  wdtt_extensions_binary_is_current || return 1
+  python3 - "$PRIVATE_STATE_DIR/wdtt-extensions.json" "$WDTT_EXTENSION_MARKER" <<'PY'
+import json
+import sys
+try:
+    state = json.load(open(sys.argv[1], encoding="utf-8"))
+    features = state.get("features", [])
+    raise SystemExit(0 if {"labels", "main_traffic", "activity"}.issubset(features) and state.get("marker") == sys.argv[2] else 1)
+except (OSError, ValueError, AttributeError):
+    raise SystemExit(1)
+PY
+}
+
 install_clean_wdtt() {
   case "$INSTALL_WDTT" in
     0|false|no) log "Установка WDTT отключена"; return ;;
@@ -232,16 +252,7 @@ install_clean_wdtt() {
 
 install_wdtt_extensions() {
   require_root
-  if python3 - "$PRIVATE_STATE_DIR/wdtt-extensions.json" <<'PY'
-import json
-import sys
-try:
-    features = json.load(open(sys.argv[1], encoding="utf-8")).get("features", [])
-    raise SystemExit(0 if {"labels", "main_traffic", "activity"}.issubset(features) else 1)
-except (OSError, ValueError, AttributeError):
-    raise SystemExit(1)
-PY
-  then
+  if wdtt_extensions_are_enabled; then
     log "Расширение WDTT уже установлено"
     return 0
   fi
@@ -283,6 +294,12 @@ def replace_once(old, new, title):
     if old not in source:
         raise SystemExit(f"WDTT source changed: cannot apply {title}")
     source = source.replace(old, new, 1)
+
+replace_once(
+    'func main() {\n',
+    'const wdttPanelExtensionMarker = "wdtt-panel-extension-v3"\n\nfunc main() {\n\tlog.Printf("[WDTT Panel] extension %s enabled", wdttPanelExtensionMarker)\n',
+    "extension marker",
+)
 
 replace_once(
     '\tIsDeactivated bool   `json:"is_deactivated,omitempty"`\n}',
@@ -383,7 +400,7 @@ PY
   if [ -f /etc/wdtt/passwords.json ]; then
     database_backup="$PRIVATE_STATE_DIR/passwords-before-extension-$(date +%Y%m%d-%H%M%S).json"
     install -m 0600 /etc/wdtt/passwords.json "$database_backup"
-    python3 - /etc/wdtt/passwords.json <<'PY'
+    python3 - /etc/wdtt/passwords.json "$PRIVATE_STATE_DIR/user-labels.json" <<'PY'
 import json
 import os
 import sys
@@ -391,7 +408,14 @@ import tempfile
 from pathlib import Path
 
 path = Path(sys.argv[1])
+panel_labels_path = Path(sys.argv[2])
 data = json.loads(path.read_text(encoding="utf-8"))
+try:
+    panel_labels = json.loads(panel_labels_path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    panel_labels = {}
+if not isinstance(panel_labels, dict):
+    panel_labels = {}
 changed = False
 for entry in (data.get("passwords") or {}).values():
     if not isinstance(entry, dict) or str(entry.get("label") or "").strip():
@@ -412,6 +436,11 @@ for password, entry in (data.get("passwords") or {}).items():
             entry["label"] = value.strip()
             changed = True
             break
+    if not str(entry.get("label") or "").strip():
+        value = panel_labels.get(password)
+        if isinstance(value, str) and value.strip():
+            entry["label"] = value.strip()
+            changed = True
 if changed:
     fd, temporary = tempfile.mkstemp(prefix="passwords.", suffix=".tmp", dir=path.parent)
     try:
@@ -433,22 +462,20 @@ PY
     systemctl start "$WDTT_SERVICE" >>"$LOG_FILE" 2>&1 || true
     die "Обновлённый WDTT не запустился; прежний бинарный файл восстановлен"
   fi
-  printf '{"enabled_at": %s, "features": ["labels", "main_traffic", "activity"]}\n' "$(date +%s)" > "$PRIVATE_STATE_DIR/wdtt-extensions.json"
+  if ! wdtt_extensions_binary_is_current; then
+    install -m 0755 "$backup" "$target"
+    if [ -n "$database_backup" ]; then install -m 0600 "$database_backup" /etc/wdtt/passwords.json; fi
+    if [ "$was_active" = "1" ]; then systemctl restart "$WDTT_SERVICE" >>"$LOG_FILE" 2>&1 || true; fi
+    die "Собранный WDTT не прошёл проверку расширений; прежний бинарный файл восстановлен"
+  fi
+  rm -f "$PRIVATE_STATE_DIR/user-labels.json"
+  printf '{"enabled_at": %s, "marker": "%s", "features": ["labels", "main_traffic", "activity"]}\n' "$(date +%s)" "$WDTT_EXTENSION_MARKER" > "$PRIVATE_STATE_DIR/wdtt-extensions.json"
   chmod 0600 "$PRIVATE_STATE_DIR/wdtt-extensions.json"
   log "Расширение WDTT включено: метки общие с Telegram-ботом, трафик и последняя активность пользователей учитываются"
 }
 
 schedule_wdtt_extensions() {
-  if python3 - "$PRIVATE_STATE_DIR/wdtt-extensions.json" <<'PY'
-import json
-import sys
-try:
-    features = json.load(open(sys.argv[1], encoding="utf-8")).get("features", [])
-    raise SystemExit(0 if {"labels", "main_traffic", "activity"}.issubset(features) else 1)
-except (OSError, ValueError, AttributeError):
-    raise SystemExit(1)
-PY
-  then
+  if wdtt_extensions_are_enabled; then
     log "Расширение WDTT уже установлено"
     return 0
   fi
