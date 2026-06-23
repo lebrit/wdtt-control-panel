@@ -60,11 +60,13 @@
     </section>
 
     <section class="tab" id="tab-xray">
-      <div class="section-head"><div><p class="eyebrow">XRAY CORE</p><h2>Исходящие и конфигурации Xray</h2><p class="muted">Xray работает отдельно от WDTT и не изменяет его исходный код. Managed-режим даёт безопасный редактор, Raw-режим принимает полный JSON Xray.</p></div><div class="inline-actions"><button id="install-xray" class="secondary">Установить Xray</button><button id="save-xray" class="primary">Сохранить и применить</button></div></div>
+      <div class="section-head"><div><p class="eyebrow">XRAY CORE</p><h2>Исходящие и конфигурации Xray</h2><p class="muted">Чтобы правила WARP и маршруты работали для телефона, включите ниже шлюз WDTT → Xray. Без него Xray существует отдельно и трафик WDTT в него не попадает.</p></div><div class="inline-actions"><button id="install-xray" class="secondary">Установить Xray</button><button id="save-xray" class="primary">Сохранить и применить</button></div></div>
       <div class="system-grid">
         <article class="panel-card">
           <div class="section-head"><div><p class="eyebrow">RUNTIME</p><h2>Служба Xray</h2></div><span id="xray-status" class="badge warn">не установлен</span></div>
           <div class="form-grid compact-grid"><label>Режим<select id="xray-mode"><option value="managed">Managed</option><option value="raw">Raw JSON</option></select></label><label>Уровень журнала<select id="xray-log-level"><option value="warning">warning</option><option value="info">info</option><option value="error">error</option><option value="debug">debug</option><option value="none">none</option></select></label><label class="checkbox"><input id="xray-enabled" type="checkbox"> Включить Xray</label><label class="checkbox"><input id="xray-access-log" type="checkbox"> Журнал доменов и маршрутов</label></div>
+          <div class="form-grid compact-grid"><label class="checkbox"><input id="xray-gateway-enabled" type="checkbox"> Направлять трафик WDTT в Xray</label><label>Подсеть WDTT<input id="xray-gateway-source-cidr" value="10.66.66.0/24" placeholder="10.66.66.0/24"></label><label>Локальный порт<input id="xray-gateway-inbound-port" type="number" min="1024" max="65535" value="12346"></label></div>
+          <p id="xray-gateway-info" class="muted">Шлюз выключен: правила WARP не получают трафик WDTT.</p>
           <p id="xray-runtime-info" class="muted">Конфигурация ещё не загружена.</p>
         </article>
         <article class="panel-card">
@@ -72,11 +74,11 @@
           <p id="warp-info" class="muted">Создайте профиль — панель добавит защищённый WireGuard-исходящий в Xray.</p>
           <div class="button-row"><button id="install-warp" class="secondary">Установить WARP</button><button id="create-warp" class="primary">Создать профиль</button><button id="ping-warp" class="secondary">Пинг WARP</button><button id="restart-warp" class="secondary">Перезапустить</button><button id="recreate-warp" class="danger">Пересоздать</button></div>
         </article>
-        <article class="panel-card wide">
+        <details class="xray-advanced"><summary>Дополнительно: каскад RU → EU для будущего российского сервера</summary><article class="panel-card wide">
           <div class="section-head"><div><p class="eyebrow">RU → EU CASCADE</p><h2>Каскад WDTT через EU‑VLESS</h2><p class="muted">Трафик пользователей WDTT из указанной подсети прозрачно попадает в Xray. Российские сайты идут напрямую через RU‑сервер, категории <code>ru-blocked</code> — через EU‑VLESS. Работает только в Managed‑режиме Xray.</p></div><div class="inline-actions"><button id="save-cascade" class="primary">Сохранить каскад</button><button id="restart-cascade" class="secondary">Перезапустить</button></div></div>
           <div class="form-grid compact-grid"><label class="checkbox"><input id="cascade-enabled" type="checkbox"> Включить RU → EU</label><label>Подсеть WDTT<input id="cascade-source-cidr" value="10.66.66.0/24" placeholder="10.66.66.0/24"></label><label>Локальный порт<input id="cascade-inbound-port" type="number" min="1024" max="65535" value="12345"></label><label>GeoSite, через EU<input id="cascade-geosite-category" value="ru-blocked" placeholder="ru-blocked"></label><label>GeoIP, через EU<input id="cascade-geoip-category" value="ru-blocked" placeholder="ru-blocked"></label><label>Домены через EU<textarea id="cascade-domains" class="compact-textarea mono" spellcheck="false" placeholder="example.com&#10;blocked.example"></textarea></label><label>IP/CIDR через EU<textarea id="cascade-ip-cidrs" class="compact-textarea mono" spellcheck="false" placeholder="203.0.113.10&#10;198.51.100.0/24"></textarea></label><label class="wide">VLESS EU‑сервера<textarea id="cascade-eu-vless" class="compact-textarea mono" spellcheck="false" placeholder="vless://UUID@eu.example.com:443?type=tcp&security=reality&pbk=...#EU"></textarea></label></div>
           <p id="cascade-info" class="muted">Каскад выключен.</p>
-        </article>
+        </article></details>
         <article class="panel-card wide" id="xray-managed-editor">
           <div class="section-head"><div><p class="eyebrow">ROUTES &amp; RULES</p><h2>Настройка без JSON</h2><p class="muted">Сначала добавьте путь для трафика, затем скажите, какие домены, IP или Geo‑категории должны идти через него. Правила сверху имеют больший приоритет.</p></div></div>
           <div class="xray-guide"><span>1. Создайте маршрут</span><span>2. Добавьте правило</span><span>3. Сохраните и примените</span></div>

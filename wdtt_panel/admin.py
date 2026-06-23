@@ -81,6 +81,7 @@ XRAY_CASCADE_SETTINGS = Path(
     os.environ.get("WDTT_XRAY_CASCADE_SETTINGS", "/var/lib/wdtt-panel-private/xray-cascade.json")
 )
 XRAY_CASCADE_SERVICE = os.environ.get("WDTT_XRAY_CASCADE_SERVICE", "wdtt-xray-cascade.service")
+XRAY_GATEWAY_SERVICE = os.environ.get("WDTT_XRAY_GATEWAY_SERVICE", "wdtt-xray-gateway.service")
 XRAY_ACCESS_LOG = Path(
     os.environ.get("WDTT_XRAY_ACCESS_LOG", "/var/lib/wdtt-panel-private/xray-access.log")
 )
@@ -1330,6 +1331,9 @@ def default_xray_settings() -> dict[str, Any]:
         "mode": "managed",
         "log_level": "warning",
         "access_log": False,
+        "gateway_enabled": False,
+        "gateway_source_cidr": "10.66.66.0/24",
+        "gateway_inbound_port": 12346,
         "inbounds": [],
         "outbounds": [],
         "routing_rules": [],
@@ -1380,6 +1384,17 @@ def load_xray_settings() -> dict[str, Any]:
     settings["mode"] = settings.get("mode") if settings.get("mode") in {"managed", "raw"} else "managed"
     settings["log_level"] = str(settings.get("log_level") or "warning")
     settings["access_log"] = bool(settings.get("access_log", False))
+    settings["gateway_enabled"] = bool(settings.get("gateway_enabled", False))
+    try:
+        gateway_network = ipaddress.ip_network(str(settings.get("gateway_source_cidr") or ""), strict=False)
+        settings["gateway_source_cidr"] = str(gateway_network) if gateway_network.version == 4 and gateway_network.prefixlen <= 30 else "10.66.66.0/24"
+    except ValueError:
+        settings["gateway_source_cidr"] = "10.66.66.0/24"
+    try:
+        gateway_port = int(settings.get("gateway_inbound_port") or 12346)
+        settings["gateway_inbound_port"] = gateway_port if 1024 <= gateway_port <= 65535 else 12346
+    except (TypeError, ValueError):
+        settings["gateway_inbound_port"] = 12346
     for key in ("inbounds", "outbounds", "routing_rules", "routes", "friendly_rules", "geofiles"):
         settings[key] = settings.get(key) if isinstance(settings.get(key), list) else []
     settings["raw_config"] = str(settings.get("raw_config") or "")
@@ -1535,10 +1550,30 @@ def normalize_xray_settings(payload: dict[str, Any]) -> dict[str, Any]:
     if settings["log_level"] not in {"debug", "info", "warning", "error", "none"}:
         raise ValidationError("Некорректный уровень журнала Xray")
     settings["access_log"] = bool(payload.get("access_log", False))
+    settings["gateway_enabled"] = bool(payload.get("gateway_enabled", False))
+    if settings["gateway_enabled"] and not settings["enabled"]:
+        raise ValidationError("Сначала включите Xray, затем включайте шлюз WDTT → Xray")
+    gateway_source = str(payload.get("gateway_source_cidr") or settings["gateway_source_cidr"]).strip()
+    try:
+        gateway_network = ipaddress.ip_network(gateway_source, strict=False)
+    except ValueError as exc:
+        raise ValidationError("Укажите корректную IPv4-подсеть пользователей WDTT для шлюза Xray") from exc
+    if gateway_network.version != 4 or gateway_network.prefixlen > 30:
+        raise ValidationError("Для шлюза Xray нужна IPv4-подсеть WDTT не менее двух адресов")
+    settings["gateway_source_cidr"] = str(gateway_network)
+    try:
+        gateway_port = int(payload.get("gateway_inbound_port") or settings["gateway_inbound_port"])
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Укажите корректный локальный порт шлюза Xray") from exc
+    if not 1024 <= gateway_port <= 65535:
+        raise ValidationError("Порт шлюза Xray должен быть от 1024 до 65535")
+    settings["gateway_inbound_port"] = gateway_port
     settings["geofiles"] = normalize_xray_geofiles(payload.get("geofiles", settings["geofiles"]))
     settings["routes"] = normalize_xray_routes(payload.get("routes", []))
     settings["friendly_rules"] = normalize_xray_friendly_rules(payload.get("friendly_rules", []))
     if settings["mode"] == "raw":
+        if settings["gateway_enabled"]:
+            raise ValidationError("Шлюз WDTT → Xray работает только в Managed-режиме")
         raw_config = str(payload.get("raw_config") or "").strip()
         if len(raw_config.encode("utf-8")) > 2 * 1024 * 1024:
             raise ValidationError("Raw Xray-конфигурация превышает 2 МБ")
@@ -1578,6 +1613,22 @@ def build_xray_config(settings: dict[str, Any], extra_outbound_tags: set[str] | 
                 "routeOnly": True,
             }
         inbounds.append(inbound)
+    if settings.get("gateway_enabled"):
+        if any(item.get("tag") == "wdtt-gateway-in" for item in inbounds):
+            raise ValidationError("Tag wdtt-gateway-in зарезервирован для шлюза WDTT → Xray")
+        if any(str(item.get("port") or "") == str(settings["gateway_inbound_port"]) for item in inbounds):
+            raise ValidationError("Локальный порт шлюза WDTT → Xray уже занят входящим Xray")
+        inbounds.append(
+            {
+                "tag": "wdtt-gateway-in",
+                "listen": "0.0.0.0",
+                "port": int(settings["gateway_inbound_port"]),
+                "protocol": "dokodemo-door",
+                "settings": {"network": "tcp,udp", "followRedirect": True},
+                "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"], "routeOnly": True},
+                "streamSettings": {"sockopt": {"tproxy": "tproxy"}},
+            }
+        )
     outbound_tags = {"direct", "block", *(extra_outbound_tags or set())}
     inbound_tags: set[str] = set()
     for item in inbounds:
@@ -1817,6 +1868,8 @@ def build_effective_xray_config(settings: dict[str, Any], routing: dict[str, Any
     routing = routing or load_xray_cascade_settings()
     if routing.get("enabled") and settings.get("mode") != "managed":
         raise ValidationError("Каскад RU→EU работает только в Managed-режиме Xray")
+    if routing.get("enabled") and settings.get("gateway_enabled"):
+        raise ValidationError("Каскад уже принимает трафик WDTT в Xray; отключите отдельный шлюз WDTT → Xray")
     extra_outbound_tags = {"eu-vless"} if routing.get("enabled") and settings.get("mode") == "managed" else set()
     return apply_xray_cascade(build_xray_config(settings, extra_outbound_tags), routing)
 
@@ -1876,13 +1929,29 @@ def xray_status(payload: dict[str, Any]) -> dict[str, Any]:
         "logs": logs,
         "config_exists": XRAY_CONFIG.is_file(),
         "geofiles": files,
+        "gateway": xray_gateway_status({}),
     }
 
 
 def xray_save(payload: dict[str, Any]) -> dict[str, Any]:
     settings = normalize_xray_settings(payload)
-    persist_xray_configuration(settings, build_effective_xray_config(settings))
-    if load_xray_cascade_settings().get("enabled"):
+    cascade = load_xray_cascade_settings()
+    persist_xray_configuration(settings, build_effective_xray_config(settings, cascade))
+    if settings["gateway_enabled"]:
+        if not SKIP_SYSTEMD:
+            enabled = run(["systemctl", "enable", XRAY_GATEWAY_SERVICE], timeout=45)
+            if enabled.returncode != 0:
+                raise AdminError(enabled.stderr.strip() or "Не удалось включить шлюз WDTT → Xray")
+            applied = run(["systemctl", "restart", XRAY_GATEWAY_SERVICE], timeout=45)
+            if applied.returncode != 0:
+                raise AdminError(applied.stderr.strip() or "Не удалось применить правила шлюза WDTT → Xray")
+        else:
+            xray_gateway_apply_rules({})
+    else:
+        if not SKIP_SYSTEMD:
+            run(["systemctl", "disable", "--now", XRAY_GATEWAY_SERVICE], timeout=45)
+        xray_gateway_remove_rules({})
+    if cascade.get("enabled"):
         cascade_apply_rules({})
     return xray_status({})
 
@@ -1952,7 +2021,7 @@ def warp_xray_outbound() -> dict[str, Any]:
             ],
             "mtu": profile["mtu"],
             "reserved": profile["reserved"],
-            "domainStrategy": "ForceIPv4",
+            "domainStrategy": "ForceIPv4v6",
         },
     }
 
@@ -2228,6 +2297,86 @@ def cascade_run_or_raise(arguments: list[str], table: str = "mangle") -> None:
         raise AdminError(result.stderr.strip() or f"Не удалось применить iptables: {' '.join(arguments)}")
 
 
+def xray_gateway_remove_rules(payload: dict[str, Any]) -> dict[str, Any]:
+    if SKIP_SYSTEMD or not shutil.which("iptables"):
+        return {"removed": True, "state": "test" if SKIP_SYSTEMD else "not-installed"}
+    for table, chain, parent, target in (
+        ("mangle", "WDTT_XRAY_GATEWAY", "PREROUTING", "WDTT_XRAY_GATEWAY"),
+        ("filter", "WDTT_XRAY_GATEWAY_IN", "INPUT", "WDTT_XRAY_GATEWAY_IN"),
+    ):
+        for _ in range(8):
+            result = cascade_iptables(["-D", parent, "-j", target], table)
+            if result.returncode != 0:
+                break
+        cascade_iptables(["-F", chain], table)
+        cascade_iptables(["-X", chain], table)
+    for _ in range(8):
+        result = run(["ip", "rule", "del", "fwmark", "0x234/0xfff", "table", "234", "priority", "1234"], timeout=20)
+        if result.returncode != 0:
+            break
+    run(["ip", "route", "flush", "table", "234"], timeout=20)
+    return {"removed": True}
+
+
+def xray_gateway_apply_rules(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = load_xray_settings()
+    if not settings.get("gateway_enabled"):
+        return xray_gateway_remove_rules({})
+    if settings.get("mode") != "managed":
+        raise ValidationError("Шлюз WDTT → Xray работает только в Managed-режиме")
+    if load_xray_cascade_settings().get("enabled"):
+        raise ValidationError("Каскад уже принимает трафик WDTT в Xray; отдельный шлюз включать не нужно")
+    if SKIP_SYSTEMD:
+        return {"applied": True, "state": "test", "source_cidr": settings["gateway_source_cidr"], "inbound_port": settings["gateway_inbound_port"]}
+    if run(["systemctl", "is-active", "--quiet", XRAY_SERVICE], timeout=20).returncode != 0:
+        raise AdminError("Xray не запущен; правила шлюза WDTT → Xray не были применены")
+    if not shutil.which("iptables"):
+        raise AdminError("iptables не установлен; установите системные зависимости панели")
+    for module in ("xt_TPROXY", "nf_tproxy_core"):
+        if shutil.which("modprobe"):
+            run(["modprobe", module], timeout=20)
+    mangle_chain, input_chain = "WDTT_XRAY_GATEWAY", "WDTT_XRAY_GATEWAY_IN"
+    for table, chain in (("mangle", mangle_chain), ("filter", input_chain)):
+        created = cascade_iptables(["-N", chain], table)
+        if created.returncode != 0 and "Chain already exists" not in created.stderr:
+            raise AdminError(created.stderr.strip() or f"Не удалось создать цепочку {chain}")
+        cascade_run_or_raise(["-F", chain], table)
+    source, port = settings["gateway_source_cidr"], str(settings["gateway_inbound_port"])
+    cascade_run_or_raise(["-A", mangle_chain, "-s", source, "-p", "tcp", "-j", "TPROXY", "--on-port", port, "--tproxy-mark", "0x234/0xfff"])
+    cascade_run_or_raise(["-A", mangle_chain, "-s", source, "-p", "udp", "-j", "TPROXY", "--on-port", port, "--tproxy-mark", "0x234/0xfff"])
+    for protocol in ("tcp", "udp"):
+        cascade_run_or_raise(["-A", input_chain, "-s", source, "-p", protocol, "--dport", port, "-j", "ACCEPT"], "filter")
+        cascade_run_or_raise(["-A", input_chain, "-p", protocol, "--dport", port, "-j", "DROP"], "filter")
+        if cascade_iptables(["-C", "INPUT", "-p", protocol, "--dport", port, "-j", input_chain], "filter").returncode != 0:
+            cascade_run_or_raise(["-I", "INPUT", "1", "-p", protocol, "--dport", port, "-j", input_chain], "filter")
+    if cascade_iptables(["-C", "PREROUTING", "-j", mangle_chain]).returncode != 0:
+        cascade_run_or_raise(["-I", "PREROUTING", "1", "-j", mangle_chain])
+    rule = run(["ip", "rule", "add", "fwmark", "0x234/0xfff", "table", "234", "priority", "1234"], timeout=20)
+    if rule.returncode != 0 and "File exists" not in rule.stderr:
+        raise AdminError(rule.stderr.strip() or "Не удалось добавить policy routing для шлюза WDTT → Xray")
+    route = run(["ip", "route", "replace", "local", "0.0.0.0/0", "dev", "lo", "table", "234"], timeout=20)
+    if route.returncode != 0:
+        raise AdminError(route.stderr.strip() or "Не удалось добавить локальный маршрут шлюза WDTT → Xray")
+    return {"applied": True, "source_cidr": source, "inbound_port": int(port)}
+
+
+def xray_gateway_status(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = load_xray_settings()
+    rules_active = False
+    service_active = False
+    if not SKIP_SYSTEMD:
+        if shutil.which("iptables"):
+            rules_active = cascade_iptables(["-C", "PREROUTING", "-j", "WDTT_XRAY_GATEWAY"]).returncode == 0
+        service_active = run(["systemctl", "is-active", "--quiet", XRAY_GATEWAY_SERVICE], timeout=20).returncode == 0
+    return {
+        "enabled": bool(settings.get("gateway_enabled")),
+        "source_cidr": settings["gateway_source_cidr"],
+        "inbound_port": settings["gateway_inbound_port"],
+        "rules_active": rules_active,
+        "service_active": service_active,
+    }
+
+
 def cascade_remove_rules(payload: dict[str, Any]) -> dict[str, Any]:
     if SKIP_SYSTEMD or not shutil.which("iptables"):
         return {"removed": True, "state": "test" if SKIP_SYSTEMD else "not-installed"}
@@ -2374,6 +2523,9 @@ def overview(payload: dict[str, Any]) -> dict[str, Any]:
         for device_id, device in data.get("devices", {}).items()
         if device_id not in user_device_ids and isinstance(device, dict)
     )
+    connection_state = list_users()
+    online_user_devices = sum(1 for user in connection_state["users"] if user.get("connected") and user.get("device_id"))
+    online_admin_devices = sum(1 for admin in connection_state["admins"] if admin.get("connected") and admin.get("device_id"))
     stats = read_stats()
     ip_forward = "unknown"
     if not SKIP_SYSTEMD:
@@ -2403,6 +2555,8 @@ def overview(payload: dict[str, Any]) -> dict[str, Any]:
         "managed_users": len(passwords),
         "devices": len(data.get("devices", {})),
         "admin_devices": admin_devices,
+        "online_devices": online_user_devices + online_admin_devices,
+        "online_admin_devices": online_admin_devices,
         "system": {
             "cpu_percent": cpu_usage(),
             "memory": memory_usage(),
@@ -2439,6 +2593,9 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "xray.install": schedule_xray_runtime,
     "xray.geofiles.refresh": xray_refresh_geofile,
     "xray.geofiles.refresh_auto": xray_refresh_auto_geofiles,
+    "xray.gateway.apply": xray_gateway_apply_rules,
+    "xray.gateway.remove": xray_gateway_remove_rules,
+    "xray.gateway.status": xray_gateway_status,
     "warp.status": warp_status,
     "warp.install": schedule_warp_runtime,
     "warp.create": create_warp,

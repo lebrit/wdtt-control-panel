@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.9.2"
+PANEL_VERSION="0.9.3"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,6 +19,7 @@ UNINSTALL_WRAPPER="/usr/local/sbin/wdtt-panel-uninstall"
 STATUS_WRAPPER="/usr/local/sbin/wdtt-panel-status"
 GEOFILES_UPDATE_WRAPPER="/usr/local/sbin/wdtt-panel-geofiles-update"
 CASCADE_RULES_WRAPPER="/usr/local/sbin/wdtt-panel-cascade-rules"
+GATEWAY_RULES_WRAPPER="/usr/local/sbin/wdtt-panel-xray-gateway"
 MANAGER_WRAPPER="/usr/local/sbin/wdtt-panel"
 XRAY_SERVICE="wdtt-xray.service"
 LEGACY_CASCADE_SERVICE="wdtt-cascade.service"
@@ -27,6 +28,7 @@ XRAY_SETTINGS="$PRIVATE_STATE_DIR/xray-settings.json"
 XRAY_ASSETS="$PRIVATE_STATE_DIR/xray-assets"
 XRAY_CASCADE_SETTINGS="$PRIVATE_STATE_DIR/xray-cascade.json"
 XRAY_CASCADE_SERVICE="wdtt-xray-cascade.service"
+XRAY_GATEWAY_SERVICE="wdtt-xray-gateway.service"
 WARP_DIR="$PRIVATE_STATE_DIR/warp"
 LOG_FILE="/var/log/wdtt-panel-install.log"
 
@@ -280,6 +282,15 @@ case "\${1:-apply}" in
 esac
 EOF
   chmod 0755 "$CASCADE_RULES_WRAPPER"
+  cat > "$GATEWAY_RULES_WRAPPER" <<EOF
+#!/bin/sh
+case "\${1:-apply}" in
+  apply) printf '%s\n' '{"action":"xray.gateway.apply","payload":{}}' | $ADMIN_WRAPPER ;;
+  remove) printf '%s\n' '{"action":"xray.gateway.remove","payload":{}}' | $ADMIN_WRAPPER ;;
+  *) exit 2 ;;
+esac
+EOF
+  chmod 0755 "$GATEWAY_RULES_WRAPPER"
 }
 
 write_xray_services() {
@@ -326,6 +337,23 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=$CASCADE_RULES_WRAPPER apply
 ExecStop=$CASCADE_RULES_WRAPPER remove
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  cat > "/etc/systemd/system/$XRAY_GATEWAY_SERVICE" <<EOF
+[Unit]
+Description=WDTT traffic gateway to Xray
+After=network-online.target wdtt.service $XRAY_SERVICE
+Wants=network-online.target
+ConditionPathExists=$XRAY_SETTINGS
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$GATEWAY_RULES_WRAPPER apply
+ExecStop=$GATEWAY_RULES_WRAPPER remove
 
 [Install]
 WantedBy=multi-user.target
@@ -844,9 +872,9 @@ uninstall_panel() {
   log "Удаление только web-панели; WDTT не затрагивается"
   systemctl disable --now "$PANEL_SERVICE" wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service 2>/dev/null || true
   rm -f "/etc/systemd/system/$PANEL_SERVICE" /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer
-  systemctl disable --now "$LEGACY_CASCADE_SERVICE" "$XRAY_SERVICE" "$XRAY_CASCADE_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service 2>/dev/null || true
-  rm -f "/etc/systemd/system/$LEGACY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_SERVICE" "/etc/systemd/system/$XRAY_CASCADE_SERVICE" /etc/systemd/system/wdtt-panel-geofiles-update.service /etc/systemd/system/wdtt-panel-geofiles-update.timer
-  rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$GEOFILES_UPDATE_WRAPPER" "$CASCADE_RULES_WRAPPER"
+  systemctl disable --now "$LEGACY_CASCADE_SERVICE" "$XRAY_SERVICE" "$XRAY_CASCADE_SERVICE" "$XRAY_GATEWAY_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service 2>/dev/null || true
+  rm -f "/etc/systemd/system/$LEGACY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_SERVICE" "/etc/systemd/system/$XRAY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_GATEWAY_SERVICE" /etc/systemd/system/wdtt-panel-geofiles-update.service /etc/systemd/system/wdtt-panel-geofiles-update.timer
+  rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$GEOFILES_UPDATE_WRAPPER" "$CASCADE_RULES_WRAPPER" "$GATEWAY_RULES_WRAPPER"
   rm -rf "$INSTALL_DIR" "$CONFIG_DIR"
   remove_firewall_rule "$panel_port"
   systemctl daemon-reload

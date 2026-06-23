@@ -10,9 +10,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.9.2"', installer)
-        self.assertIn('__version__ = "0.9.2"', package)
-        self.assertIn("Текущая версия: 0.9.2", readme)
+        self.assertIn('PANEL_VERSION="0.9.3"', installer)
+        self.assertIn('__version__ = "0.9.3"', package)
+        self.assertIn("Текущая версия: 0.9.3", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -32,6 +32,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("install_xray_runtime()", script)
         self.assertIn("install_warp_runtime()", script)
         self.assertIn("wdtt-xray-cascade.service", script)
+        self.assertIn("wdtt-xray-gateway.service", script)
         self.assertIn("wdtt-panel-geofiles-update.timer", script)
 
     def test_installer_can_change_the_panel_login_password(self):
@@ -96,6 +97,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('id="xray-rule-dialog"', html)
         self.assertIn('id="xray-rule-preset"', html)
         self.assertIn('id="xray-access-log"', html)
+        self.assertIn('id="xray-gateway-enabled"', html)
         self.assertIn('<option value="xray-access">', html)
         self.assertIn('<option value="xray-errors">', html)
         self.assertIn('collectFriendlyRules()', script)

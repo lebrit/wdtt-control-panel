@@ -205,6 +205,8 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual(result["users"], 1)
         self.assertEqual(result["devices"], 1)
         self.assertEqual(result["admin_devices"], 1)
+        self.assertEqual(result["online_devices"], 0)
+        self.assertEqual(result["online_admin_devices"], 0)
 
     def test_userspace_wireguard_handshakes_are_used_when_wg_tools_are_missing(self):
         with mock.patch.object(admin, "SKIP_SYSTEMD", False), mock.patch.object(admin.shutil, "which", return_value=None), mock.patch.object(admin, "userspace_wireguard_handshakes", return_value={"public-key": 123}):
@@ -277,6 +279,46 @@ class AdminDatabaseTests(unittest.TestCase):
         config = admin.build_xray_config(settings)
         self.assertEqual(config["log"]["loglevel"], "error")
         self.assertEqual(config["log"]["access"], str(self.xray_access_log))
+
+    def test_wdtt_gateway_adds_transparent_xray_inbound_without_cascade(self):
+        settings = admin.normalize_xray_settings(
+            {
+                "enabled": True,
+                "mode": "managed",
+                "log_level": "info",
+                "gateway_enabled": True,
+                "gateway_source_cidr": "10.66.66.0/24",
+                "gateway_inbound_port": 12346,
+                "inbounds": [],
+                "outbounds": [],
+                "routing_rules": [],
+                "friendly_rules": [{"name": "Google AI", "outbound": "warp", "domains": "gemini.google.com"}],
+                "geofiles": admin.default_xray_settings()["geofiles"],
+            }
+        )
+        settings["outbounds"] = [{"tag": "warp", "protocol": "freedom", "settings": {}}]
+        config = admin.build_effective_xray_config(settings, {"enabled": False})
+        inbound = next(item for item in config["inbounds"] if item["tag"] == "wdtt-gateway-in")
+        self.assertEqual(inbound["port"], 12346)
+        self.assertTrue(inbound["sniffing"]["enabled"])
+        self.assertEqual(config["routing"]["rules"][0]["outboundTag"], "warp")
+
+    def test_gateway_and_cascade_cannot_capture_wdtt_traffic_together(self):
+        settings = admin.normalize_xray_settings(
+            {
+                "enabled": True,
+                "mode": "managed",
+                "gateway_enabled": True,
+                "gateway_source_cidr": "10.66.66.0/24",
+                "gateway_inbound_port": 12346,
+                "inbounds": [],
+                "outbounds": [],
+                "routing_rules": [],
+                "geofiles": admin.default_xray_settings()["geofiles"],
+            }
+        )
+        with self.assertRaises(admin.ValidationError):
+            admin.build_effective_xray_config(settings, {"enabled": True})
 
     def test_xray_friendly_routes_and_rules_build_without_json_editor(self):
         settings = admin.normalize_xray_settings(
@@ -384,6 +426,7 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertTrue(outbound["settings"]["noKernelTun"])
         self.assertEqual(outbound["settings"]["peers"][0]["endpoint"], "engage.cloudflareclient.com:2408")
         self.assertEqual(outbound["settings"]["reserved"], [1, 2, 3])
+        self.assertEqual(outbound["settings"]["domainStrategy"], "ForceIPv4v6")
         probe = admin.warp_probe_config(1080)
         self.assertEqual(probe["inbounds"][0]["port"], 1080)
         self.assertEqual(probe["outbounds"][0]["tag"], "warp")

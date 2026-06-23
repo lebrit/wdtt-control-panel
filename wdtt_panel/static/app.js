@@ -6,7 +6,7 @@
   const CSRF = meta("csrf-token");
   const PUBLIC_HOST = meta("public-host");
   const PANEL_VERSION = meta("panel-version");
-  const state = { overview: null, users: [], logs: [], logsMeta: null, editing: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, warp: null, cascade: null };
+  const state = { overview: null, users: [], logs: [], logsMeta: null, editing: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null };
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -81,8 +81,7 @@
     $("#active-conns").textContent = stats.active ?? 0;
     $("#total-conns").textContent = `${stats.total ?? 0} всего`;
     $("#user-count").textContent = overview.users ?? 0;
-    const adminDevices = Number(overview.admin_devices || 0);
-    $("#device-count").textContent = `${overview.devices ?? 0} устройств${adminDevices ? ` · админ: ${adminDevices}` : ""}`;
+    $("#device-count").textContent = `${overview.devices ?? 0} устройств · онлайн: ${overview.online_devices ?? 0}`;
     const up = Number(stats.up_gb || 0), down = Number(stats.down_gb || 0);
     $("#traffic-total").textContent = `${(up + down).toFixed(2)} GB`;
     $("#traffic-split").textContent = `↑${up.toFixed(2)} / ↓${down.toFixed(2)}`;
@@ -519,10 +518,11 @@
       ["Напрямую", "direct", "IP этого сервера", "ok", "готов"],
       ["Блокировка", "block", "Запретить выбранный трафик", "warn", "готов"],
       ["Cloudflare WARP", "warp", warpReady ? "Доступен для правил" : "Создайте профиль выше", warpReady ? "ok" : "warn", warpReady ? "готов" : "не настроен"],
-      ["EU VLESS — каскад", "eu-vless", cascadeReady ? "Выход через EU-сервер из раздела «Каскад»" : "Включите и настройте каскад", cascadeReady ? "ok" : "warn", cascadeReady ? "готов" : "не настроен"],
-    ].map(([name, tag, note, stateClass, stateLabel]) => `<article class="friendly-card builtin-route"><div><strong>${name}</strong><small><code>${tag}</code> · ${note}</small></div><span class="badge ${stateClass}">${stateLabel}</span></article>`);
+    ];
+    if (cascadeReady) standard.push(["EU VLESS — каскад", "eu-vless", "Выход через EU-сервер из раздела «Каскад»", "ok", "готов"]);
+    const builtinRoutes = standard.map(([name, tag, note, stateClass, stateLabel]) => `<article class="friendly-card builtin-route"><div><strong>${name}</strong><small><code>${tag}</code> · ${note}</small></div><span class="badge ${stateClass}">${stateLabel}</span></article>`);
     const routes = (state.xray.routes || []).map((route, index) => `<article class="friendly-card" data-friendly-route="${index}"><div><strong>${escapeHtml(route.name || route.tag || "VLESS маршрут")}</strong><small><code>${escapeHtml(route.tag || "")}</code> · VLESS</small></div><div class="inline-actions"><span class="badge ${route.enabled === false ? "warn" : "ok"}">${route.enabled === false ? "выключен" : "готов"}</span><button data-edit-friendly-route="${index}" class="secondary">Редактировать</button><button data-remove-friendly-route="${index}" class="danger">Удалить</button></div></article>`).join("");
-    $("#xray-friendly-routes").innerHTML = [...standard, routes || `<p class="muted">Дополнительных VLESS‑маршрутов нет.</p>`].join("");
+    $("#xray-friendly-routes").innerHTML = [...builtinRoutes, routes || `<p class="muted">Дополнительных VLESS‑маршрутов нет.</p>`].join("");
   }
 
   function renderCompactFriendlyRules() {
@@ -532,11 +532,11 @@
   const ROUTE_PRESETS = {
     google_ai: {
       name: "Google AI",
-      domains: ["gemini.google.com", "aistudio.google.com", "ai.google.dev", "generativelanguage.googleapis.com", "content-gemini.googleapis.com", "accounts.google.com", "ogs.google.com", "gstatic.com", "googleusercontent.com"],
+      domains: ["gemini.google.com", "assistant.google.com", "bard.google.com", "aistudio.google.com", "ai.google.dev", "googleapis.com", "generativelanguage.googleapis.com", "content-gemini.googleapis.com", "accounts.google.com", "oauth2.googleapis.com", "ogs.google.com", "gstatic.com", "googleusercontent.com"],
     },
     ai: {
       name: "AI‑сервисы",
-      domains: ["gemini.google.com", "aistudio.google.com", "ai.google.dev", "generativelanguage.googleapis.com", "content-gemini.googleapis.com", "accounts.google.com", "ogs.google.com", "gstatic.com", "googleusercontent.com", "chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com", "claude.ai", "anthropic.com", "perplexity.ai", "x.ai"],
+      domains: ["gemini.google.com", "assistant.google.com", "bard.google.com", "aistudio.google.com", "ai.google.dev", "googleapis.com", "generativelanguage.googleapis.com", "content-gemini.googleapis.com", "accounts.google.com", "oauth2.googleapis.com", "ogs.google.com", "gstatic.com", "googleusercontent.com", "chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com", "claude.ai", "anthropic.com", "perplexity.ai", "x.ai"],
     },
     video: {
       name: "Видео",
@@ -624,6 +624,7 @@
     const raw = $("#xray-mode").value === "raw";
     $("#xray-managed-editor").hidden = raw;
     $("#xray-raw-editor").hidden = !raw;
+    ["#xray-gateway-enabled", "#xray-gateway-source-cidr", "#xray-gateway-inbound-port"].forEach((selector) => { $(selector).disabled = raw; });
   }
 
   async function loadXray() {
@@ -635,12 +636,18 @@
       $("#xray-mode").value = state.xray.mode || "managed";
       $("#xray-log-level").value = state.xray.log_level || "warning";
       $("#xray-access-log").checked = Boolean(state.xray.access_log);
+      $("#xray-gateway-enabled").checked = Boolean(state.xray.gateway_enabled);
+      $("#xray-gateway-source-cidr").value = state.xray.gateway_source_cidr || "10.66.66.0/24";
+      $("#xray-gateway-inbound-port").value = state.xray.gateway_inbound_port || 12346;
+      state.xrayGateway = result.gateway || null;
       $("#xray-raw-config").value = state.xray.raw_config || "";
       $("#xray-status").className = `badge ${result.active ? "ok" : (state.xray.enabled ? "bad" : "warn")}`;
       $("#xray-status").textContent = result.active ? "работает" : (state.xray.enabled ? "ошибка" : (result.installed ? "выключен" : "не установлен"));
       $("#xray-runtime-info").textContent = result.installed ? `${result.version || "Xray установлен"} · ${result.config_exists ? "конфигурация создана" : "конфигурация ещё не создана"}` : "Нажмите «Установить Xray», затем создайте конфигурацию.";
       $("#install-xray").textContent = result.installed ? (result.version || "Xray установлен") : "Установить Xray";
       $("#xray-log").textContent = (result.logs || []).join("\n") || "Нет записей.";
+      const gateway = state.xrayGateway || {};
+      $("#xray-gateway-info").textContent = !state.xray.gateway_enabled ? "Шлюз выключен: правила WARP не получают трафик WDTT." : (gateway.rules_active ? `Шлюз активен: трафик ${gateway.source_cidr || state.xray.gateway_source_cidr} попадает в Xray; правила и журнал работают.` : "Шлюз включён, но правила TPROXY ещё не активны. Нажмите «Сохранить и применить».");
       renderXrayMode(); renderCompactFriendlyRoutes(); renderCompactFriendlyRules(); renderXrayItems(); renderXrayGeofiles();
     } catch (error) { toast(error.message, true); }
   }
@@ -657,7 +664,7 @@
     try {
       const mode = $("#xray-mode").value;
       const payload = {
-        enabled: $("#xray-enabled").checked, mode, log_level: $("#xray-log-level").value, access_log: $("#xray-access-log").checked, geofiles: state.xray.geofiles,
+        enabled: $("#xray-enabled").checked, mode, log_level: $("#xray-log-level").value, access_log: $("#xray-access-log").checked, gateway_enabled: mode !== "raw" && $("#xray-gateway-enabled").checked, gateway_source_cidr: $("#xray-gateway-source-cidr").value.trim(), gateway_inbound_port: Number($("#xray-gateway-inbound-port").value), geofiles: state.xray.geofiles,
         routes: collectFriendlyRoutes(), friendly_rules: collectFriendlyRules(),
       };
       if (mode === "raw") payload.raw_config = $("#xray-raw-config").value;
