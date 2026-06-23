@@ -82,6 +82,7 @@ XRAY_CASCADE_SETTINGS = Path(
 )
 XRAY_CASCADE_SERVICE = os.environ.get("WDTT_XRAY_CASCADE_SERVICE", "wdtt-xray-cascade.service")
 XRAY_GATEWAY_SERVICE = os.environ.get("WDTT_XRAY_GATEWAY_SERVICE", "wdtt-xray-gateway.service")
+IPTABLES_BINARY: str | None = None
 XRAY_ACCESS_LOG = Path(
     os.environ.get("WDTT_XRAY_ACCESS_LOG", "/var/lib/wdtt-panel-private/xray-access.log")
 )
@@ -2288,8 +2289,29 @@ def xray_refresh_auto_geofiles(payload: dict[str, Any]) -> dict[str, Any]:
     return {"refreshed": refreshed, "errors": errors}
 
 
+def iptables_available() -> bool:
+    return bool(shutil.which("iptables") or shutil.which("iptables-legacy"))
+
+
+def nftables_not_supported(result: subprocess.CompletedProcess[str]) -> bool:
+    output = f"{result.stdout}\n{result.stderr}".lower()
+    return "failed to initialize nft" in output
+
+
 def cascade_iptables(arguments: list[str], table: str = "mangle") -> subprocess.CompletedProcess[str]:
-    return run(["iptables", "-w", "-t", table, *arguments], timeout=30)
+    global IPTABLES_BINARY
+    binary = IPTABLES_BINARY or shutil.which("iptables") or shutil.which("iptables-legacy")
+    if not binary:
+        return subprocess.CompletedProcess(["iptables", "-w", "-t", table, *arguments], 127, "", "iptables не установлен")
+    result = run([binary, "-w", "-t", table, *arguments], timeout=30)
+    if not nftables_not_supported(result):
+        return result
+    legacy = shutil.which("iptables-legacy")
+    if legacy and legacy != binary:
+        IPTABLES_BINARY = legacy
+        return run([legacy, "-w", "-t", table, *arguments], timeout=30)
+    result.stderr = f"{result.stderr.rstrip()}\nЯдро не поддерживает nftables; установите пакет iptables-legacy."
+    return result
 
 
 def cascade_run_or_raise(arguments: list[str], table: str = "mangle") -> None:
@@ -2299,7 +2321,7 @@ def cascade_run_or_raise(arguments: list[str], table: str = "mangle") -> None:
 
 
 def xray_gateway_remove_rules(payload: dict[str, Any]) -> dict[str, Any]:
-    if SKIP_SYSTEMD or not shutil.which("iptables"):
+    if SKIP_SYSTEMD or not iptables_available():
         return {"removed": True, "state": "test" if SKIP_SYSTEMD else "not-installed"}
     for table, chain, parent, target in (
         ("mangle", "WDTT_XRAY_GATEWAY", "PREROUTING", "WDTT_XRAY_GATEWAY"),
@@ -2331,7 +2353,7 @@ def xray_gateway_apply_rules(payload: dict[str, Any]) -> dict[str, Any]:
         return {"applied": True, "state": "test", "source_cidr": settings["gateway_source_cidr"], "inbound_port": settings["gateway_inbound_port"]}
     if run(["systemctl", "is-active", "--quiet", XRAY_SERVICE], timeout=20).returncode != 0:
         raise AdminError("Xray не запущен; правила шлюза WDTT → Xray не были применены")
-    if not shutil.which("iptables"):
+    if not iptables_available():
         raise AdminError("iptables не установлен; установите системные зависимости панели")
     for module in ("xt_TPROXY", "nf_tproxy_core"):
         if shutil.which("modprobe"):
@@ -2366,7 +2388,7 @@ def xray_gateway_status(payload: dict[str, Any]) -> dict[str, Any]:
     rules_active = False
     service_active = False
     if not SKIP_SYSTEMD:
-        if shutil.which("iptables"):
+        if iptables_available():
             rules_active = cascade_iptables(["-C", "PREROUTING", "-j", "WDTT_XRAY_GATEWAY"]).returncode == 0
         service_active = run(["systemctl", "is-active", "--quiet", XRAY_GATEWAY_SERVICE], timeout=20).returncode == 0
     return {
@@ -2379,7 +2401,7 @@ def xray_gateway_status(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def cascade_remove_rules(payload: dict[str, Any]) -> dict[str, Any]:
-    if SKIP_SYSTEMD or not shutil.which("iptables"):
+    if SKIP_SYSTEMD or not iptables_available():
         return {"removed": True, "state": "test" if SKIP_SYSTEMD else "not-installed"}
     for table, chain, parent, target in (
         ("mangle", "WDTT_XRAY_CASCADE", "PREROUTING", "WDTT_XRAY_CASCADE"),
@@ -2408,7 +2430,7 @@ def cascade_apply_rules(payload: dict[str, Any]) -> dict[str, Any]:
         return {"applied": True, "state": "test"}
     if run(["systemctl", "is-active", "--quiet", XRAY_SERVICE], timeout=20).returncode != 0:
         raise AdminError("Xray не запущен; правила каскада не были применены")
-    if not shutil.which("iptables"):
+    if not iptables_available():
         raise AdminError("iptables не установлен; установите системные зависимости панели")
     for module in ("xt_TPROXY", "nf_tproxy_core"):
         if shutil.which("modprobe"):
@@ -2450,7 +2472,7 @@ def cascade_status(payload: dict[str, Any]) -> dict[str, Any]:
     rules_active = False
     service_active = False
     if not SKIP_SYSTEMD:
-        if shutil.which("iptables"):
+        if iptables_available():
             rules_active = cascade_iptables(["-C", "PREROUTING", "-j", "WDTT_XRAY_CASCADE"]).returncode == 0
         service_active = run(["systemctl", "is-active", "--quiet", XRAY_CASCADE_SERVICE]).returncode == 0
     return {

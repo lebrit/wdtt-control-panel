@@ -348,6 +348,31 @@ class AdminDatabaseTests(unittest.TestCase):
         fake_run.assert_called_once_with(["systemctl", "enable", admin.XRAY_GATEWAY_SERVICE], timeout=45)
         apply_rules.assert_called_once_with({})
 
+    def test_iptables_falls_back_to_legacy_when_nftables_is_unavailable(self):
+        nft_error = mock.Mock(
+            returncode=1,
+            stdout="",
+            stderr="iptables: Failed to initialize nft: Address family not supported by protocol",
+        )
+        legacy_result = mock.Mock(returncode=0, stdout="", stderr="")
+        locations = {"iptables": "/usr/sbin/iptables", "iptables-legacy": "/usr/sbin/iptables-legacy"}
+        fake_run = mock.Mock(side_effect=[nft_error, legacy_result])
+        with (
+            mock.patch.object(admin, "IPTABLES_BINARY", None),
+            mock.patch.object(admin.shutil, "which", side_effect=locations.get),
+            mock.patch.object(admin, "run", fake_run),
+        ):
+            result = admin.cascade_iptables(["-S", "PREROUTING"])
+
+        self.assertIs(result, legacy_result)
+        self.assertEqual(
+            fake_run.call_args_list,
+            [
+                mock.call(["/usr/sbin/iptables", "-w", "-t", "mangle", "-S", "PREROUTING"], timeout=30),
+                mock.call(["/usr/sbin/iptables-legacy", "-w", "-t", "mangle", "-S", "PREROUTING"], timeout=30),
+            ],
+        )
+
     def test_xray_friendly_routes_and_rules_build_without_json_editor(self):
         settings = admin.normalize_xray_settings(
             {
