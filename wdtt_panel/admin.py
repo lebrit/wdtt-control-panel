@@ -106,6 +106,27 @@ LEGACY_XRAY_GEOFILE_URLS = {
     "geoip": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
     "geosite": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
 }
+GOOGLE_AI_DOMAINS = (
+    "gemini.google.com", "assistant.google.com", "bard.google.com", "robinfrontend-pa.googleapis.com", "generativelanguage.googleapis.com", "content-gemini.googleapis.com",
+    "aistudio.google.com", "ai.google.dev", "accounts.google.com", "oauth2.googleapis.com", "google.com", "www.google.com",
+    "googleapis.com", "www.googleapis.com", "ogs.google.com", "gstatic.com", "www.gstatic.com", "ssl.gstatic.com", "connectivitycheck.gstatic.com",
+    "googleusercontent.com", "lh3.googleusercontent.com", "yt3.googleusercontent.com", "alkalicore-pa.clients6.google.com",
+    "clients6.google.com", "signaler-pa.clients6.google.com", "waa-pa.clients6.google.com", "ogads-pa.clients6.google.com",
+    "geller-pa.googleapis.com", "searchlabspartnerservice-pa.googleapis.com", "federatedcompute-pa.googleapis.com",
+    "prod-lt-playstoregatewayadapter-pa.googleapis.com", "suggestqueries.google.com", "nearbysharing-pa.googleapis.com",
+    "mobilemaps-pa-gz.googleapis.com", "geomobileservices-pa.googleapis.com", "firebaseinstallations.googleapis.com",
+    "firebaselogging.googleapis.com", "play.googleapis.com", "play-fe.googleapis.com", "play.google.com", "android.apis.google.com",
+    "mtalk.google.com", "cloudconfig.googleapis.com", "youtubei.googleapis.com", "app-measurement.com", "region1.app-measurement.com",
+    "encrypted-tbn0.gstatic.com", "encrypted-tbn1.gstatic.com", "encrypted-tbn2.gstatic.com", "encrypted-tbn3.gstatic.com",
+)
+GOOGLE_AI_DOMAIN_MARKERS = frozenset(GOOGLE_AI_DOMAINS)
+# These ranges cover Google Front End traffic that reaches Gemini over QUIC with no
+# recoverable hostname. They are deliberately limited to the proven service ranges.
+GOOGLE_AI_IPV4_CIDRS = (
+    "64.233.160.0/19", "66.102.0.0/20", "66.249.80.0/20", "72.14.192.0/18", "74.125.0.0/16", "108.177.0.0/17",
+    "142.250.0.0/15", "142.251.0.0/16", "172.217.0.0/16", "172.253.0.0/16", "173.194.0.0/16", "209.85.128.0/17",
+    "216.58.192.0/19", "216.239.32.0/19",
+)
 RU_SITE_RULESET = (
     "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ru.srs"
 )
@@ -1524,6 +1545,9 @@ def normalize_xray_friendly_rules(value: Any) -> list[dict[str, Any]]:
             raise ValidationError(f"Правило {name}: укажите корректный IP или CIDR") from exc
         geosite = normalize_xray_geo_categories(raw.get("geosite"), "geosite:", "GeoSite")
         geoip = normalize_xray_geo_categories(raw.get("geoip"), "geoip:", "GeoIP")
+        if outbound == "warp" and set(domains).intersection(GOOGLE_AI_DOMAIN_MARKERS):
+            domains = list(dict.fromkeys([*domains, *GOOGLE_AI_DOMAINS]))
+            ip_cidrs = list(dict.fromkeys([*ip_cidrs, *GOOGLE_AI_IPV4_CIDRS]))
         if len(domains) + len(ip_cidrs) + len(geosite) + len(geoip) > 256:
             raise ValidationError(f"Правило {name}: не более 256 значений")
         if bool(raw.get("enabled", True)) and not (domains or ip_cidrs or geosite or geoip):

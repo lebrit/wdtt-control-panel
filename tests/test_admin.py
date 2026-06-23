@@ -303,6 +303,28 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertTrue(inbound["sniffing"]["enabled"])
         self.assertEqual(config["routing"]["rules"][0]["outboundTag"], "warp")
 
+    def test_google_ai_warp_rule_covers_quic_google_frontends_by_ip(self):
+        settings = admin.normalize_xray_settings(
+            {
+                "enabled": True,
+                "mode": "managed",
+                "log_level": "info",
+                "inbounds": [],
+                "outbounds": [{"tag": "warp", "protocol": "freedom", "settings": {}}],
+                "routing_rules": [],
+                "friendly_rules": [{"name": "Google AI", "outbound": "warp", "domains": "gemini.google.com"}],
+                "geofiles": admin.default_xray_settings()["geofiles"],
+            }
+        )
+        rule = settings["friendly_rules"][0]
+        self.assertIn("robinfrontend-pa.googleapis.com", rule["domains"])
+        self.assertIn("142.250.0.0/15", rule["ip_cidrs"])
+        self.assertIn("216.239.32.0/19", rule["ip_cidrs"])
+        config = admin.build_xray_config(settings)
+        ip_rule = next(item for item in config["routing"]["rules"] if item.get("ip"))
+        self.assertEqual(ip_rule["outboundTag"], "warp")
+        self.assertIn("142.251.0.0/16", ip_rule["ip"])
+
     def test_gateway_and_cascade_cannot_capture_wdtt_traffic_together(self):
         settings = admin.normalize_xray_settings(
             {

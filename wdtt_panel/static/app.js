@@ -529,14 +529,22 @@
     $("#xray-friendly-rules").innerHTML = (state.xray.friendly_rules || []).map((rule, index) => `<article class="friendly-card" data-friendly-rule="${index}"><div><strong>${escapeHtml(rule.name || `Правило ${index + 1}`)}</strong><small>${escapeHtml(ruleSummary(rule))} · через ${escapeHtml(xrayTargetLabel(rule.outbound || "direct"))}</small></div><div class="inline-actions"><span class="badge ${rule.enabled === false ? "warn" : "ok"}">${rule.enabled === false ? "выключено" : "включено"}</span><button data-edit-friendly-rule="${index}" class="secondary">Редактировать</button><button data-move-friendly-rule="up" data-friendly-rule-index="${index}" class="secondary" ${index === 0 ? "disabled" : ""}>↑</button><button data-move-friendly-rule="down" data-friendly-rule-index="${index}" class="secondary" ${index === state.xray.friendly_rules.length - 1 ? "disabled" : ""}>↓</button><button data-remove-friendly-rule="${index}" class="danger">Удалить</button></div></article>`).join("") || `<p class="muted">Правил пока нет. Добавьте правило или используйте заготовку популярных сервисов.</p>`;
   }
 
+  const GOOGLE_AI_DOMAINS = [
+    "gemini.google.com", "assistant.google.com", "bard.google.com", "robinfrontend-pa.googleapis.com", "generativelanguage.googleapis.com", "content-gemini.googleapis.com", "aistudio.google.com", "ai.google.dev", "accounts.google.com", "oauth2.googleapis.com", "google.com", "www.google.com", "googleapis.com", "www.googleapis.com", "ogs.google.com", "gstatic.com", "www.gstatic.com", "ssl.gstatic.com", "connectivitycheck.gstatic.com", "googleusercontent.com", "lh3.googleusercontent.com", "yt3.googleusercontent.com", "alkalicore-pa.clients6.google.com", "clients6.google.com", "signaler-pa.clients6.google.com", "waa-pa.clients6.google.com", "ogads-pa.clients6.google.com", "geller-pa.googleapis.com", "searchlabspartnerservice-pa.googleapis.com", "federatedcompute-pa.googleapis.com", "prod-lt-playstoregatewayadapter-pa.googleapis.com", "suggestqueries.google.com", "nearbysharing-pa.googleapis.com", "mobilemaps-pa-gz.googleapis.com", "geomobileservices-pa.googleapis.com", "firebaseinstallations.googleapis.com", "firebaselogging.googleapis.com", "play.googleapis.com", "play-fe.googleapis.com", "play.google.com", "android.apis.google.com", "mtalk.google.com", "cloudconfig.googleapis.com", "youtubei.googleapis.com", "app-measurement.com", "region1.app-measurement.com", "encrypted-tbn0.gstatic.com", "encrypted-tbn1.gstatic.com", "encrypted-tbn2.gstatic.com", "encrypted-tbn3.gstatic.com",
+  ];
+  const GOOGLE_AI_IP_CIDRS = ["64.233.160.0/19", "66.102.0.0/20", "66.249.80.0/20", "72.14.192.0/18", "74.125.0.0/16", "108.177.0.0/17", "142.250.0.0/15", "142.251.0.0/16", "172.217.0.0/16", "172.253.0.0/16", "173.194.0.0/16", "209.85.128.0/17", "216.58.192.0/19", "216.239.32.0/19"];
+  const OPENAI_DOMAINS = ["chatgpt.com", "chat.openai.com", "desktop.chat.openai.com", "ios.chat.openai.com", "android.chat.openai.com", "mobile.chat.openai.com", "ab.chatgpt.com", "openai.com", "api.openai.com", "cdn.openai.com", "auth.openai.com", "auth0.openai.com", "setup.auth.openai.com", "oaistatic.com", "auth-cdn.oaistatic.com", "persistent.oaistatic.com", "oaiusercontent.com", "files.oaiusercontent.com", "uploads.oaiusercontent.com", "ws.chatgpt.com", "webrtc.chatgpt.com", "realtime.chatgpt.com", "videos.openai.com", "challenges.cloudflare.com", "statsig.com", "statsigapi.net", "api.statsig.com", "events.statsigapi.net", "featuregates.org", "featureassets.org", "intercom.io", "intercomcdn.com", "js.intercomcdn.com", "ct.sendgrid.net", "cdn.openaimerge.com", "cdn.workos.com", "forwarder.workos.com", "setup.workos.com"];
+
   const ROUTE_PRESETS = {
     google_ai: {
-      name: "Google AI",
-      domains: ["gemini.google.com", "assistant.google.com", "bard.google.com", "aistudio.google.com", "ai.google.dev", "googleapis.com", "generativelanguage.googleapis.com", "content-gemini.googleapis.com", "accounts.google.com", "oauth2.googleapis.com", "ogs.google.com", "gstatic.com", "googleusercontent.com"],
+      name: "Google AI — WARP",
+      domains: GOOGLE_AI_DOMAINS,
+      ip_cidrs: GOOGLE_AI_IP_CIDRS,
     },
     ai: {
       name: "AI‑сервисы",
-      domains: ["gemini.google.com", "assistant.google.com", "bard.google.com", "aistudio.google.com", "ai.google.dev", "googleapis.com", "generativelanguage.googleapis.com", "content-gemini.googleapis.com", "accounts.google.com", "oauth2.googleapis.com", "ogs.google.com", "gstatic.com", "googleusercontent.com", "chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com", "claude.ai", "anthropic.com", "perplexity.ai", "x.ai"],
+      domains: [...GOOGLE_AI_DOMAINS, ...OPENAI_DOMAINS, "claude.ai", "anthropic.com", "perplexity.ai", "x.ai"],
+      ip_cidrs: GOOGLE_AI_IP_CIDRS,
     },
     video: {
       name: "Видео",
@@ -554,6 +562,7 @@
   ROUTE_PRESETS.popular = {
     name: "Популярные сервисы",
     domains: [...new Set(Object.values(ROUTE_PRESETS).flatMap((preset) => preset.domains))],
+    ip_cidrs: [...new Set(Object.values(ROUTE_PRESETS).flatMap((preset) => preset.ip_cidrs || []))],
   };
 
   function openXrayRouteDialog(index = -1) {
@@ -907,10 +916,11 @@
       if (!preset) { toast("Выберите готовую настройку", true); return; }
       $("#xray-rule-name").value = preset.name;
       $("#xray-rule-domains").value = preset.domains.join("\n");
-      $("#xray-rule-ip-cidrs").value = ""; $("#xray-rule-geosite").value = ""; $("#xray-rule-geoip").value = "";
+      $("#xray-rule-ip-cidrs").value = (preset.ip_cidrs || []).join("\n"); $("#xray-rule-geosite").value = ""; $("#xray-rule-geoip").value = "";
       const outbound = $("#xray-rule-outbound");
-      if (outbound.value === "direct") outbound.value = outbound.querySelector('option[value="eu-vless"]') ? "eu-vless" : "warp";
-      toast("Домены заполнены. При необходимости отредактируйте список перед сохранением.");
+      if ((state.xray.outbounds || []).some((item) => item.tag === "warp")) outbound.value = "warp";
+      else if (outbound.value === "direct" && outbound.querySelector('option[value="eu-vless"]')) outbound.value = "eu-vless";
+      toast("Домены и IP-подсети заполнены. При необходимости отредактируйте список перед сохранением.");
     });
     $("#xray-friendly-routes").addEventListener("click", (event) => {
       const edit = event.target.closest("[data-edit-friendly-route]");
