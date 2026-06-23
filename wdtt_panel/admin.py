@@ -1942,14 +1942,15 @@ def xray_save(payload: dict[str, Any]) -> dict[str, Any]:
             enabled = run(["systemctl", "enable", XRAY_GATEWAY_SERVICE], timeout=45)
             if enabled.returncode != 0:
                 raise AdminError(enabled.stderr.strip() or "Не удалось включить шлюз WDTT → Xray")
-            applied = run(["systemctl", "restart", XRAY_GATEWAY_SERVICE], timeout=45)
-            if applied.returncode != 0:
-                raise AdminError(applied.stderr.strip() or "Не удалось применить правила шлюза WDTT → Xray")
-        else:
-            xray_gateway_apply_rules({})
+        # The gateway unit invokes this very admin helper on boot. Restarting it
+        # here while this request holds ADMIN_LOCK makes systemd wait for a second
+        # helper process that is itself waiting for the same lock.
+        xray_gateway_apply_rules({})
     else:
         if not SKIP_SYSTEMD:
-            run(["systemctl", "disable", "--now", XRAY_GATEWAY_SERVICE], timeout=45)
+            # Rules are removed directly below; stopping the oneshot unit would
+            # run its ExecStop helper and recreate the same lock cycle.
+            run(["systemctl", "disable", XRAY_GATEWAY_SERVICE], timeout=45)
         xray_gateway_remove_rules({})
     if cascade.get("enabled"):
         cascade_apply_rules({})

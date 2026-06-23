@@ -320,6 +320,34 @@ class AdminDatabaseTests(unittest.TestCase):
         with self.assertRaises(admin.ValidationError):
             admin.build_effective_xray_config(settings, {"enabled": True})
 
+    def test_xray_save_applies_gateway_without_restarting_its_oneshot_service(self):
+        payload = {
+            "enabled": True,
+            "mode": "managed",
+            "log_level": "warning",
+            "gateway_enabled": True,
+            "gateway_source_cidr": "10.66.66.0/24",
+            "gateway_inbound_port": 12346,
+            "inbounds": [],
+            "outbounds": [],
+            "routing_rules": [],
+            "geofiles": admin.default_xray_settings()["geofiles"],
+        }
+        fake_run = mock.Mock(return_value=mock.Mock(returncode=0, stderr=""))
+        with (
+            mock.patch.object(admin, "SKIP_SYSTEMD", False),
+            mock.patch.object(admin, "run", fake_run),
+            mock.patch.object(admin, "persist_xray_configuration"),
+            mock.patch.object(admin, "load_xray_cascade_settings", return_value={"enabled": False}),
+            mock.patch.object(admin, "xray_gateway_apply_rules") as apply_rules,
+            mock.patch.object(admin, "xray_status", return_value={"saved": True}),
+        ):
+            result = admin.xray_save(payload)
+
+        self.assertEqual(result, {"saved": True})
+        fake_run.assert_called_once_with(["systemctl", "enable", admin.XRAY_GATEWAY_SERVICE], timeout=45)
+        apply_rules.assert_called_once_with({})
+
     def test_xray_friendly_routes_and_rules_build_without_json_editor(self):
         settings = admin.normalize_xray_settings(
             {

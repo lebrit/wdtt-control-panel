@@ -67,6 +67,11 @@ button:disabled { opacity: .5; cursor: wait; }
 .panel-card { padding: 22px; }
 .panel-card.wide { grid-column: 1 / -1; }
 .section-head { margin-bottom: 18px; }
+#tab-logs .section-head { align-items: flex-start; }
+#tab-logs .section-head > :first-child { flex: 1 1 500px; min-width: 0; }
+#tab-logs .inline-actions { flex: 1 1 640px; display: grid; grid-template-columns: minmax(160px, 1.5fr) repeat(2, minmax(105px, 1fr)) auto auto; justify-content: stretch; }
+#tab-logs .inline-actions select { width: 100%; min-width: 0; }
+#tab-logs .inline-actions button { white-space: nowrap; }
 #activity-chart { width: 100%; height: 280px; display: block; }
 .health-list { display: grid; gap: 11px; }
 .health-item { display: flex; justify-content: space-between; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--line); color: var(--muted); }
@@ -157,12 +162,12 @@ dialog::backdrop { background: rgba(1,4,8,.78); backdrop-filter: blur(4px); }
 .login-form label { color: var(--muted); font-size: 12px; }
 .login-form input { margin-top: 7px; }
 .form-error { min-height: 18px; margin: 0; color: var(--danger); font-size: 12px; }
-@media (max-width: 1150px) { .hero-grid { grid-template-columns: 1fr 1fr; } .hero-card { grid-column: 1 / -1; } .two-column { grid-template-columns: 1fr; } .route-rule { grid-template-columns: 32px 1fr 1.5fr; } .route-rule .route-target, .route-rule .row-actions { grid-column: span 1; } .geofile-form { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 1150px) { .hero-grid { grid-template-columns: 1fr 1fr; } .hero-card { grid-column: 1 / -1; } .two-column { grid-template-columns: 1fr; } .route-rule { grid-template-columns: 32px 1fr 1.5fr; } .route-rule .route-target, .route-rule .row-actions { grid-column: span 1; } .geofile-form { grid-template-columns: 1fr 1fr; } #tab-logs .section-head { flex-wrap: wrap; } #tab-logs .inline-actions { flex-basis: 100%; } }
 @media (max-width: 760px) {
   :root { --sidebar: 0px; }
   .sidebar { position: static; width: 100%; height: auto; padding: 15px; flex-direction: row; align-items: center; overflow-x: auto; }
   .brand { padding: 0 12px 0 0; } .brand div, .sidebar-footer { display: none; } nav { display: flex; }
   .nav-item { white-space: nowrap; } .content { margin: 0; padding: 24px 16px 45px; }
   .topbar { align-items: flex-end; } .host-pill { display: none; } .hero-grid, .system-grid { grid-template-columns: 1fr; }
-  .hero-card { grid-column: auto; } .panel-card.wide { grid-column: auto; } .form-grid, .xray-easy-grid { grid-template-columns: 1fr; } .form-grid .wide { grid-column: auto; } .route-rule, .geofile-form, .xray-json-row { grid-template-columns: 1fr; } .route-order { grid-template-columns: 1fr 1fr; } .preset-grid { grid-template-columns: 1fr; } .friendly-card { align-items: flex-start; flex-direction: column; } .friendly-card .inline-actions { justify-content: flex-start; }
+  .hero-card { grid-column: auto; } .panel-card.wide { grid-column: auto; } .form-grid, .xray-easy-grid { grid-template-columns: 1fr; } .form-grid .wide { grid-column: auto; } .route-rule, .geofile-form, .xray-json-row { grid-template-columns: 1fr; } .route-order { grid-template-columns: 1fr 1fr; } .preset-grid { grid-template-columns: 1fr; } .friendly-card { align-items: flex-start; flex-direction: column; } .friendly-card .inline-actions { justify-content: flex-start; } #tab-logs .inline-actions { grid-template-columns: 1fr 1fr; } #tab-logs .inline-actions select:first-child { grid-column: 1 / -1; }
 }
