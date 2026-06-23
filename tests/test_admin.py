@@ -368,8 +368,16 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual(
             fake_run.call_args_list,
             [
-                mock.call(["/usr/sbin/iptables", "-w", "-t", "mangle", "-S", "PREROUTING"], timeout=30),
-                mock.call(["/usr/sbin/iptables-legacy", "-w", "-t", "mangle", "-S", "PREROUTING"], timeout=30),
+                mock.call(
+                    ["/usr/sbin/iptables", "-w", "-t", "mangle", "-S", "PREROUTING"],
+                    timeout=30,
+                    env={"XTABLES_LOCKFILE": admin.XTABLES_LOCK_FILE},
+                ),
+                mock.call(
+                    ["/usr/sbin/iptables-legacy", "-w", "-t", "mangle", "-S", "PREROUTING"],
+                    timeout=30,
+                    env={"XTABLES_LOCKFILE": admin.XTABLES_LOCK_FILE},
+                ),
             ],
         )
 

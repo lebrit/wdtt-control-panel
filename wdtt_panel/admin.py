@@ -83,6 +83,7 @@ XRAY_CASCADE_SETTINGS = Path(
 XRAY_CASCADE_SERVICE = os.environ.get("WDTT_XRAY_CASCADE_SERVICE", "wdtt-xray-cascade.service")
 XRAY_GATEWAY_SERVICE = os.environ.get("WDTT_XRAY_GATEWAY_SERVICE", "wdtt-xray-gateway.service")
 IPTABLES_BINARY: str | None = None
+XTABLES_LOCK_FILE = os.environ.get("WDTT_XTABLES_LOCK_FILE", "/var/lib/wdtt-panel-private/xtables.lock")
 XRAY_ACCESS_LOG = Path(
     os.environ.get("WDTT_XRAY_ACCESS_LOG", "/var/lib/wdtt-panel-private/xray-access.log")
 )
@@ -2303,13 +2304,14 @@ def cascade_iptables(arguments: list[str], table: str = "mangle") -> subprocess.
     binary = IPTABLES_BINARY or shutil.which("iptables") or shutil.which("iptables-legacy")
     if not binary:
         return subprocess.CompletedProcess(["iptables", "-w", "-t", table, *arguments], 127, "", "iptables не установлен")
-    result = run([binary, "-w", "-t", table, *arguments], timeout=30)
+    environment = {"XTABLES_LOCKFILE": XTABLES_LOCK_FILE}
+    result = run([binary, "-w", "-t", table, *arguments], timeout=30, env=environment)
     if not nftables_not_supported(result):
         return result
     legacy = shutil.which("iptables-legacy")
     if legacy and legacy != binary:
         IPTABLES_BINARY = legacy
-        return run([legacy, "-w", "-t", table, *arguments], timeout=30)
+        return run([legacy, "-w", "-t", table, *arguments], timeout=30, env=environment)
     result.stderr = f"{result.stderr.rstrip()}\nЯдро не поддерживает nftables; установите пакет iptables-legacy."
     return result
 
