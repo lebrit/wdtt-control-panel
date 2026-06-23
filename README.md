@@ -1,6 +1,6 @@
 # WDTT Control Panel
 
-**Текущая версия: 0.8.0**
+**Текущая версия: 0.9.0**
 
 Отдельная web-панель для [amurcanov/proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android). Исходники Android-приложения и `server.go` не изменяются.
 
@@ -25,7 +25,8 @@
 - быстрые команды обновления и удаления из GitHub;
 - отображение текущей и новой версии с обновлением прямо из web-панели;
 - отдельный Xray Core с управляемой и полной Raw JSON-конфигурацией без изменения исходного WDTT;
-- редакторы входящих, исходящих и правил маршрутизации Xray с шаблонами VLESS, VMess, Trojan, Shadowsocks, SOCKS, HTTP и WireGuard;
+- понятная настройка Xray без JSON: VLESS‑маршруты, выбор WARP/прямого выхода, правила для доменов, IP/CIDR, GeoSite и GeoIP с порядком приоритета;
+- свёрнутый экспертный редактор входящих, нестандартных исходящих и JSON‑правил Xray с шаблонами VLESS, VMess, Trojan, Shadowsocks, SOCKS, HTTP и WireGuard;
 - стандартные GeoIP/GeoSite и собственные GeoFiles из HTTPS-источников;
 - ручное и автоматическое обновление GeoFiles через systemd-таймер;
 - российские GeoFiles из `runetfreedom/russia-v2ray-rules-dat`: `geosite:ru-blocked` и `geoip:ru-blocked` для маршрутизации заблокированных в РФ ресурсов;

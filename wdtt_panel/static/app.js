@@ -448,6 +448,62 @@
     $("#xray-rules").innerHTML = state.xray.routing_rules.map((item, index) => xrayItemRow("routing_rules", item, index)).join("") || `<p class="muted">Правил нет: Xray использует стандартную маршрутизацию.</p>`;
   }
 
+  function xrayTargets(selected = "") {
+    const targets = [
+      { tag: "direct", label: "Напрямую — без прокси" },
+      { tag: "block", label: "Заблокировать" },
+    ];
+    const known = new Set(targets.map((item) => item.tag));
+    const add = (tag, label) => {
+      if (!tag || known.has(tag)) return;
+      known.add(tag); targets.push({ tag, label });
+    };
+    (state.xray.outbounds || []).forEach((item) => add(item.tag, item.tag === "warp" ? "Cloudflare WARP" : `${item.tag} — экспертный ${item.protocol || "маршрут"}`));
+    (state.xray.routes || []).filter((item) => item.enabled !== false).forEach((item) => add(item.tag, item.name || item.tag));
+    if (selected && !known.has(selected)) targets.push({ tag: selected, label: `${selected} — не настроен` });
+    return targets.map((item) => `<option value="${escapeHtml(item.tag)}" ${item.tag === selected ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("");
+  }
+
+  function collectFriendlyRoutes() {
+    return $$("[data-friendly-route]").map((node) => ({
+      name: node.querySelector('[data-route-field="name"]').value.trim(),
+      tag: node.querySelector('[data-route-field="tag"]').value.trim(),
+      type: "vless",
+      vless_uri: node.querySelector('[data-route-field="vless_uri"]').value.trim(),
+      enabled: node.querySelector('[data-route-field="enabled"]').checked,
+    }));
+  }
+
+  function collectFriendlyRules() {
+    return $$("[data-friendly-rule]").map((node) => ({
+      name: node.querySelector('[data-rule-field="name"]').value.trim(),
+      enabled: node.querySelector('[data-rule-field="enabled"]').checked,
+      outbound: node.querySelector('[data-rule-field="outbound"]').value,
+      domains: node.querySelector('[data-rule-field="domains"]').value,
+      ip_cidrs: node.querySelector('[data-rule-field="ip_cidrs"]').value,
+      geosite: node.querySelector('[data-rule-field="geosite"]').value,
+      geoip: node.querySelector('[data-rule-field="geoip"]').value,
+    }));
+  }
+
+  function renderFriendlyRoutes() {
+    const standard = [
+      `<article class="friendly-route builtin-route"><div><strong>Напрямую</strong><small>Маршрут <code>direct</code>: сайт открывается с IP этого сервера.</small></div><span class="badge ok">готов</span></article>`,
+      `<article class="friendly-route builtin-route"><div><strong>Блокировка</strong><small>Маршрут <code>block</code>: доступ к указанным сайтам запрещается.</small></div><span class="badge warn">готов</span></article>`,
+    ];
+    const warp = (state.xray.outbounds || []).some((item) => item.tag === "warp");
+    standard.push(`<article class="friendly-route builtin-route"><div><strong>Cloudflare WARP</strong><small>${warp ? "Готов к выбору в правилах." : "Сначала создайте WARP‑профиль в карточке выше."}</small></div><span class="badge ${warp ? "ok" : "warn"}">${warp ? "готов" : "не настроен"}</span></article>`);
+    const routes = (state.xray.routes || []).map((route, index) => `<article class="friendly-route" data-friendly-route="${index}"><div class="section-head"><div><strong>${escapeHtml(route.name || route.tag || "VLESS маршрут")}</strong><small>VLESS‑подключение. Его можно выбрать в правилах ниже.</small></div><label class="checkbox"><input data-route-field="enabled" type="checkbox" ${route.enabled === false ? "" : "checked"}> Включён</label></div><div class="form-grid compact-grid"><label>Название<input data-route-field="name" maxlength="80" value="${escapeHtml(route.name || "")}"></label><label>Tag<input data-route-field="tag" maxlength="64" value="${escapeHtml(route.tag || "")}"></label><label class="wide">VLESS‑ссылка<textarea data-route-field="vless_uri" class="compact-textarea mono" spellcheck="false">${escapeHtml(route.vless_uri || "")}</textarea></label></div><div class="row-actions"><button data-remove-friendly-route="${index}" class="danger">Удалить маршрут</button></div></article>`).join("");
+    $("#xray-friendly-routes").innerHTML = [...standard, routes || `<p class="muted">Дополнительных маршрутов пока нет. Для WARP достаточно создать профиль; для сервера вставьте VLESS‑ссылку выше.</p>`].join("");
+  }
+
+  function renderFriendlyRules() {
+    const select = $("#xray-rule-outbound");
+    const selected = select.value || ((state.xray.outbounds || []).some((item) => item.tag === "warp") ? "warp" : "direct");
+    select.innerHTML = xrayTargets(selected);
+    $("#xray-friendly-rules").innerHTML = (state.xray.friendly_rules || []).map((rule, index) => `<article class="friendly-rule" data-friendly-rule="${index}"><div class="section-head"><div><strong>${escapeHtml(rule.name || `Правило ${index + 1}`)}</strong><small>Проверяется раньше экспертных JSON‑правил.</small></div><label class="checkbox"><input data-rule-field="enabled" type="checkbox" ${rule.enabled === false ? "" : "checked"}> Включено</label></div><div class="form-grid compact-grid"><label>Название<input data-rule-field="name" maxlength="80" value="${escapeHtml(rule.name || "")}"></label><label>Направлять через<select data-rule-field="outbound">${xrayTargets(rule.outbound || "direct")}</select></label><label>Домены<textarea data-rule-field="domains" class="compact-textarea" spellcheck="false">${escapeHtml(Array.isArray(rule.domains) ? rule.domains.join("\n") : (rule.domains || ""))}</textarea></label><label>IP или CIDR<textarea data-rule-field="ip_cidrs" class="compact-textarea mono" spellcheck="false">${escapeHtml(Array.isArray(rule.ip_cidrs) ? rule.ip_cidrs.join("\n") : (rule.ip_cidrs || ""))}</textarea></label><label>GeoSite‑категории<textarea data-rule-field="geosite" class="compact-textarea mono" spellcheck="false">${escapeHtml(Array.isArray(rule.geosite) ? rule.geosite.join("\n") : (rule.geosite || ""))}</textarea></label><label>GeoIP‑категории<textarea data-rule-field="geoip" class="compact-textarea mono" spellcheck="false">${escapeHtml(Array.isArray(rule.geoip) ? rule.geoip.join("\n") : (rule.geoip || ""))}</textarea></label></div><div class="row-actions"><button data-move-friendly-rule="up" data-friendly-rule-index="${index}" class="secondary" ${index === 0 ? "disabled" : ""}>Выше</button><button data-move-friendly-rule="down" data-friendly-rule-index="${index}" class="secondary" ${index === state.xray.friendly_rules.length - 1 ? "disabled" : ""}>Ниже</button><button data-remove-friendly-rule="${index}" class="danger">Удалить правило</button></div></article>`).join("") || `<p class="muted">Правил пока нет. Например, выберите «Cloudflare WARP», укажите <code>youtube.com</code> и сохраните конфигурацию.</p>`;
+  }
+
   function renderXrayGeofiles() {
     $("#xray-geofiles").innerHTML = state.xray.geofiles.map((item) => `<div class="backup-row"><span><strong>${escapeHtml(item.tag)}</strong><br><small>${escapeHtml(item.filename)} · ${item.available ? formatBytes(item.size) : "ещё не загружен"} · ${item.updated_at ? formatDate(item.updated_at) : "ожидает обновления"}</small></span><div class="inline-actions"><label class="checkbox"><input data-xray-geo="enabled" data-xray-tag="${escapeHtml(item.tag)}" type="checkbox" ${item.enabled === false ? "" : "checked"}> Вкл.</label><label class="checkbox"><input data-xray-geo="auto_update" data-xray-tag="${escapeHtml(item.tag)}" type="checkbox" ${item.auto_update ? "checked" : ""}> Авто</label><button data-refresh-xray-geofile="${escapeHtml(item.tag)}" ${item.url ? "" : "disabled"}>Обновить</button></div></div>`).join("") || `<p class="muted">GeoFiles не настроены.</p>`;
   }
@@ -461,8 +517,8 @@
   async function loadXray() {
     try {
       const result = await api("xray");
-      state.xray = result.settings || { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] };
-      state.xray.inbounds ||= []; state.xray.outbounds ||= []; state.xray.routing_rules ||= []; state.xray.geofiles = result.geofiles || state.xray.geofiles || [];
+      state.xray = result.settings || { inbounds: [], outbounds: [], routing_rules: [], routes: [], friendly_rules: [], geofiles: [] };
+      state.xray.inbounds ||= []; state.xray.outbounds ||= []; state.xray.routing_rules ||= []; state.xray.routes ||= []; state.xray.friendly_rules ||= []; state.xray.geofiles = result.geofiles || state.xray.geofiles || [];
       $("#xray-enabled").checked = Boolean(state.xray.enabled);
       $("#xray-mode").value = state.xray.mode || "managed";
       $("#xray-log-level").value = state.xray.log_level || "warning";
@@ -472,7 +528,7 @@
       $("#xray-runtime-info").textContent = result.installed ? `${result.version || "Xray установлен"} · ${result.config_exists ? "конфигурация создана" : "конфигурация ещё не создана"}` : "Нажмите «Установить Xray», затем создайте конфигурацию.";
       $("#install-xray").textContent = result.installed ? (result.version || "Xray установлен") : "Установить Xray";
       $("#xray-log").textContent = (result.logs || []).join("\n") || "Нет записей.";
-      renderXrayMode(); renderXrayItems(); renderXrayGeofiles();
+      renderXrayMode(); renderFriendlyRoutes(); renderFriendlyRules(); renderXrayItems(); renderXrayGeofiles();
     } catch (error) { toast(error.message, true); }
   }
 
@@ -487,9 +543,14 @@
     const button = $("#save-xray"); setBusy(button, true);
     try {
       const mode = $("#xray-mode").value;
-      const payload = { enabled: $("#xray-enabled").checked, mode, log_level: $("#xray-log-level").value, geofiles: state.xray.geofiles };
+      const payload = {
+        enabled: $("#xray-enabled").checked, mode, log_level: $("#xray-log-level").value, geofiles: state.xray.geofiles,
+        routes: collectFriendlyRoutes(), friendly_rules: collectFriendlyRules(),
+      };
       if (mode === "raw") payload.raw_config = $("#xray-raw-config").value;
-      else { payload.inbounds = collectXrayItems("inbounds"); payload.outbounds = collectXrayItems("outbounds"); payload.routing_rules = collectXrayItems("routing_rules"); }
+      else {
+        payload.inbounds = collectXrayItems("inbounds"); payload.outbounds = collectXrayItems("outbounds"); payload.routing_rules = collectXrayItems("routing_rules");
+      }
       await api("xray/save", { method: "POST", body: payload });
       toast("Конфигурация Xray сохранена и применена"); await loadXray();
     } catch (error) { toast(error.message, true); }
@@ -657,6 +718,57 @@
     $("#save-cascade").addEventListener("click", saveCascade);
     $("#restart-cascade").addEventListener("click", restartCascade);
     $("#xray-mode").addEventListener("change", renderXrayMode);
+    $("#add-xray-vless-route").addEventListener("click", () => {
+      state.xray.routes = collectFriendlyRoutes();
+      const name = $("#xray-route-name").value.trim();
+      const tag = $("#xray-route-tag").value.trim();
+      const vlessUri = $("#xray-route-vless").value.trim();
+      if (!tag || !vlessUri) { toast("Укажите tag и полную VLESS‑ссылку", true); return; }
+      if (state.xray.routes.some((item) => item.tag === tag) || ["direct", "block", "warp", "eu-vless"].includes(tag)) { toast("Такой tag уже занят или зарезервирован", true); return; }
+      state.xray.routes.push({ name: name || tag, tag, type: "vless", vless_uri: vlessUri, enabled: true });
+      $("#xray-route-name").value = ""; $("#xray-route-tag").value = ""; $("#xray-route-vless").value = "";
+      renderFriendlyRoutes(); renderFriendlyRules();
+      toast("Маршрут добавлен. Нажмите «Сохранить и применить».");
+    });
+    $("#add-xray-friendly-rule").addEventListener("click", () => {
+      state.xray.routes = collectFriendlyRoutes(); state.xray.friendly_rules = collectFriendlyRules();
+      const rule = {
+        name: $("#xray-rule-name").value.trim(), enabled: true, outbound: $("#xray-rule-outbound").value,
+        domains: $("#xray-rule-domains").value.trim(), ip_cidrs: $("#xray-rule-ip-cidrs").value.trim(),
+        geosite: $("#xray-rule-geosite").value.trim(), geoip: $("#xray-rule-geoip").value.trim(),
+      };
+      if (!rule.domains && !rule.ip_cidrs && !rule.geosite && !rule.geoip) { toast("Добавьте домен, IP/CIDR или Geo‑категорию", true); return; }
+      rule.name ||= `Правило ${state.xray.friendly_rules.length + 1}`;
+      state.xray.friendly_rules.push(rule);
+      ["#xray-rule-name", "#xray-rule-domains", "#xray-rule-ip-cidrs", "#xray-rule-geosite", "#xray-rule-geoip"].forEach((selector) => { $(selector).value = ""; });
+      renderFriendlyRules(); toast("Правило добавлено. Нажмите «Сохранить и применить».");
+    });
+    $("#xray-friendly-routes").addEventListener("change", () => {
+      state.xray.routes = collectFriendlyRoutes(); renderFriendlyRules();
+    });
+    $("#xray-friendly-routes").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-remove-friendly-route]"); if (!button) return;
+      const index = Number(button.dataset.removeFriendlyRoute); const route = state.xray.routes[index];
+      if (!route || !confirm(`Удалить маршрут «${route.name || route.tag}»?`)) return;
+      state.xray.routes = collectFriendlyRoutes(); state.xray.friendly_rules = collectFriendlyRules();
+      const tag = state.xray.routes[index].tag; state.xray.routes.splice(index, 1);
+      let reassigned = 0;
+      state.xray.friendly_rules.forEach((rule) => { if (rule.outbound === tag) { rule.outbound = "direct"; reassigned += 1; } });
+      renderFriendlyRoutes(); renderFriendlyRules();
+      toast(reassigned ? "Маршрут удалён; связанные правила переключены на direct." : "Маршрут удалён. Нажмите «Сохранить и применить».");
+    });
+    $("#xray-friendly-rules").addEventListener("click", (event) => {
+      const remove = event.target.closest("[data-remove-friendly-rule]");
+      const move = event.target.closest("[data-move-friendly-rule]");
+      if (!remove && !move) return;
+      state.xray.friendly_rules = collectFriendlyRules();
+      if (remove) state.xray.friendly_rules.splice(Number(remove.dataset.removeFriendlyRule), 1);
+      if (move) {
+        const index = Number(move.dataset.friendlyRuleIndex); const next = move.dataset.moveFriendlyRule === "up" ? index - 1 : index + 1;
+        if (next >= 0 && next < state.xray.friendly_rules.length) [state.xray.friendly_rules[index], state.xray.friendly_rules[next]] = [state.xray.friendly_rules[next], state.xray.friendly_rules[index]];
+      }
+      renderFriendlyRules();
+    });
     $("#add-xray-inbound").addEventListener("click", () => { state.xray.inbounds.push(xrayInboundTemplate($("#xray-inbound-template").value)); renderXrayItems(); });
     $("#add-xray-outbound").addEventListener("click", () => { state.xray.outbounds.push(xrayOutboundTemplate($("#xray-outbound-template").value)); renderXrayItems(); });
     $("#add-xray-rule").addEventListener("click", () => { state.xray.routing_rules.push({ type: "field", outboundTag: "direct", domain: ["geosite:ru"] }); renderXrayItems(); });

@@ -114,6 +114,21 @@ tbody tr:hover { background: rgba(255,255,255,.018); }
 .xray-json-row strong, .xray-json-row small { display: block; }
 .xray-json-row small { color: var(--muted); margin-top: 4px; }
 .xray-json-row textarea { min-height: 120px; resize: vertical; }
+.xray-guide { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 16px; }
+.xray-guide span { padding: 7px 10px; border: 1px solid rgba(89,225,194,.25); border-radius: 999px; color: #baf6e6; background: rgba(89,225,194,.06); font-size: 12px; }
+.xray-easy-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+.xray-workflow { padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: rgba(5,8,13,.28); }
+.xray-workflow h3, .xray-advanced h3 { margin: 0; font-size: 18px; }
+.friendly-route-list, .friendly-rule-list { display: grid; gap: 10px; margin-top: 16px; }
+.friendly-route, .friendly-rule { padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: #0a1019; }
+.friendly-route.builtin-route { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.friendly-route strong, .friendly-route small, .friendly-rule strong, .friendly-rule small { display: block; }
+.friendly-route small, .friendly-rule small { margin-top: 5px; color: var(--muted); }
+.friendly-route .section-head, .friendly-rule .section-head { margin-bottom: 0; }
+.friendly-route .row-actions, .friendly-rule .row-actions { margin-top: 8px; }
+.xray-advanced { margin-top: 18px; padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: rgba(5,8,13,.25); }
+.xray-advanced summary { cursor: pointer; color: var(--text); font-weight: 700; }
+.xray-advanced[open] summary { margin-bottom: 12px; }
 dialog { width: min(650px, calc(100vw - 32px)); border: 1px solid #2b3b50; border-radius: 18px; padding: 24px; color: var(--text); background: #0e1622; box-shadow: 0 28px 90px rgba(0,0,0,.55); }
 dialog::backdrop { background: rgba(1,4,8,.78); backdrop-filter: blur(4px); }
 .dialog-head { margin-bottom: 20px; }
@@ -143,5 +158,5 @@ dialog::backdrop { background: rgba(1,4,8,.78); backdrop-filter: blur(4px); }
   .brand { padding: 0 12px 0 0; } .brand div, .sidebar-footer { display: none; } nav { display: flex; }
   .nav-item { white-space: nowrap; } .content { margin: 0; padding: 24px 16px 45px; }
   .topbar { align-items: flex-end; } .host-pill { display: none; } .hero-grid, .system-grid { grid-template-columns: 1fr; }
-  .hero-card { grid-column: auto; } .panel-card.wide { grid-column: auto; } .form-grid { grid-template-columns: 1fr; } .form-grid .wide { grid-column: auto; } .route-rule, .geofile-form, .xray-json-row { grid-template-columns: 1fr; } .route-order { grid-template-columns: 1fr 1fr; } .preset-grid { grid-template-columns: 1fr; }
+  .hero-card { grid-column: auto; } .panel-card.wide { grid-column: auto; } .form-grid, .xray-easy-grid { grid-template-columns: 1fr; } .form-grid .wide { grid-column: auto; } .route-rule, .geofile-form, .xray-json-row { grid-template-columns: 1fr; } .route-order { grid-template-columns: 1fr 1fr; } .preset-grid { grid-template-columns: 1fr; }
 }

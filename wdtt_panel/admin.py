@@ -1242,6 +1242,8 @@ def default_xray_settings() -> dict[str, Any]:
         "inbounds": [],
         "outbounds": [],
         "routing_rules": [],
+        "routes": [],
+        "friendly_rules": [],
         "raw_config": "",
         "geofiles": [
             {
@@ -1286,7 +1288,7 @@ def load_xray_settings() -> dict[str, Any]:
             pass
     settings["mode"] = settings.get("mode") if settings.get("mode") in {"managed", "raw"} else "managed"
     settings["log_level"] = str(settings.get("log_level") or "warning")
-    for key in ("inbounds", "outbounds", "routing_rules", "geofiles"):
+    for key in ("inbounds", "outbounds", "routing_rules", "routes", "friendly_rules", "geofiles"):
         settings[key] = settings.get(key) if isinstance(settings.get(key), list) else []
     settings["raw_config"] = str(settings.get("raw_config") or "")
 
@@ -1338,6 +1340,99 @@ def normalize_xray_geofiles(value: Any) -> list[dict[str, Any]]:
     return result
 
 
+def normalize_xray_route_name(value: Any, fallback: str) -> str:
+    name = str(value or fallback).strip()
+    if not name or len(name) > 80 or any(ord(char) < 32 for char in name):
+        raise ValidationError("Укажите понятное название маршрута длиной до 80 символов")
+    return name
+
+
+def normalize_xray_routes(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) > 64:
+        raise ValidationError("Некорректный список маршрутов Xray")
+    result: list[dict[str, Any]] = []
+    tags: set[str] = {"direct", "block", "warp", "eu-vless"}
+    for index, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            raise ValidationError(f"Маршрут {index + 1}: нужен объект")
+        route_type = str(raw.get("type") or "vless").lower()
+        if route_type != "vless":
+            raise ValidationError(f"Маршрут {index + 1}: пока поддерживается VLESS; для другого протокола используйте экспертный режим")
+        tag = xray_tag(raw.get("tag"), "tag маршрута")
+        if tag in tags:
+            raise ValidationError(f"Маршрут с tag {tag} уже существует или зарезервирован")
+        tags.add(tag)
+        uri = str(raw.get("vless_uri") or "").strip()
+        # Проверяем ссылку сразу: в рабочую конфигурацию попадает только разобранный VLESS.
+        parse_xray_vless_uri(uri, tag)
+        result.append(
+            {
+                "name": normalize_xray_route_name(raw.get("name"), tag),
+                "tag": tag,
+                "type": "vless",
+                "vless_uri": uri,
+                "enabled": bool(raw.get("enabled", True)),
+            }
+        )
+    return result
+
+
+def normalize_xray_domain(value: str, label: str) -> str:
+    domain = value.strip().lower()
+    for prefix in ("domain:", "full:", "*." ):
+        if domain.startswith(prefix):
+            domain = domain[len(prefix):]
+    domain = domain.lstrip(".")
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?", domain) or ".." in domain:
+        raise ValidationError(f"Некорректный домен в правиле {label}: {value}")
+    return domain
+
+
+def normalize_xray_geo_categories(value: Any, prefix: str, label: str) -> list[str]:
+    result: list[str] = []
+    for raw in split_rule_values(value):
+        category = raw.strip()
+        if category.lower().startswith(prefix):
+            category = category[len(prefix):]
+        result.append(xray_tag(category, f"категория {label}"))
+    return list(dict.fromkeys(result))
+
+
+def normalize_xray_friendly_rules(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) > 128:
+        raise ValidationError("Некорректный список простых правил маршрутизации")
+    result: list[dict[str, Any]] = []
+    for index, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            raise ValidationError(f"Правило {index + 1}: нужен объект")
+        name = normalize_xray_route_name(raw.get("name"), f"Правило {index + 1}")
+        outbound = xray_tag(raw.get("outbound") or "direct", "исходящий правила")
+        domains = [normalize_xray_domain(item, name) for item in split_rule_values(raw.get("domains"))]
+        ip_values = split_rule_values(raw.get("ip_cidrs"))
+        try:
+            ip_cidrs = [str(ipaddress.ip_network(item, strict=False)) for item in ip_values]
+        except ValueError as exc:
+            raise ValidationError(f"Правило {name}: укажите корректный IP или CIDR") from exc
+        geosite = normalize_xray_geo_categories(raw.get("geosite"), "geosite:", "GeoSite")
+        geoip = normalize_xray_geo_categories(raw.get("geoip"), "geoip:", "GeoIP")
+        if len(domains) + len(ip_cidrs) + len(geosite) + len(geoip) > 256:
+            raise ValidationError(f"Правило {name}: не более 256 значений")
+        if bool(raw.get("enabled", True)) and not (domains or ip_cidrs or geosite or geoip):
+            raise ValidationError(f"Правило {name}: добавьте домен, IP/CIDR или Geo-категорию")
+        result.append(
+            {
+                "name": name,
+                "enabled": bool(raw.get("enabled", True)),
+                "outbound": outbound,
+                "domains": list(dict.fromkeys(domains)),
+                "ip_cidrs": list(dict.fromkeys(ip_cidrs)),
+                "geosite": geosite,
+                "geoip": geoip,
+            }
+        )
+    return result
+
+
 def normalize_xray_settings(payload: dict[str, Any]) -> dict[str, Any]:
     settings = default_xray_settings()
     settings["enabled"] = bool(payload.get("enabled", False))
@@ -1348,6 +1443,8 @@ def normalize_xray_settings(payload: dict[str, Any]) -> dict[str, Any]:
     if settings["log_level"] not in {"debug", "info", "warning", "error", "none"}:
         raise ValidationError("Некорректный уровень журнала Xray")
     settings["geofiles"] = normalize_xray_geofiles(payload.get("geofiles", settings["geofiles"]))
+    settings["routes"] = normalize_xray_routes(payload.get("routes", []))
+    settings["friendly_rules"] = normalize_xray_friendly_rules(payload.get("friendly_rules", []))
     if settings["mode"] == "raw":
         raw_config = str(payload.get("raw_config") or "").strip()
         if len(raw_config.encode("utf-8")) > 2 * 1024 * 1024:
@@ -1397,7 +1494,28 @@ def build_xray_config(settings: dict[str, Any]) -> dict[str, Any]:
         outbound_tags.add(tag)
         outbounds.append(item)
 
+    for route in settings["routes"]:
+        if not route["enabled"]:
+            continue
+        tag = route["tag"]
+        if tag in outbound_tags:
+            raise ValidationError(f"Маршрут {route['name']}: tag {tag} уже занят исходящим")
+        outbound_tags.add(tag)
+        outbounds.append(parse_xray_vless_uri(route["vless_uri"], tag))
+
     rules: list[dict[str, Any]] = []
+    for rule in settings["friendly_rules"]:
+        if not rule["enabled"]:
+            continue
+        target = rule["outbound"]
+        if target not in outbound_tags:
+            raise ValidationError(f"Правило {rule['name']}: маршрут {target} не настроен или выключен")
+        domains = [*(f"domain:{item}" for item in rule["domains"]), *(f"geosite:{item}" for item in rule["geosite"])]
+        ips = [*rule["ip_cidrs"], *(f"geoip:{item}" for item in rule["geoip"])]
+        if domains:
+            rules.append({"type": "field", "domain": domains, "outboundTag": target})
+        if ips:
+            rules.append({"type": "field", "ip": ips, "outboundTag": target})
     for index, rule in enumerate(settings["routing_rules"]):
         if not str(rule.get("type") or "").strip():
             rule = {"type": "field", **rule}

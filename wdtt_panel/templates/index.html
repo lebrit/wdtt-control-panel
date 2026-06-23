@@ -78,14 +78,45 @@
           <p id="cascade-info" class="muted">Каскад выключен.</p>
         </article>
         <article class="panel-card wide" id="xray-managed-editor">
-          <div class="section-head"><div><p class="eyebrow">INBOUNDS</p><h2>Входящие подключения</h2></div><div class="inline-actions"><select id="xray-inbound-template"><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="trojan">Trojan</option><option value="shadowsocks">Shadowsocks</option><option value="socks">SOCKS</option><option value="http">HTTP</option></select><button id="add-xray-inbound" class="secondary">Добавить</button></div></div>
-          <div id="xray-inbounds" class="xray-json-list"></div>
-          <div class="section-head"><div><p class="eyebrow">OUTBOUNDS</p><h2>Исходящие подключения</h2></div><div class="inline-actions"><select id="xray-outbound-template"><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="trojan">Trojan</option><option value="shadowsocks">Shadowsocks</option><option value="socks">SOCKS</option><option value="http">HTTP</option><option value="wireguard">WireGuard</option><option value="freedom">Freedom</option><option value="blackhole">Blackhole</option></select><button id="add-xray-outbound" class="secondary">Добавить</button></div></div>
-          <div id="xray-outbounds" class="xray-json-list"></div>
-          <div class="section-head"><div><p class="eyebrow">ROUTING</p><h2>Правила маршрутизации</h2></div><button id="add-xray-rule" class="secondary">Добавить правило</button></div>
-          <div id="xray-rules" class="xray-json-list"></div>
+          <div class="section-head"><div><p class="eyebrow">ROUTES &amp; RULES</p><h2>Настройка без JSON</h2><p class="muted">Сначала добавьте путь для трафика, затем скажите, какие домены, IP или Geo‑категории должны идти через него. Правила сверху имеют больший приоритет.</p></div></div>
+          <div class="xray-guide"><span>1. Создайте маршрут</span><span>2. Добавьте правило</span><span>3. Сохраните и примените</span></div>
+          <div class="xray-easy-grid">
+            <section class="xray-workflow">
+              <div class="section-head"><div><p class="eyebrow">ROUTES</p><h3>Куда направлять трафик</h3><p class="muted">WARP создаётся в карточке выше. Для EU или другого сервера вставьте готовую VLESS‑ссылку — параметры разберутся автоматически.</p></div></div>
+              <div class="form-grid compact-grid">
+                <label>Название маршрута<input id="xray-route-name" maxlength="80" placeholder="EU сервер"></label>
+                <label>Короткий tag<input id="xray-route-tag" maxlength="64" pattern="[A-Za-z0-9_.-]+" placeholder="eu-vless-1"></label>
+                <label class="wide">VLESS‑ссылка<textarea id="xray-route-vless" class="compact-textarea mono" spellcheck="false" placeholder="vless://UUID@eu.example.com:443?type=tcp&amp;security=reality&amp;pbk=...#EU"></textarea></label>
+              </div>
+              <button id="add-xray-vless-route" class="secondary">Добавить VLESS‑маршрут</button>
+              <div id="xray-friendly-routes" class="friendly-route-list"></div>
+            </section>
+            <section class="xray-workflow">
+              <div class="section-head"><div><p class="eyebrow">RULES</p><h3>Какие сайты идут через маршрут</h3><p class="muted">Домен — например <code>youtube.com</code>; IP можно указать как адрес или подсеть <code>203.0.113.0/24</code>. Для списка заблокированных ресурсов используйте <code>ru-blocked</code>.</p></div></div>
+              <div class="form-grid compact-grid">
+                <label>Название правила<input id="xray-rule-name" maxlength="80" placeholder="YouTube через WARP"></label>
+                <label>Направлять через<select id="xray-rule-outbound"></select></label>
+                <label>Домены<textarea id="xray-rule-domains" class="compact-textarea" spellcheck="false" placeholder="youtube.com&#10;googlevideo.com"></textarea></label>
+                <label>IP или CIDR<textarea id="xray-rule-ip-cidrs" class="compact-textarea mono" spellcheck="false" placeholder="203.0.113.10&#10;198.51.100.0/24"></textarea></label>
+                <label>GeoSite‑категории<textarea id="xray-rule-geosite" class="compact-textarea mono" spellcheck="false" placeholder="ru-blocked"></textarea></label>
+                <label>GeoIP‑категории<textarea id="xray-rule-geoip" class="compact-textarea mono" spellcheck="false" placeholder="ru-blocked"></textarea></label>
+              </div>
+              <button id="add-xray-friendly-rule" class="primary">Добавить правило</button>
+              <div id="xray-friendly-rules" class="friendly-rule-list"></div>
+            </section>
+          </div>
+          <details class="xray-advanced">
+            <summary>Экспертные настройки: входящие, нестандартные исходящие и полный JSON правил</summary>
+            <p class="muted">Используйте этот раздел только для нестандартных протоколов или параметров, которых нет в обычной форме. Обычные маршруты и правила выше менять здесь не нужно.</p>
+            <div class="section-head"><div><p class="eyebrow">INBOUNDS</p><h3>Входящие подключения</h3></div><div class="inline-actions"><select id="xray-inbound-template"><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="trojan">Trojan</option><option value="shadowsocks">Shadowsocks</option><option value="socks">SOCKS</option><option value="http">HTTP</option></select><button id="add-xray-inbound" class="secondary">Добавить</button></div></div>
+            <div id="xray-inbounds" class="xray-json-list"></div>
+            <div class="section-head"><div><p class="eyebrow">OUTBOUNDS</p><h3>Нестандартные исходящие</h3></div><div class="inline-actions"><select id="xray-outbound-template"><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="trojan">Trojan</option><option value="shadowsocks">Shadowsocks</option><option value="socks">SOCKS</option><option value="http">HTTP</option><option value="wireguard">WireGuard</option><option value="freedom">Freedom</option><option value="blackhole">Blackhole</option></select><button id="add-xray-outbound" class="secondary">Добавить</button></div></div>
+            <div id="xray-outbounds" class="xray-json-list"></div>
+            <div class="section-head"><div><p class="eyebrow">ROUTING</p><h3>Нестандартные JSON‑правила</h3></div><button id="add-xray-rule" class="secondary">Добавить JSON‑правило</button></div>
+            <div id="xray-rules" class="xray-json-list"></div>
+          </details>
         </article>
-        <article class="panel-card wide" id="xray-raw-editor" hidden><p class="eyebrow">RAW CONFIGURATION</p><h2>Полная конфигурация Xray</h2><textarea id="xray-raw-config" class="compact-textarea mono" spellcheck="false" placeholder='{"inbounds": [], "outbounds": []}'></textarea></article>
+        <article class="panel-card wide" id="xray-raw-editor" hidden><p class="eyebrow">RAW CONFIGURATION</p><h2>Полная конфигурация Xray</h2><p class="muted">Этот режим полностью заменяет управляемую конфигурацию. Маршруты и правила из обычного режима сохраняются в панели, но не применяются, пока снова не выбран Managed.</p><textarea id="xray-raw-config" class="compact-textarea mono" spellcheck="false" placeholder='{"inbounds": [], "outbounds": []}'></textarea></article>
         <article class="panel-card wide">
           <div class="section-head"><div><p class="eyebrow">GEOFILES</p><h2>GeoIP и GeoSite</h2><p class="muted">Стандартные GeoFiles загружаются по HTTPS и обновляются по таймеру. Добавляйте собственные .dat-источники для правил вида <code>geoip:tag</code> или <code>geosite:tag</code>.</p></div><button id="refresh-all-xray-geofiles" class="secondary">Обновить сейчас</button></div>
           <div class="geofile-form"><input id="xray-geofile-tag" placeholder="Tag: custom"><input id="xray-geofile-file" placeholder="Файл: custom.dat"><input id="xray-geofile-url" placeholder="HTTPS URL GeoFile"><select id="xray-geofile-interval"><option value="6h">Каждые 6 часов</option><option value="12h">Каждые 12 часов</option><option value="1d" selected>Раз в сутки</option><option value="7d">Раз в неделю</option></select><button id="add-xray-geofile" class="primary">Добавить источник</button></div>

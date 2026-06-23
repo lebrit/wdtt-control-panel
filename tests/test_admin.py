@@ -206,6 +206,42 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual(config["routing"]["rules"][0]["outboundTag"], "vless-out")
         self.assertIn("runetfreedom", settings["geofiles"][0]["url"])
 
+    def test_xray_friendly_routes_and_rules_build_without_json_editor(self):
+        settings = admin.normalize_xray_settings(
+            {
+                "enabled": True,
+                "mode": "managed",
+                "log_level": "warning",
+                "inbounds": [],
+                "outbounds": [],
+                "routing_rules": [],
+                "routes": [
+                    {
+                        "name": "EU server",
+                        "tag": "eu-main",
+                        "type": "vless",
+                        "vless_uri": "vless://00000000-0000-4000-8000-000000000000@eu.example.com:443?type=tcp&security=tls&sni=eu.example.com",
+                    }
+                ],
+                "friendly_rules": [
+                    {
+                        "name": "Blocked resources",
+                        "outbound": "eu-main",
+                        "domains": "youtube.com\ngooglevideo.com",
+                        "ip_cidrs": "203.0.113.10\n198.51.100.0/24",
+                        "geosite": "ru-blocked",
+                        "geoip": "ru-blocked",
+                    }
+                ],
+                "geofiles": admin.default_xray_settings()["geofiles"],
+            }
+        )
+        config = admin.build_xray_config(settings)
+        self.assertEqual([item["tag"] for item in config["outbounds"]], ["direct", "block", "eu-main"])
+        self.assertEqual(config["routing"]["rules"][0]["outboundTag"], "eu-main")
+        self.assertEqual(config["routing"]["rules"][0]["domain"], ["domain:youtube.com", "domain:googlevideo.com", "geosite:ru-blocked"])
+        self.assertEqual(config["routing"]["rules"][1]["ip"], ["203.0.113.10/32", "198.51.100.0/24", "geoip:ru-blocked"])
+
     def test_ru_to_eu_cascade_adds_transparent_inbound_and_blocked_routes(self):
         xray = admin.normalize_xray_settings(
             {
