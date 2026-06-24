@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.10.8"
+PANEL_VERSION="0.10.9"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -618,6 +618,14 @@ case "\${1:-apply}" in
 esac
 EOF
   chmod 0755 "$GATEWAY_RULES_WRAPPER"
+}
+
+backup_wdtt_database_before_update() {
+  [ -f /etc/wdtt/passwords.json ] || return 0
+  install -d -m 0700 "$PRIVATE_STATE_DIR"
+  local snapshot="$PRIVATE_STATE_DIR/passwords-before-panel-update-$(date +%Y%m%d-%H%M%S).json"
+  install -m 0600 /etc/wdtt/passwords.json "$snapshot"
+  log "Создан снимок базы WDTT перед обновлением: $(basename "$snapshot")"
 }
 
 write_xray_services() {
@@ -1246,6 +1254,7 @@ update_panel() {
   require_root
   load_panel_config
   log "Обновление панели до версии $PANEL_VERSION"
+  backup_wdtt_database_before_update
   install_panel_files
   write_maintenance_scripts
   update_panel_config_metadata

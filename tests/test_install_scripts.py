@@ -13,9 +13,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.10.8"', installer)
-        self.assertIn('__version__ = "0.10.8"', package)
-        self.assertIn("Текущая версия: 0.10.8", readme)
+        self.assertIn('PANEL_VERSION="0.10.9"', installer)
+        self.assertIn('__version__ = "0.10.9"', package)
+        self.assertIn("Текущая версия: 0.10.9", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -46,6 +46,10 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('systemctl restart --no-block "$WDTT_EXTENSIONS_SERVICE"', script)
         self.assertIn("WDTT_EXTENSION_MARKER", script)
         self.assertIn("wdtt_extensions_binary_is_current", script)
+        self.assertIn("backup_wdtt_database_before_update", script)
+        update_start = script.index("update_panel() {")
+        update_block = script[update_start:script.index("install_panel() {", update_start)]
+        self.assertLess(update_block.index("backup_wdtt_database_before_update"), update_block.index("schedule_wdtt_extensions"))
         self.assertIn('grep -aFq "$WDTT_EXTENSION_MARKER"', script)
         self.assertIn("awk 'NR == 1 { print $1; exit }'", script)
         self.assertIn("Некорректная контрольная сумма Go", script)
