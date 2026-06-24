@@ -13,7 +13,9 @@
 
   function renderSidebarState() {
     const collapsed = document.body.classList.contains("sidebar-collapsed");
-    $("#sidebar-toggle").textContent = collapsed ? "Показать меню" : "Свернуть меню";
+    $("#sidebar-toggle-icon").textContent = collapsed ? "›" : "‹";
+    $("#sidebar-toggle").setAttribute("aria-label", collapsed ? "Развернуть боковое меню" : "Свернуть боковое меню");
+    $("#sidebar-toggle").setAttribute("title", collapsed ? "Развернуть боковое меню" : "Свернуть боковое меню");
     $("#sidebar-toggle").setAttribute("aria-expanded", String(!collapsed));
   }
 
@@ -484,16 +486,19 @@
   async function loadBackups() {
     try {
       const result = await api("backups");
-      $("#backups-list").innerHTML = (result.backups || []).map((item) => `<div class="backup-row"><span><strong>${escapeHtml(item.name)}</strong><br><small>${escapeHtml(formatDate(item.created_at))} · ${formatBytes(item.size)}</small></span><div class="row-actions"><button data-download-backup="${escapeHtml(item.name)}">Скачать</button><button data-restore="${escapeHtml(item.name)}">Восстановить</button></div></div>`).join("") || `<p class="muted">Резервные копии появятся перед первым изменением базы.</p>`;
+      $("#backups-list").innerHTML = (result.backups || []).map((item) => {
+        const type = item.type === "full" ? "Полная панель" : "Пользователи WDTT";
+        return `<div class="backup-row"><span><strong>${escapeHtml(item.name)}</strong><br><small>${escapeHtml(type)} · ${escapeHtml(formatDate(item.created_at))} · ${formatBytes(item.size)}</small></span><div class="row-actions"><button data-download-backup="${escapeHtml(item.name)}">Скачать</button><button data-restore="${escapeHtml(item.name)}" data-backup-type="${escapeHtml(item.type || "users")}">Восстановить</button></div></div>`;
+      }).join("") || `<p class="muted">Резервные копии появятся после первого сохранения.</p>`;
     } catch (error) { toast(error.message, true); }
   }
 
-  async function createBackup() {
-    const button = $("#create-backup");
+  async function createBackup(type) {
+    const button = type === "full" ? $("#create-full-backup") : $("#create-users-backup");
     setBusy(button, true);
     try {
-      const result = await api("backups/create", { method: "POST" });
-      toast(`Backup создан: ${result.name}`);
+      const result = await api("backups/create", { method: "POST", body: { type } });
+      toast(`${type === "full" ? "Полная копия" : "Копия пользователей"} создана: ${result.name}`);
       await loadBackups();
     } catch (error) { toast(error.message, true); }
     finally { setBusy(button, false); }
@@ -540,11 +545,12 @@
     $("#audit-body").innerHTML = (result.items || []).map((item) => `<tr><td>${escapeHtml(formatDate(item[0]))}</td><td>${escapeHtml(item[1])}</td><td class="mono">${escapeHtml(item[2])}</td><td>${escapeHtml(item[3])}</td><td><span class="badge ${item[4] === "ok" ? "ok" : "bad"}">${escapeHtml(item[4])}</span></td></tr>`).join("");
   }
 
-  async function restoreBackup(name) {
-    if (!confirm(`Восстановить ${name}? Текущая база будет сохранена отдельно.`)) return;
+  async function restoreBackup(name, type) {
+    const scope = type === "full" ? "пользователи и настройки панели" : "пользователи WDTT";
+    if (!confirm(`Восстановить ${name}? Будут заменены: ${scope}. Перед этим будет создана полная резервная копия текущего состояния.`)) return;
     try {
-      await api("backups/restore", { method: "POST", body: { name } });
-      toast("Резервная копия восстановлена");
+      const result = await api("backups/restore", { method: "POST", body: { name } });
+      toast(result.warnings?.length ? `Копия восстановлена, но есть предупреждения: ${result.warnings[0]}` : "Резервная копия восстановлена");
       await Promise.all([loadUsers(), loadOverview(), loadBackups()]);
     } catch (error) { toast(error.message, true); }
   }
@@ -951,7 +957,6 @@
 
   function bindEvents() {
     $$(".nav-item").forEach((button) => button.addEventListener("click", () => activateTab(button.dataset.tab)));
-    $("#refresh").addEventListener("click", () => Promise.all([loadOverview(), loadUsers()]).catch((error) => toast(error.message, true)));
     $("#sidebar-toggle").addEventListener("click", () => {
       document.body.classList.toggle("sidebar-collapsed");
       try { localStorage.setItem("wdtt-sidebar-collapsed", document.body.classList.contains("sidebar-collapsed") ? "1" : "0"); }
@@ -1009,14 +1014,15 @@
     $("#log-filter").addEventListener("change", renderLogs);
     $$('[data-service]').forEach((button) => button.addEventListener("click", () => serviceAction(button.dataset.service, button)));
     $("#load-backups").addEventListener("click", loadBackups);
-    $("#create-backup").addEventListener("click", createBackup);
+    $("#create-full-backup").addEventListener("click", () => createBackup("full"));
+    $("#create-users-backup").addEventListener("click", () => createBackup("users"));
     $("#update-panel").addEventListener("click", updatePanel);
     $("#renew-certificate").addEventListener("click", renewCertificate);
     $("#download-certificate").addEventListener("click", downloadCertificate);
     $("#upload-backup").addEventListener("click", () => $("#backup-upload").click());
     $("#backup-upload").addEventListener("change", (event) => uploadBackup(event.target.files[0]));
     $("#backups-list").addEventListener("click", (event) => {
-      const restore = event.target.closest("[data-restore]"); if (restore) restoreBackup(restore.dataset.restore);
+      const restore = event.target.closest("[data-restore]"); if (restore) restoreBackup(restore.dataset.restore, restore.dataset.backupType);
       const download = event.target.closest("[data-download-backup]"); if (download) downloadBackup(download.dataset.downloadBackup);
     });
     $("#save-xray").addEventListener("click", saveXray);

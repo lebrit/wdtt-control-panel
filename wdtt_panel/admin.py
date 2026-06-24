@@ -42,6 +42,8 @@ WDTT_EXTENSION_STATE = Path(os.environ.get("WDTT_EXTENSION_STATE", "/var/lib/wdt
 WDTT_EXTENSION_MARKER = "wdtt-panel-extension-v4"
 STATS_FILE = Path(os.environ.get("WDTT_STATS_FILE", "/etc/wdtt/server.log"))
 BACKUP_DIR = Path(os.environ.get("WDTT_BACKUP_DIR", "/var/lib/wdtt-panel-private/backups"))
+BACKUP_FORMAT = "wdtt-panel-backup-v1"
+BACKUP_CONTENT_LIMIT = 3 * 1024 * 1024
 LOCK_FILE = Path(os.environ.get("WDTT_LOCK_FILE", "/var/lib/wdtt-panel-private/admin.lock"))
 SERVICE = os.environ.get("WDTT_SERVICE", "wdtt.service")
 SKIP_SYSTEMD = os.environ.get("WDTT_SKIP_SYSTEMD") == "1"
@@ -324,13 +326,14 @@ def prune_backups(keep: int = 50) -> None:
         path.unlink(missing_ok=True)
 
 
-def mutate_database(label: str, mutator: Callable[[dict[str, Any]], Any]) -> Any:
+def mutate_database(label: str, mutator: Callable[[dict[str, Any]], Any], backup: bool = True) -> Any:
     was_active = service_active()
     if was_active:
         service_action("stop")
     try:
         data = load_database()
-        create_backup(label)
+        if backup:
+            create_backup(label)
         result = mutator(data)
         save_database(data)
     except Exception:
@@ -740,46 +743,277 @@ def bulk_user_action(payload: dict[str, Any]) -> dict[str, Any]:
     return mutate_database(f"bulk-{action}", apply)
 
 
+def backup_stamp() -> str:
+    return f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1_000_000:06d}"
+
+
+def backup_name(kind: str, label: str) -> str:
+    safe_label = re.sub(r"[^A-Za-z0-9_-]", "-", label)[:32] or "manual"
+    return f"{kind}-{backup_stamp()}-{safe_label}.json"
+
+
+def read_private_json(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def read_private_text(path: Path) -> str | None:
+    try:
+        value = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    return value if len(value.encode("utf-8")) <= 512 * 1024 else None
+
+
+def write_private_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_name, 0o600)
+        os.replace(temp_name, path)
+        os.chmod(path, 0o600)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def write_backup(name: str, data: dict[str, Any]) -> dict[str, Any]:
+    encoded = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    if len(encoded.encode("utf-8")) > BACKUP_CONTENT_LIMIT:
+        raise ValidationError("Резервная копия превышает 3 МБ")
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    destination = BACKUP_DIR / name
+    write_private_text(destination, encoded)
+    stat = destination.stat()
+    return {"name": name, "size": stat.st_size, "created_at": int(stat.st_mtime)}
+
+
+def backup_user_payload() -> dict[str, Any]:
+    return {
+        "format": BACKUP_FORMAT,
+        "type": "users",
+        "created_at": int(time.time()),
+        "database": load_database(),
+        "panel_labels": load_panel_labels(),
+    }
+
+
+def backup_full_payload() -> dict[str, Any]:
+    return {
+        **backup_user_payload(),
+        "type": "full",
+        "settings": {
+            "xray": load_xray_settings(),
+            "xray_cascade": load_xray_cascade_settings(),
+            "legacy_cascade": {
+                "settings": read_private_json(CASCADE_SETTINGS),
+                "config": read_private_json(CASCADE_CONFIG),
+            },
+            "extension_state": read_private_json(WDTT_EXTENSION_STATE),
+        },
+        "warp": {
+            "account": read_private_text(WARP_DIR / "wgcf-account.toml"),
+            "profile": read_private_text(WARP_DIR / "wgcf-profile.conf"),
+        },
+    }
+
+
+def backup_type(data: Any) -> str:
+    if isinstance(data, dict) and data.get("format") == BACKUP_FORMAT and data.get("type") in {"users", "full"}:
+        return str(data["type"])
+    return "users"
+
+
+def backup_metadata(path: Path) -> dict[str, Any]:
+    kind = "users"
+    try:
+        kind = backup_type(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError):
+        pass
+    stat = path.stat()
+    return {"name": path.name, "size": stat.st_size, "created_at": int(stat.st_mtime), "type": kind}
+
+
 def list_backups() -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     if BACKUP_DIR.exists():
-        for path in sorted(BACKUP_DIR.glob("passwords-*.json"), reverse=True):
-            stat = path.stat()
-            items.append({"name": path.name, "size": stat.st_size, "created_at": int(stat.st_mtime)})
+        paths = (path for path in BACKUP_DIR.glob("*.json") if re.fullmatch(r"(?:passwords|users|panel)-[A-Za-z0-9_-]+\.json", path.name))
+        items = [backup_metadata(path) for path in sorted(paths, key=lambda item: item.stat().st_mtime, reverse=True)]
     return {"backups": items}
 
 
 def create_manual_backup(payload: dict[str, Any]) -> dict[str, Any]:
-    load_database()
-    name = create_backup("manual")
-    if not name:
-        raise ValidationError("База WDTT еще не создана")
-    path = BACKUP_DIR / name
-    stat = path.stat()
-    return {"name": name, "size": stat.st_size, "created_at": int(stat.st_mtime)}
+    kind = str(payload.get("type") or "full")
+    if kind not in {"full", "users"}:
+        raise ValidationError("Выберите тип резервной копии")
+    data = backup_full_payload() if kind == "full" else backup_user_payload()
+    return {**write_backup(backup_name("panel" if kind == "full" else "users", "manual"), data), "type": kind}
+
+
+def validate_backup_text(value: Any, label: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or "\x00" in value or len(value.encode("utf-8")) > 512 * 1024:
+        raise ValidationError(f"В backup неверный {label}")
+    return value
+
+
+def validate_labels_payload(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ValidationError("В backup отсутствуют корректные метки пользователей")
+    return {
+        str(password): label.strip()
+        for password, label in value.items()
+        if isinstance(label, str) and label.strip() and len(str(password)) <= 64 and len(label.strip()) <= 64
+    }
+
+
+def validate_full_backup(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict) or backup_type(data) != "full":
+        raise ValidationError("В backup нет полного набора настроек")
+    validate_database_payload(data.get("database"))
+    settings = data.get("settings")
+    warp = data.get("warp")
+    if not isinstance(settings, dict) or not isinstance(warp, dict):
+        raise ValidationError("В backup отсутствуют настройки панели")
+    xray = settings.get("xray")
+    xray_cascade = settings.get("xray_cascade")
+    legacy_cascade = settings.get("legacy_cascade")
+    extension_state = settings.get("extension_state")
+    if not isinstance(xray, dict) or not isinstance(xray_cascade, dict) or not isinstance(legacy_cascade, dict):
+        raise ValidationError("В backup неверные настройки Xray или каскада")
+    for key in ("settings", "config"):
+        if legacy_cascade.get(key) is not None and not isinstance(legacy_cascade.get(key), dict):
+            raise ValidationError("В backup неверные настройки каскада")
+    if extension_state is not None and not isinstance(extension_state, dict):
+        raise ValidationError("В backup неверное состояние WDTT")
+    normalized_xray = normalize_xray_settings(xray)
+    normalized_cascade = normalize_xray_cascade_settings(xray_cascade)
+    build_effective_xray_config(normalized_xray, normalized_cascade)
+    return {
+        "database": data["database"],
+        "panel_labels": validate_labels_payload(data.get("panel_labels", {})),
+        "xray": normalized_xray,
+        "xray_cascade": normalized_cascade,
+        "legacy_cascade": legacy_cascade,
+        "extension_state": extension_state,
+        "warp_account": validate_backup_text(warp.get("account"), "профиль WARP"),
+        "warp_profile": validate_backup_text(warp.get("profile"), "профиль WARP"),
+    }
+
+
+def restore_optional_json(path: Path, value: dict[str, Any] | None) -> None:
+    if value is None:
+        path.unlink(missing_ok=True)
+    else:
+        save_private_json(path, value)
+
+
+def restore_optional_text(path: Path, value: str | None) -> None:
+    if value is None:
+        path.unlink(missing_ok=True)
+    else:
+        write_private_text(path, value)
+
+
+def apply_restored_services(xray: dict[str, Any], cascade: dict[str, Any]) -> list[str]:
+    if SKIP_SYSTEMD:
+        return []
+    warnings: list[str] = []
+
+    def apply(command: list[str], warning: str) -> bool:
+        result = run(command, timeout=60)
+        if result.returncode == 0:
+            return True
+        warnings.append(result.stderr.strip() or warning)
+        return False
+
+    if shutil.which("xray"):
+        xray_action = "enable" if xray.get("enabled") else "disable"
+        if apply(["systemctl", xray_action, XRAY_SERVICE], "Не удалось изменить состояние Xray"):
+            apply(["systemctl", "restart" if xray.get("enabled") else "stop", XRAY_SERVICE], "Не удалось применить настройки Xray")
+    elif xray.get("enabled"):
+        warnings.append("Xray не установлен: настройки сохранены, но служба не запущена")
+
+    if xray.get("gateway_enabled"):
+        if apply(["systemctl", "enable", XRAY_GATEWAY_SERVICE], "Не удалось включить шлюз WDTT → Xray"):
+            try:
+                xray_gateway_apply_rules({})
+            except AdminError as exc:
+                warnings.append(str(exc))
+    else:
+        apply(["systemctl", "disable", XRAY_GATEWAY_SERVICE], "Не удалось выключить шлюз WDTT → Xray")
+        try:
+            xray_gateway_remove_rules({})
+        except AdminError as exc:
+            warnings.append(str(exc))
+
+    if cascade.get("enabled"):
+        if apply(["systemctl", "enable", "--now", XRAY_CASCADE_SERVICE], "Не удалось включить каскад RU → EU"):
+            try:
+                cascade_apply_rules({})
+            except AdminError as exc:
+                warnings.append(str(exc))
+    else:
+        apply(["systemctl", "disable", "--now", XRAY_CASCADE_SERVICE], "Не удалось выключить каскад RU → EU")
+        try:
+            cascade_remove_rules({})
+        except AdminError as exc:
+            warnings.append(str(exc))
+    return warnings
 
 
 def restore_backup(payload: dict[str, Any]) -> dict[str, Any]:
-    name = str(payload.get("name") or "")
-    if not re.fullmatch(r"passwords-[A-Za-z0-9_-]+\.json", name):
-        raise ValidationError("Некорректное имя резервной копии")
+    name = validate_backup_name(str(payload.get("name") or ""))
     source = BACKUP_DIR / name
     if not source.is_file():
         raise ValidationError("Резервная копия не найдена")
+    try:
+        restored = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValidationError(f"Резервная копия повреждена: {exc}") from exc
 
-    def apply(data: dict[str, Any]) -> dict[str, Any]:
-        try:
-            restored = json.loads(source.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValidationError(f"Резервная копия повреждена: {exc}") from exc
-        if not isinstance(restored, dict) or not isinstance(restored.get("passwords"), dict):
-            raise ValidationError("Резервная копия имеет неверный формат")
+    kind = backup_type(restored)
+    if kind == "full":
+        full = validate_full_backup(restored)
+        database, labels = full["database"], full["panel_labels"]
+    elif isinstance(restored, dict) and restored.get("format") == BACKUP_FORMAT:
+        validate_database_payload(restored.get("database"))
+        database, labels = restored["database"], validate_labels_payload(restored.get("panel_labels", {}))
+    else:
+        validate_database_payload(restored)
+        database, labels = restored, load_panel_labels()
+
+    safety_backup = create_manual_backup({"type": "full"})["name"]
+
+    def apply(data: dict[str, Any]) -> None:
         data.clear()
-        data.update(restored)
+        data.update(database)
         data.setdefault("devices", {})
-        return {"restored": name}
 
-    return mutate_database("before-restore", apply)
+    mutate_database("before-restore", apply, backup=False)
+    save_panel_labels(labels)
+    warnings: list[str] = []
+    if kind == "full":
+        restore_optional_json(XRAY_SETTINGS, full["xray"])
+        restore_optional_json(XRAY_CONFIG, build_effective_xray_config(full["xray"], full["xray_cascade"]))
+        restore_optional_json(XRAY_CASCADE_SETTINGS, full["xray_cascade"])
+        restore_optional_json(CASCADE_SETTINGS, full["legacy_cascade"]["settings"])
+        restore_optional_json(CASCADE_CONFIG, full["legacy_cascade"]["config"])
+        restore_optional_json(WDTT_EXTENSION_STATE, full["extension_state"])
+        WARP_DIR.mkdir(parents=True, exist_ok=True)
+        os.chmod(WARP_DIR, 0o700)
+        restore_optional_text(WARP_DIR / "wgcf-account.toml", full["warp_account"])
+        restore_optional_text(WARP_DIR / "wgcf-profile.conf", full["warp_profile"])
+        warnings = apply_restored_services(full["xray"], full["xray_cascade"])
+    return {"restored": name, "type": kind, "safety_backup": safety_backup, "warnings": warnings}
 
 
 def export_backup(payload: dict[str, Any]) -> dict[str, Any]:
@@ -792,25 +1026,25 @@ def export_backup(payload: dict[str, Any]) -> dict[str, Any]:
 
 def import_backup(payload: dict[str, Any]) -> dict[str, Any]:
     content = str(payload.get("content") or "")
-    if not content or len(content.encode("utf-8")) > 3 * 1024 * 1024:
+    if not content or len(content.encode("utf-8")) > BACKUP_CONTENT_LIMIT:
         raise ValidationError("Файл backup пустой или превышает 3 МБ")
     try:
         data = json.loads(content)
     except json.JSONDecodeError as exc:
         raise ValidationError(f"Файл backup содержит неверный JSON: {exc}") from exc
-    validate_database_payload(data)
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1_000_000:06d}"
-    name = f"passwords-{stamp}-uploaded.json"
-    destination = BACKUP_DIR / name
-    destination.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.chmod(destination, 0o600)
-    prune_backups()
-    return {"name": name, "size": destination.stat().st_size, "created_at": int(time.time())}
+    kind = backup_type(data)
+    if kind == "full":
+        validate_full_backup(data)
+    elif isinstance(data, dict) and data.get("format") == BACKUP_FORMAT:
+        validate_database_payload(data.get("database"))
+        validate_labels_payload(data.get("panel_labels", {}))
+    else:
+        validate_database_payload(data)
+    return {**write_backup(backup_name("panel" if kind == "full" else "users", "uploaded"), data), "type": kind}
 
 
 def validate_backup_name(name: str) -> str:
-    if not re.fullmatch(r"passwords-[A-Za-z0-9_-]+\.json", name):
+    if not re.fullmatch(r"(?:passwords|users|panel)-[A-Za-z0-9_-]+\.json", name):
         raise ValidationError("Некорректное имя резервной копии")
     return name
 

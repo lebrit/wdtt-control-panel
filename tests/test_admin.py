@@ -107,7 +107,7 @@ class AdminDatabaseTests(unittest.TestCase):
         admin.restore_backup({"name": backup_name})
         self.assertIn("BackupUser123", admin.load_database()["passwords"])
 
-    def test_manual_backup_restores_users_statistics_devices_and_settings(self):
+    def test_full_backup_restores_users_statistics_devices_and_panel_settings(self):
         data = admin.load_database()
         data["custom_setting"] = "preserved"
         data["passwords"]["StatsUser123"] = {
@@ -121,19 +121,48 @@ class AdminDatabaseTests(unittest.TestCase):
         }
         data["devices"]["device-stats"] = {"device_id": "device-stats", "ip": "10.66.66.9"}
         admin.save_database(data)
+        xray = admin.default_xray_settings()
+        xray["access_log"] = True
+        admin.save_private_json(self.xray_settings, xray)
+        self.warp_dir.mkdir(parents=True)
+        (self.warp_dir / "wgcf-profile.conf").write_text("[Interface]\nPrivateKey = restored\n", encoding="utf-8")
 
-        backup = admin.create_manual_backup({})
+        backup = admin.create_manual_backup({"type": "full"})
+        self.assertEqual(backup["type"], "full")
         changed = admin.load_database()
         changed["passwords"].clear()
         changed["devices"].clear()
         changed.pop("custom_setting")
         admin.save_database(changed)
+        xray["access_log"] = False
+        admin.save_private_json(self.xray_settings, xray)
+        (self.warp_dir / "wgcf-profile.conf").write_text("[Interface]\nPrivateKey = changed\n", encoding="utf-8")
 
         admin.restore_backup({"name": backup["name"]})
         restored = admin.load_database()
         self.assertEqual(restored["passwords"]["StatsUser123"]["down_bytes"], 123456)
         self.assertEqual(restored["devices"]["device-stats"]["ip"], "10.66.66.9")
         self.assertEqual(restored["custom_setting"], "preserved")
+        self.assertTrue(admin.load_xray_settings()["access_log"])
+        self.assertIn("restored", (self.warp_dir / "wgcf-profile.conf").read_text(encoding="utf-8"))
+
+    def test_users_backup_does_not_replace_panel_settings(self):
+        admin.create_user(
+            {"password": "UserOnly123", "label": "Отдельно", "days": 30, "vk_hash": "hash_one", "ports": "56000,56001,9000"}
+        )
+        xray = admin.default_xray_settings()
+        xray["access_log"] = True
+        admin.save_private_json(self.xray_settings, xray)
+        backup = admin.create_manual_backup({"type": "users"})
+        self.assertEqual(backup["type"], "users")
+
+        admin.delete_user({"password": "UserOnly123"})
+        xray["access_log"] = False
+        admin.save_private_json(self.xray_settings, xray)
+
+        admin.restore_backup({"name": backup["name"]})
+        self.assertIn("UserOnly123", admin.load_database()["passwords"])
+        self.assertFalse(admin.load_xray_settings()["access_log"])
 
     def test_bulk_create_assigns_shared_hashes(self):
         result = admin.create_users_bulk(
@@ -286,7 +315,8 @@ class AdminDatabaseTests(unittest.TestCase):
         exported = admin.export_backup({"name": backup["name"]})
         uploaded = admin.import_backup({"name": "local.json", "content": exported["content"]})
         self.assertTrue((self.backups / uploaded["name"]).is_file())
-        self.assertEqual(json.loads(exported["content"])["passwords"], {})
+        self.assertEqual(json.loads(exported["content"])["database"]["passwords"], {})
+        self.assertEqual(uploaded["type"], "full")
 
     def test_admin_device_is_not_online_from_a_stale_conntrack_entry(self):
         data = admin.load_database()

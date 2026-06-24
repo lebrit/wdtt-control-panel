@@ -86,9 +86,10 @@ elif action == "logs":
         ]
     }
 elif action == "backups.list":
-    result = {"backups": [{"name": "passwords-20260615-080000-auto.json", "size": 2048, "created_at": 1781510400}]}
+    result = {"backups": [{"name": "panel-20260615-080000-manual.json", "size": 2048, "created_at": 1781510400, "type": "full"}]}
 elif action == "backups.create":
-    result = {"name": "passwords-20260615-090000-manual.json", "size": 3072, "created_at": 1781514000}
+    backup_type = request.get("payload", {}).get("type", "full")
+    result = {"name": f"{'panel' if backup_type == 'full' else 'users'}-20260615-090000-manual.json", "size": 3072, "created_at": 1781514000, "type": backup_type}
 elif action == "panel.version":
     result = {"current": "0.5.0", "latest": "0.5.0", "update_available": False}
 elif action == "panel.update":
