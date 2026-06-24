@@ -1,3 +1,3 @@
 """WDTT web administration panel."""
 
-__version__ = "0.10.14"
+__version__ = "0.10.15"
