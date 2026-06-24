@@ -13,9 +13,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.10.13"', installer)
-        self.assertIn('__version__ = "0.10.13"', package)
-        self.assertIn("Текущая версия: 0.10.13", readme)
+        self.assertIn('PANEL_VERSION="0.10.14"', installer)
+        self.assertIn('__version__ = "0.10.14"', package)
+        self.assertIn("Текущая версия: 0.10.14", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -214,6 +214,12 @@ class InstallScriptTests(unittest.TestCase):
         agent_service = script[start:end]
         self.assertNotIn("NoNewPrivileges=true", agent_service)
         self.assertIn('systemctl restart "$FLEET_AGENT_SERVICE"', script)
+
+    def test_fleet_diagnostics_does_not_print_agent_secrets(self):
+        diagnostics = (ROOT / "fleet-diagnostics.sh").read_text(encoding="utf-8")
+        self.assertIn('"action":"fleet.snapshot"', diagnostics)
+        self.assertIn("Конфигурация агента без секретов", diagnostics)
+        self.assertNotIn("print(data)", diagnostics)
 
     def test_dialog_cancel_buttons_skip_required_field_validation(self):
         html = (ROOT / "wdtt_panel" / "templates" / "index.html").read_text(encoding="utf-8")
