@@ -19,6 +19,7 @@
     <nav>
       <button class="nav-item active" data-tab="dashboard">Обзор</button>
       <button class="nav-item" data-tab="users">Пользователи</button>
+      <button class="nav-item" data-tab="fleet">Fleet</button>
       <button class="nav-item" data-tab="xray">Xray</button>
       <button class="nav-item" data-tab="logs">Журналы</button>
       <button class="nav-item" data-tab="system">Система</button>
@@ -120,6 +121,27 @@
         <div class="table-toolbar user-toolbar"><input id="user-search" placeholder="Поиск по метке, паролю, устройству или IP"><div class="user-bulk-controls"><details class="user-refresh-menu"><summary>Автообновление</summary><div class="user-refresh-popup"><label>Интервал<select id="user-auto-refresh-interval"><option value="0">Выключено</option><option value="5">Каждые 5 сек.</option><option value="10">Каждые 10 сек.</option><option value="30">Каждые 30 сек.</option><option value="60">Каждую минуту</option></select></label><small id="user-auto-refresh-status">Выключено</small></div></details><span id="selected-users">Выбрано: 0</span><select id="bulk-user-action" aria-label="Массовое действие"><option value="">Действие над выбранными…</option><option value="activate">Активировать</option><option value="deactivate">Деактивировать</option><option value="set_expiration">Изменить срок</option><option value="reset_traffic">Сбросить трафик</option><option value="unbind">Отвязать устройства</option><option value="delete">Удалить</option></select><label id="bulk-user-days-control" hidden>Срок, дней<input id="bulk-user-days" type="number" min="1" max="3650" value="30"></label><button id="apply-bulk-user-action" class="secondary" disabled>Применить</button><span id="user-limit">0 / 10</span></div></div>
         <div class="table-wrap"><table><thead><tr><th><input id="select-all-users" type="checkbox" aria-label="Выбрать всех пользователей"></th><th><button class="user-sort" data-user-sort="label">Метка <span class="sort-indicator">↕</span></button></th><th><button class="user-sort" data-user-sort="access">Доступ <span class="sort-indicator">↕</span></button></th><th><button class="user-sort" data-user-sort="status">Статус <span class="sort-indicator">↕</span></button></th><th><button class="user-sort" data-user-sort="expires">Истекает <span class="sort-indicator">↕</span></button></th><th><button class="user-sort" data-user-sort="device">Устройство <span class="sort-indicator">↕</span></button></th><th><button class="user-sort" data-user-sort="traffic">Трафик <span class="sort-indicator">↕</span></button></th><th></th></tr></thead><tbody id="users-body"></tbody></table></div>
       </article>
+    </section>
+
+    <section class="tab" id="tab-fleet">
+      <div class="section-head"><div><p class="eyebrow">FLEET AGENT</p><h2>Подключение к WDTT Fleet Manager</h2><p class="muted">Агент выключен по умолчанию и сам устанавливает исходящее HTTPS‑соединение с центром. Он передаёт только пользователей WDTT, трафик, устройства и online; shell, Xray, WARP и файлы сервера вне его доступа.</p></div><button id="refresh-fleet" class="secondary">Обновить</button></div>
+      <div class="two-column">
+        <article class="panel-card">
+          <p class="eyebrow">СОСТОЯНИЕ</p><h2>Агент узла</h2>
+          <div id="fleet-status" class="detail-list"><p class="muted">Получение состояния…</p></div>
+        </article>
+        <article class="panel-card">
+          <p class="eyebrow">НАСТРОЙКА</p><h2>Регистрация</h2>
+          <div class="form-grid">
+            <label class="wide">Адрес агента Fleet Manager<input id="fleet-endpoint" type="url" placeholder="https://fleet.example.com:8444/fleet-agent-…/" autocomplete="off"></label>
+            <label class="wide">Одноразовый грант<input id="fleet-grant" type="password" placeholder="Показывается в центральной панели один раз" autocomplete="off"></label>
+            <label>Интервал, секунд<input id="fleet-interval" type="number" min="5" max="300" value="15"></label>
+            <label class="checkbox"><input id="fleet-enabled" type="checkbox"> Включить агент после сохранения</label>
+          </div>
+          <div class="button-row"><button id="save-fleet" class="primary">Сохранить и подключить</button></div>
+          <p class="muted">При смене адреса или гранта прежняя привязка узла сбрасывается. Грант и токен не показываются в интерфейсе после сохранения.</p>
+        </article>
+      </div>
     </section>
 
     <section class="tab" id="tab-logs">

@@ -6,7 +6,7 @@
   const CSRF = meta("csrf-token");
   const PUBLIC_HOST = meta("public-host");
   const PANEL_VERSION = meta("panel-version");
-  const state = { overview: null, users: [], selectedUsers: new Set(), userSort: { key: "", direction: "asc" }, logs: [], logsMeta: null, editing: null, userRefreshTimer: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null };
+  const state = { overview: null, users: [], selectedUsers: new Set(), userSort: { key: "", direction: "asc" }, logs: [], logsMeta: null, editing: null, userRefreshTimer: null, fleet: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null };
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -49,7 +49,42 @@
     }
     if (name === "logs") loadLogs();
     if (name === "xray") Promise.all([loadXray(), loadWarp(), loadCascadeRouting()]);
+    if (name === "fleet") loadFleet();
     if (name === "system") { loadBackups(); loadBackupSchedule(); loadAudit(); loadPanelVersion(); }
+  }
+
+  async function loadFleet() {
+    const fleet = await api("fleet");
+    state.fleet = fleet;
+    const rows = [
+      ["Служба", fleet.service_active ? "работает" : "остановлена"],
+      ["Настройка", fleet.configured ? "готова" : "не задана"],
+      ["Регистрация", fleet.enrolled ? "узел зарегистрирован" : "ожидает грант"],
+      ["Последняя связь", fleet.last_success_at ? formatActivityDate(fleet.last_success_at) : "ещё не было"],
+      ["Последняя ошибка", fleet.last_error_code || "нет"],
+      ["Протокол", fleet.protocol_version || "wdtt-fleet/v1"],
+    ];
+    $("#fleet-status").innerHTML = rows.map(([label, value]) => `<div class="detail-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+    $("#fleet-endpoint").value = fleet.endpoint || "";
+    $("#fleet-interval").value = String(fleet.poll_interval_seconds || 15);
+    $("#fleet-enabled").checked = Boolean(fleet.enabled);
+  }
+
+  async function saveFleet() {
+    const button = $("#save-fleet");
+    try {
+      setBusy(button, true);
+      await api("fleet/configure", { method: "POST", body: {
+        endpoint: $("#fleet-endpoint").value.trim(),
+        enrollment_grant: $("#fleet-grant").value.trim(),
+        poll_interval_seconds: Number($("#fleet-interval").value),
+        enabled: $("#fleet-enabled").checked,
+      }});
+      $("#fleet-grant").value = "";
+      toast("Fleet Agent сохранён. Регистрация начнётся исходящим HTTPS‑соединением.");
+      await loadFleet();
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
   }
 
   function restoreActiveTab() {
@@ -1047,6 +1082,8 @@
       renderTheme();
     });
     $("#new-user").addEventListener("click", () => openUserDialog());
+    $("#refresh-fleet").addEventListener("click", () => loadFleet().catch((error) => toast(error.message, true)));
+    $("#save-fleet").addEventListener("click", saveFleet);
     $("#bulk-users").addEventListener("click", openBulkUserDialog);
     $("#user-form").addEventListener("submit", saveUser);
     $("#bulk-user-form").addEventListener("submit", saveBulkUsers);

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.10.11"
+PANEL_VERSION="0.10.12"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,6 +12,8 @@ PRIVATE_STATE_DIR="/var/lib/wdtt-panel-private"
 CONFIG_FILE="$CONFIG_DIR/config.json"
 NGINX_FILE="/etc/nginx/conf.d/wdtt-panel.conf"
 PANEL_SERVICE="wdtt-panel.service"
+FLEET_AGENT_SERVICE="wdtt-fleet-agent.service"
+FLEET_AGENT_CONFIG="$STATE_DIR/fleet-agent.json"
 ADMIN_WRAPPER="/usr/local/sbin/wdtt-panel-admin"
 SUDOERS_FILE="/etc/sudoers.d/wdtt-panel"
 UPDATE_WRAPPER="/usr/local/sbin/wdtt-panel-update"
@@ -884,6 +886,37 @@ EOF
   systemctl enable --now "$PANEL_SERVICE" >>"$LOG_FILE" 2>&1
 }
 
+write_fleet_agent_service() {
+  cat > "/etc/systemd/system/$FLEET_AGENT_SERVICE" <<EOF
+[Unit]
+Description=WDTT Fleet Manager outbound agent
+After=network-online.target $WDTT_SERVICE
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wdtt-panel
+Group=wdtt-panel
+WorkingDirectory=$INSTALL_DIR
+Environment=WDTT_FLEET_AGENT_CONFIG=$FLEET_AGENT_CONFIG
+Environment=WDTT_FLEET_AGENT_USER=wdtt-panel
+ExecStart=/usr/bin/python3 -m wdtt_panel.fleet_agent
+Restart=always
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=$STATE_DIR
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+}
+
 port_80_available_for_nginx() {
   local listeners
   listeners="$(ss -ltnp '( sport = :80 )' 2>/dev/null || true)"
@@ -1248,8 +1281,8 @@ uninstall_panel() {
     panel_port="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("https_port", ""))' "$CONFIG_FILE" 2>/dev/null || true)"
   fi
   log "Удаление только web-панели; WDTT не затрагивается"
-  systemctl disable --now "$PANEL_SERVICE" wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service "$WDTT_EXTENSIONS_TIMER" "$WDTT_EXTENSIONS_SERVICE" wdtt-panel-backup.timer wdtt-panel-backup.service 2>/dev/null || true
-  rm -f "/etc/systemd/system/$PANEL_SERVICE" /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer "/etc/systemd/system/$WDTT_EXTENSIONS_SERVICE" "/etc/systemd/system/$WDTT_EXTENSIONS_TIMER" /etc/systemd/system/wdtt-panel-backup.service /etc/systemd/system/wdtt-panel-backup.timer
+  systemctl disable --now "$PANEL_SERVICE" "$FLEET_AGENT_SERVICE" wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service "$WDTT_EXTENSIONS_TIMER" "$WDTT_EXTENSIONS_SERVICE" wdtt-panel-backup.timer wdtt-panel-backup.service 2>/dev/null || true
+  rm -f "/etc/systemd/system/$PANEL_SERVICE" "/etc/systemd/system/$FLEET_AGENT_SERVICE" /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer "/etc/systemd/system/$WDTT_EXTENSIONS_SERVICE" "/etc/systemd/system/$WDTT_EXTENSIONS_TIMER" /etc/systemd/system/wdtt-panel-backup.service /etc/systemd/system/wdtt-panel-backup.timer
   systemctl disable --now "$LEGACY_CASCADE_SERVICE" "$XRAY_SERVICE" "$XRAY_CASCADE_SERVICE" "$XRAY_GATEWAY_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service 2>/dev/null || true
   rm -f "/etc/systemd/system/$LEGACY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_SERVICE" "/etc/systemd/system/$XRAY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_GATEWAY_SERVICE" /etc/systemd/system/wdtt-panel-geofiles-update.service /etc/systemd/system/wdtt-panel-geofiles-update.timer
   rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$GEOFILES_UPDATE_WRAPPER" "$BACKUP_RUNNER" "$CASCADE_RULES_WRAPPER" "$GATEWAY_RULES_WRAPPER"
@@ -1269,6 +1302,7 @@ update_panel() {
   write_maintenance_scripts
   update_panel_config_metadata
   write_panel_service
+  write_fleet_agent_service
   write_final_nginx
   write_renew_timer
   write_wdtt_extensions_timer
@@ -1304,6 +1338,8 @@ install_panel() {
 
   write_panel_config
   write_panel_service
+  write_fleet_agent_service
+  systemctl disable --now "$FLEET_AGENT_SERVICE" >/dev/null 2>&1 || true
   write_final_nginx
   write_renew_timer
   write_wdtt_extensions_timer
