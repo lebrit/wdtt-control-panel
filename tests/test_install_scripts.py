@@ -1,5 +1,8 @@
+import json
 from pathlib import Path
+import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -10,9 +13,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.10.7"', installer)
-        self.assertIn('__version__ = "0.10.7"', package)
-        self.assertIn("Текущая версия: 0.10.7", readme)
+        self.assertIn('PANEL_VERSION="0.10.8"', installer)
+        self.assertIn('__version__ = "0.10.8"', package)
+        self.assertIn("Текущая версия: 0.10.8", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -53,9 +56,34 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('json:"main_down_bytes,omitempty"', script)
         self.assertIn('json:"last_upload_at,omitempty"', script)
         self.assertIn('"activity"', script)
+        self.assertIn('"command":"settings"', script)
+        self.assertIn("label prompt on Telegram creation", script)
+        self.assertIn("label before password in Telegram list", script)
         self.assertIn("wdtt-xray-cascade.service", script)
         self.assertIn("wdtt-xray-gateway.service", script)
         self.assertIn("wdtt-panel-geofiles-update.timer", script)
+
+    def test_installer_recovers_legacy_labels_from_private_backups(self):
+        installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+        start_marker = 'python3 - /etc/wdtt/passwords.json "$PRIVATE_STATE_DIR/user-labels.json" <<\'PY\'\n'
+        start = installer.index(start_marker) + len(start_marker)
+        end = installer.index('\nPY\n  fi\n  install -m 0755 "$work/wdtt-server"', start)
+        migration = installer[start:end]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db_path = root / "etc" / "passwords.json"
+            labels_path = root / "private" / "user-labels.json"
+            backup_path = root / "private" / "backups" / "passwords-legacy.json"
+            db_path.parent.mkdir(parents=True)
+            backup_path.parent.mkdir(parents=True)
+            db_path.write_text(json.dumps({"passwords": {"LegacyUser123": {}}, "devices": {}}), encoding="utf-8")
+            labels_path.write_text("{}", encoding="utf-8")
+            backup_path.write_text(json.dumps({"passwords": {"LegacyUser123": {"label": "Старое имя"}}}, ensure_ascii=False), encoding="utf-8")
+            namespace = {"__name__": "__main__"}
+            with mock.patch("sys.argv", ["migration.py", str(db_path), str(labels_path)]):
+                exec(compile(migration, "label-migration.py", "exec"), namespace)
+            restored = json.loads(db_path.read_text(encoding="utf-8"))
+            self.assertEqual(restored["passwords"]["LegacyUser123"]["label"], "Старое имя")
 
     def test_installer_can_change_the_panel_login_password(self):
         script = (ROOT / "install.sh").read_text(encoding="utf-8")

@@ -373,7 +373,6 @@ def list_users() -> dict[str, Any]:
     data = load_database()
     panel_labels = {} if wdtt_extensions_are_verified() else load_panel_labels()
     handshakes = wireguard_handshakes()
-    active_ips = active_tunnel_ips()
     users = [
         connected_user_view(
             user_view(
@@ -382,7 +381,6 @@ def list_users() -> dict[str, Any]:
                 data["devices"],
             ).as_dict(),
             handshakes,
-            active_ips,
         )
         for password, entry in data["passwords"].items()
     ]
@@ -405,7 +403,7 @@ def list_users() -> dict[str, Any]:
                 "role": "admin",
                 "device_id": device_id,
                 "device": device,
-                "connected": str(device.get("ip") or "") in active_ips or handshake_is_active(last_handshake),
+                "connected": handshake_is_active(last_handshake),
                 "last_handshake": last_handshake,
                 "down_bytes": int(data.get("main_down_bytes") or 0),
                 "up_bytes": int(data.get("main_up_bytes") or 0),
@@ -506,34 +504,15 @@ def userspace_wireguard_handshakes() -> dict[str, int]:
     return handshakes
 
 
-def active_tunnel_ips() -> set[str]:
-    if SKIP_SYSTEMD:
-        return set()
-    content = ""
-    for path in (Path("/proc/net/nf_conntrack"), Path("/proc/net/ip_conntrack")):
-        try:
-            content = path.read_text(encoding="utf-8", errors="replace")
-            break
-        except OSError:
-            continue
-    if not content and shutil.which("conntrack"):
-        result = run(["conntrack", "-L"], timeout=15)
-        if result.returncode in {0, 1}:
-            content = result.stdout
-    return set(re.findall(r"(?:src|dst)=(10\.66\.66\.\d+)", content))
-
-
-def handshake_is_active(stamp: int, window: int = 180) -> bool:
+def handshake_is_active(stamp: int, window: int = 75) -> bool:
     return stamp > 0 and time.time() - stamp <= window
 
 
-def connected_user_view(
-    user: dict[str, Any], handshakes: dict[str, int], active_ips: set[str]
-) -> dict[str, Any]:
+def connected_user_view(user: dict[str, Any], handshakes: dict[str, int]) -> dict[str, Any]:
     device = user.get("device") or {}
     public_key = str(device.get("pub_key") or device.get("PubKey") or "")
     last_handshake = int(handshakes.get(public_key) or 0)
-    user["connected"] = str(device.get("ip") or "") in active_ips or handshake_is_active(last_handshake)
+    user["connected"] = handshake_is_active(last_handshake)
     user["last_handshake"] = last_handshake
     user["role"] = "user"
     return user

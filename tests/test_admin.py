@@ -288,16 +288,16 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertTrue((self.backups / uploaded["name"]).is_file())
         self.assertEqual(json.loads(exported["content"])["passwords"], {})
 
-    def test_admin_device_is_listed_separately(self):
+    def test_admin_device_is_not_online_from_a_stale_conntrack_entry(self):
         data = admin.load_database()
         data["main_down_bytes"] = 200
         data["main_up_bytes"] = 100
         data["devices"]["admin-phone"] = {"device_id": "admin-phone", "ip": "10.66.66.2", "pub_key": "admin-public"}
         admin.save_database(data)
-        with mock.patch.object(admin, "wireguard_handshakes", return_value={}), mock.patch.object(admin, "active_tunnel_ips", return_value={"10.66.66.2"}):
+        with mock.patch.object(admin, "wireguard_handshakes", return_value={}):
             result = admin.list_users()
         self.assertEqual(result["admins"][0]["role"], "admin")
-        self.assertTrue(result["admins"][0]["connected"])
+        self.assertFalse(result["admins"][0]["connected"])
         self.assertEqual(result["admins"][0]["down_bytes"], 200)
         self.assertTrue(result["admins"][0]["traffic_supported"])
 
@@ -305,9 +305,12 @@ class AdminDatabaseTests(unittest.TestCase):
         data = admin.load_database()
         data["devices"]["admin-phone"] = {"device_id": "admin-phone", "ip": "10.66.66.2", "pub_key": "admin-public"}
         admin.save_database(data)
-        with mock.patch.object(admin, "wireguard_handshakes", return_value={"admin-public": int(time.time())}), mock.patch.object(admin, "active_tunnel_ips", return_value=set()):
+        with mock.patch.object(admin, "wireguard_handshakes", return_value={"admin-public": int(time.time())}):
             result = admin.list_users()
         self.assertTrue(result["admins"][0]["connected"])
+
+    def test_stale_wireguard_handshake_is_not_online(self):
+        self.assertFalse(admin.handshake_is_active(int(time.time()) - 76))
 
     def test_overview_counts_the_main_administrator_and_its_device(self):
         data = admin.load_database()

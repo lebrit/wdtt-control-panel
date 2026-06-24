@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.10.7"
+PANEL_VERSION="0.10.8"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,7 +46,7 @@ GO_VERSION="${GO_VERSION:-1.25.0}"
 WDTT_SERVICE="wdtt.service"
 WDTT_EXTENSIONS_SERVICE="wdtt-panel-wdtt-extensions.service"
 WDTT_EXTENSIONS_TIMER="wdtt-panel-wdtt-extensions.timer"
-WDTT_EXTENSION_MARKER="wdtt-panel-extension-v3"
+WDTT_EXTENSION_MARKER="wdtt-panel-extension-v4"
 
 log() { printf '[wdtt-panel] %s\n' "$*" | tee -a "$LOG_FILE"; }
 die() { log "ERROR: $*"; exit 1; }
@@ -303,7 +303,7 @@ def replace_once(old, new, title):
 
 replace_once(
     'func main() {\n',
-    'const wdttPanelExtensionMarker = "wdtt-panel-extension-v3"\n\nfunc main() {\n\tlog.Printf("[WDTT Panel] extension %s enabled", wdttPanelExtensionMarker)\n',
+    'const wdttPanelExtensionMarker = "wdtt-panel-extension-v4"\n\nfunc main() {\n\tlog.Printf("[WDTT Panel] extension %s enabled", wdttPanelExtensionMarker)\n',
     "extension marker",
 )
 
@@ -361,6 +361,46 @@ replace_once(
     '\t\t\tnumDevices := len(db.Devices)\n\t\t\tdbMutex.Unlock()\n',
     '\t\t\tnumDevices := len(db.Devices)\n\t\t\tsaveDB()\n\t\t\tdbMutex.Unlock()\n',
     "periodic counter persistence",
+)
+replace_once(
+    '\tvar waitingForHash bool\n\tvar waitingForLabel bool\n',
+    '\tvar waitingForHash bool\n\tvar waitingForLabel bool\n\tvar tempLabel string\n',
+    "Telegram creation label state",
+)
+replace_once(
+    '\t\tcmds := `{"commands":[{"command":"start","description":"Главное меню"},{"command":"new","description":"Создать временный пароль"},{"command":"list","description":"Управление доступами"}]}`\n',
+    '\t\tcmds := `{"commands":[{"command":"start","description":"Главное меню"},{"command":"new","description":"Создать пользователя"},{"command":"list","description":"Управление доступами"},{"command":"settings","description":"Настройки сервера"}]}`\n',
+    "Telegram settings command",
+)
+replace_once(
+    '\t\t\tif waitingForLabel {\n\t\t\t\twaitingForLabel = false\n\t\t\t\tlabel, labelErr := normalizeUserLabel(cmd)\n\t\t\t\tif labelErr != nil {\n\t\t\t\t\tsendTelegram(token, adminID, "❌ Метка должна быть не длиннее 64 символов и без служебных символов.", nil)\n\t\t\t\t\tcontinue\n\t\t\t\t}\n\t\t\t\tdbMutex.Lock()\n',
+    '\t\t\tif waitingForLabel {\n\t\t\t\twaitingForLabel = false\n\t\t\t\tlabel, labelErr := normalizeUserLabel(cmd)\n\t\t\t\tif labelErr != nil {\n\t\t\t\t\tsendTelegram(token, adminID, "❌ Метка должна быть не длиннее 64 символов и без служебных символов.", nil)\n\t\t\t\t\tcontinue\n\t\t\t\t}\n\t\t\t\tif targetPassword == "__new_label__" {\n\t\t\t\t\ttempLabel = label\n\t\t\t\t\ttargetPassword = ""\n\t\t\t\t\twaitingForDays = true\n\t\t\t\t\tsendTelegram(token, adminID, "📅 Введите срок действия в днях (1–365):", nil)\n\t\t\t\t\tcontinue\n\t\t\t\t}\n\t\t\t\tdbMutex.Lock()\n',
+    "Telegram creation label input",
+)
+replace_once(
+    '\t\t\ttxt += fmt.Sprintf("%s `%s`%s (%s)\\n", status, p, labelSuffix, expiry)\n\t\t\tbuttonText := "🔍 " + p\n',
+    '\t\t\tlabelPrefix := ""\n\t\t\tif entry.Label != "" {\n\t\t\t\tlabelPrefix = telegramLabel(entry.Label) + " · "\n\t\t\t}\n\t\t\ttxt += fmt.Sprintf("%s %s`%s` (%s)\\n", status, labelPrefix, p, expiry)\n\t\t\tbuttonText := "🔍 " + p\n',
+    "label before password in Telegram list",
+)
+replace_once(
+    '\t\t\t\tdb.Passwords[newPass] = &PasswordEntry{\n\t\t\t\t\tExpiresAt: expiresAt,\n\t\t\t\t\tVkHash:    hash,\n\t\t\t\t\tPorts:     tempPorts,\n\t\t\t\t}\n',
+    '\t\t\t\tdb.Passwords[newPass] = &PasswordEntry{\n\t\t\t\t\tExpiresAt: expiresAt,\n\t\t\t\t\tVkHash:    hash,\n\t\t\t\t\tPorts:     tempPorts,\n\t\t\t\t\tLabel:     tempLabel,\n\t\t\t\t}\n',
+    "label on Telegram creation",
+)
+replace_once(
+    '\t\t\t\tdbMutex.Unlock()\n\t\t\t\twaitingForDays = true\n\t\t\t\tsendTelegram(token, adminID, "📅 Введите срок действия пароля в днях (1–365):\\n\\n_Примеры: 30 = месяц, 365 = год_", nil)\n',
+    '\t\t\t\tdbMutex.Unlock()\n\t\t\t\ttargetPassword = "__new_label__"\n\t\t\t\twaitingForLabel = true\n\t\t\t\tsendTelegram(token, adminID, "🏷 Отправьте метку нового пользователя до 64 символов. Отправьте - без метки.", nil)\n',
+    "label prompt on Telegram creation",
+)
+replace_once(
+    '\t\t\tif cmd == "/start" || cmd == "/help" {\n\t\t\t\tsendTelegram(token, adminID, "🤖 *WDTT VPN Manager*\\n\\n/new — Создать пароль\\n/list — Список паролей", nil)\n\n\t\t\t} else if cmd == "/new" {\n',
+    '\t\t\tif cmd == "/start" || cmd == "/help" {\n\t\t\t\tsendTelegram(token, adminID, "🤖 *WDTT VPN Manager*\\n\\n/new — Создать пользователя\\n/list — Список пользователей\\n/settings — Настройки сервера", nil)\n\n\t\t\t} else if cmd == "/settings" {\n\t\t\t\tsendTelegram(token, adminID, fmt.Sprintf("⚙️ *Настройки сервера*\\n\\n• DNS: `%s`\\n• MTU: `%d`\\n• Keepalive WireGuard: `%d сек.`\\n\\nНастройки маршрутизации и доступа меняются в WDTT Control Panel.", dns, wgMTU, keepalive), nil)\n\n\t\t\t} else if cmd == "/new" {\n',
+    "Telegram settings response",
+)
+replace_once(
+    '\t\t\tlabelSuffix := ""\n\t\t\tif entry.Label != "" {\n\t\t\t\tlabelSuffix = " — " + telegramLabel(entry.Label)\n\t\t\t}\n\t\t\tlabelPrefix := ""\n',
+    '\t\t\tlabelPrefix := ""\n',
+    "remove password-first Telegram label formatting",
 )
 marker = 'func getNextIP() string {'
 if marker not in source:
@@ -422,31 +462,56 @@ except (OSError, json.JSONDecodeError):
     panel_labels = {}
 if not isinstance(panel_labels, dict):
     panel_labels = {}
-changed = False
-for entry in (data.get("passwords") or {}).values():
-    if not isinstance(entry, dict) or str(entry.get("label") or "").strip():
-        continue
-    for key in ("remark", "name", "comment", "tag", "mark", "user_label", "userLabel", "user_name", "userName", "note", "description"):
+entry_label_fields = ("label", "remark", "name", "comment", "tag", "mark", "user_label", "userLabel", "user_name", "userName", "note", "description")
+mapping_label_fields = ("labels", "remarks", "user_labels", "userLabels", "names", "comments", "tags", "marks")
+
+
+def saved_label(source, password, entry):
+    if not isinstance(source, dict) or not isinstance(entry, dict):
+        return ""
+    for key in entry_label_fields:
         value = entry.get(key)
         if isinstance(value, str) and value.strip():
-            entry["label"] = value.strip()
-            changed = True
-            break
+            return value.strip()
+    for key in mapping_label_fields:
+        values = source.get(key)
+        value = values.get(password) if isinstance(values, dict) else None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+sources = [data]
+backup_roots = (panel_labels_path.parent, panel_labels_path.parent / "backups")
+backup_paths = sorted(
+    {candidate for root in backup_roots if root.is_dir() for candidate in root.glob("passwords-*.json")},
+    reverse=True,
+)
+for candidate in backup_paths:
+    try:
+        backup = json.loads(candidate.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        continue
+    if isinstance(backup, dict):
+        sources.append(backup)
+
+recovered_labels = {}
+for source in sources:
+    for password, entry in (source.get("passwords") or {}).items():
+        label = saved_label(source, password, entry)
+        if label and password not in recovered_labels:
+            recovered_labels[password] = label
+
+changed = False
 for password, entry in (data.get("passwords") or {}).items():
     if not isinstance(entry, dict) or str(entry.get("label") or "").strip():
         continue
-    for field in ("labels", "remarks", "user_labels", "userLabels", "names", "comments", "tags", "marks"):
-        labels = data.get(field)
-        value = labels.get(password) if isinstance(labels, dict) else None
-        if isinstance(value, str) and value.strip():
-            entry["label"] = value.strip()
-            changed = True
-            break
-    if not str(entry.get("label") or "").strip():
-        value = panel_labels.get(password)
-        if isinstance(value, str) and value.strip():
-            entry["label"] = value.strip()
-            changed = True
+    value = panel_labels.get(password)
+    if not isinstance(value, str) or not value.strip():
+        value = recovered_labels.get(password)
+    if isinstance(value, str) and value.strip():
+        entry["label"] = value.strip()
+        changed = True
 if changed:
     fd, temporary = tempfile.mkstemp(prefix="passwords.", suffix=".tmp", dir=path.parent)
     try:
