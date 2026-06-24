@@ -73,10 +73,6 @@ elif action == "users.create_bulk":
     }
 elif action == "users.bulk_action":
     result = {"action": (request.get("payload") or {}).get("action"), "count": len((request.get("payload") or {}).get("passwords") or [])}
-elif action == "fleet.status":
-    result = {"enabled": False, "configured": False, "enrolled": False, "endpoint": "", "node_id": "", "last_success_at": 0, "last_error_code": "", "poll_interval_seconds": 15, "completed_commands": 0, "protocol_version": "wdtt-fleet/v1", "service_active": False}
-elif action == "fleet.configure":
-    result = {"enabled": bool((request.get("payload") or {}).get("enabled")), "configured": True, "enrolled": False, "endpoint": (request.get("payload") or {}).get("endpoint", ""), "node_id": "", "last_success_at": 0, "last_error_code": "", "poll_interval_seconds": 15, "completed_commands": 0, "protocol_version": "wdtt-fleet/v1", "service_active": bool((request.get("payload") or {}).get("enabled"))}
 elif action == "logs":
     result = {
         "source": "wdtt",

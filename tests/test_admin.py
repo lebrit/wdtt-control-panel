@@ -100,47 +100,6 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual(admin.load_database()["passwords"], {})
         self.assertTrue(list(self.backups.glob("passwords-*.json")))
 
-    def test_fleet_snapshot_is_sanitized_and_update_requires_revision(self):
-        admin.create_user(
-            {
-                "password": "FleetUser123",
-                "label": "Fleet test",
-                "days": 30,
-                "vk_hash": "fleet_hash",
-                "ports": "56000,56001,9000",
-            }
-        )
-        data = admin.load_database()
-        data["passwords"]["FleetUser123"]["device_id"] = "fleet-device"
-        data["devices"]["fleet-device"] = {"device_id": "fleet-device", "priv_key": "secret", "pub_key": "public"}
-        admin.save_database(data)
-
-        snapshot = admin.fleet_snapshot({})
-        user = snapshot["users"][0]
-        self.assertEqual(snapshot["protocolVersion"], "wdtt-fleet/v1")
-        self.assertEqual(user["sourceUserId"], "FleetUser123")
-        self.assertEqual(user["devices"], [{"sourceDeviceId": "fleet-device", "label": None}])
-        self.assertNotIn("priv_key", str(snapshot))
-
-        updated = admin.fleet_command(
-            {
-                "kind": "user.update",
-                "payload": {
-                    "sourceUserId": "FleetUser123",
-                    "expectedRevision": user["revision"],
-                    "patch": {"enabled": False, "label": "Fleet changed"},
-                },
-            }
-        )
-        self.assertTrue(updated["is_deactivated"])
-        with self.assertRaises(admin.ValidationError):
-            admin.fleet_command(
-                {
-                    "kind": "user.update",
-                    "payload": {"sourceUserId": "FleetUser123", "expectedRevision": user["revision"], "patch": {"enabled": True}},
-                }
-            )
-
     def test_restore_backup(self):
         admin.create_user(
             {"password": "BackupUser123", "days": 7, "vk_hash": "hash_123", "ports": "56000,56001,9000"}

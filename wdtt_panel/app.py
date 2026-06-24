@@ -197,8 +197,6 @@ class Panel:
             "users/unbind": "users.unbind",
             "users/reset-traffic": "users.reset_traffic",
             "users/bulk-action": "users.bulk_action",
-            "fleet": "fleet.status",
-            "fleet/configure": "fleet.configure",
             "service": "service.action",
             "logs": "logs",
             "backups": "backups.list",
@@ -234,7 +232,7 @@ class Panel:
         action = mapping.get(route)
         if action is None:
             return self.json_response(start_response, 404, {"error": "API endpoint не найден"})
-        if method == "GET" and action not in {"overview", "users.list", "fleet.status", "logs", "backups.list", "backups.export", "backups.schedule", "panel.version", "certificate.export", "xray.status", "warp.status", "cascade.status"}:
+        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "backups.export", "backups.schedule", "panel.version", "certificate.export", "xray.status", "warp.status", "cascade.status"}:
             return self.json_response(start_response, 405, {"error": "Требуется POST"})
         if method == "POST" and action in {"overview", "users.list", "backups.list"}:
             return self.json_response(start_response, 405, {"error": "Требуется GET"})

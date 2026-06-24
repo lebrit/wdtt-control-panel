@@ -13,9 +13,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.10.15"', installer)
-        self.assertIn('__version__ = "0.10.15"', package)
-        self.assertIn("Текущая версия: 0.10.15", readme)
+        self.assertIn('PANEL_VERSION="0.11.0"', installer)
+        self.assertIn('__version__ = "0.11.0"', package)
+        self.assertIn("Текущая версия: 0.11.0", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -207,19 +207,12 @@ class InstallScriptTests(unittest.TestCase):
         script = (ROOT / "install.sh").read_text(encoding="utf-8")
         self.assertIn("RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK", script)
 
-    def test_fleet_agent_service_can_use_its_restricted_sudo_helper(self):
+    def test_installer_removes_obsolete_fleet_agent(self):
         script = (ROOT / "install.sh").read_text(encoding="utf-8")
-        start = script.index("write_fleet_agent_service() {")
-        end = script.index("write_final_nginx()", start)
-        agent_service = script[start:end]
-        self.assertNotIn("NoNewPrivileges=true", agent_service)
-        self.assertIn('systemctl restart "$FLEET_AGENT_SERVICE"', script)
-
-    def test_fleet_diagnostics_does_not_print_agent_secrets(self):
-        diagnostics = (ROOT / "fleet-diagnostics.sh").read_text(encoding="utf-8")
-        self.assertIn('"action":"fleet.snapshot"', diagnostics)
-        self.assertIn("Конфигурация агента без секретов", diagnostics)
-        self.assertNotIn("print(data)", diagnostics)
+        self.assertIn("remove_obsolete_fleet_agent()", script)
+        self.assertIn("wdtt-fleet-agent.service", script)
+        self.assertIn('$STATE_DIR/fleet-agent.json', script)
+        self.assertNotIn("write_fleet_agent_service()", script)
 
     def test_dialog_cancel_buttons_skip_required_field_validation(self):
         html = (ROOT / "wdtt_panel" / "templates" / "index.html").read_text(encoding="utf-8")

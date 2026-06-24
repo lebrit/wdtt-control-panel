@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import binascii
 import configparser
-import hashlib
 import ipaddress
 import json
 import os
@@ -21,7 +20,6 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlsplit
-from datetime import datetime, timezone
 
 from .core import (
     MAX_USERS,
@@ -36,7 +34,6 @@ from .core import (
     validate_password,
     validate_ports,
 )
-from .fleet import FleetValidationError, PROTOCOL_VERSION, configure as configure_fleet, load_config as load_fleet_config, public_status as fleet_public_status
 
 
 DB_FILE = Path(os.environ.get("WDTT_DB_FILE", "/etc/wdtt/passwords.json"))
@@ -87,7 +84,6 @@ XRAY_ASSETS = Path(
     os.environ.get("WDTT_XRAY_ASSETS", "/var/lib/wdtt-panel-private/xray-assets")
 )
 XRAY_SERVICE = os.environ.get("WDTT_XRAY_SERVICE", "wdtt-xray.service")
-FLEET_AGENT_SERVICE = os.environ.get("WDTT_FLEET_AGENT_SERVICE", "wdtt-fleet-agent.service")
 XRAY_INSTALL_COMMAND = Path(
     os.environ.get("WDTT_XRAY_INSTALL_COMMAND", "/opt/wdtt-panel/install.sh")
 )
@@ -437,163 +433,6 @@ def list_users() -> dict[str, Any]:
         "main_password_present": bool(data.get("main_password")),
         "limit": MAX_USERS,
     }
-
-
-def fleet_timestamp(value: int) -> str | None:
-    if value <= 0:
-        return None
-    return datetime.fromtimestamp(value, timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def fleet_revision(user: dict[str, Any]) -> str:
-    source = {
-        "sourceUserId": user["sourceUserId"],
-        "label": user["label"],
-        "expiresAt": user["expiresAt"],
-        "enabled": user["enabled"],
-        "vkHashes": user["vkHashes"],
-        "ports": user["ports"],
-    }
-    return hashlib.sha256(json.dumps(source, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:24]
-
-
-def fleet_user_view(user: dict[str, Any]) -> dict[str, Any]:
-    password = validate_password(str(user.get("password") or ""))
-    device = user.get("device") if isinstance(user.get("device"), dict) else {}
-    device_id = str(user.get("device_id") or "")
-    devices = []
-    if device_id:
-        device_label = str(device.get("name") or device.get("model") or device.get("device_name") or "").strip() or None
-        devices.append({"sourceDeviceId": device_id, "label": device_label})
-    result = {
-        "sourceUserId": password,
-        "displayName": None,
-        "label": str(user.get("label") or "") or None,
-        "enabled": not bool(user.get("is_deactivated")),
-        "expiresAt": fleet_timestamp(int(user.get("expires_at") or 0)),
-        "traffic": {
-            "receivedBytes": max(0, int(user.get("down_bytes") or 0)),
-            "sentBytes": max(0, int(user.get("up_bytes") or 0)),
-        },
-        "online": bool(user.get("connected")),
-        "devices": devices,
-        "vkHashes": str(user.get("vk_hash") or ""),
-        "ports": str(user.get("ports") or "56000,56001,9000"),
-    }
-    result["revision"] = fleet_revision(result)
-    return result
-
-
-def fleet_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
-    if payload:
-        raise ValidationError("Снимок Fleet не принимает параметры")
-    current = list_users()
-    return {
-        "protocolVersion": PROTOCOL_VERSION,
-        "capturedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "users": [fleet_user_view(user) for user in current["users"]],
-    }
-
-
-def fleet_find_user(source_user_id: Any) -> dict[str, Any]:
-    password = validate_password(str(source_user_id or ""))
-    for user in fleet_snapshot({})["users"]:
-        if user["sourceUserId"] == password:
-            return user
-    raise ValidationError("Пользователь Fleet не найден")
-
-
-def fleet_expiration(value: Any) -> dict[str, Any]:
-    if value is None:
-        return {"unlimited": True}
-    if not isinstance(value, str):
-        raise ValidationError("Некорректный срок Fleet-пользователя")
-    try:
-        stamp = int(datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc).timestamp())
-    except ValueError as exc:
-        raise ValidationError("Некорректный срок Fleet-пользователя") from exc
-    if stamp <= int(time.time()):
-        raise ValidationError("Срок Fleet-пользователя должен быть в будущем")
-    return {"expires_at": stamp}
-
-
-def fleet_command(payload: dict[str, Any]) -> dict[str, Any]:
-    if set(payload) != {"kind", "payload"} or not isinstance(payload.get("payload"), dict):
-        raise ValidationError("Некорректная команда Fleet")
-    kind = payload["kind"]
-    command = payload["payload"]
-    if kind == "node.snapshot.read":
-        if command:
-            raise ValidationError("node.snapshot.read не принимает параметры")
-        return fleet_snapshot({})
-    if kind == "user.read":
-        if set(command) != {"sourceUserId"}:
-            raise ValidationError("Некорректные поля user.read")
-        return fleet_find_user(command["sourceUserId"])
-    if kind == "user.delete":
-        if set(command) != {"sourceUserId"}:
-            raise ValidationError("Некорректные поля user.delete")
-        return delete_user({"password": command["sourceUserId"]})
-    if kind == "user.create":
-        allowed = {"sourceUserId", "label", "expiresAt", "enabled", "vkHashes", "ports"}
-        if set(command) - allowed or not {"sourceUserId", "vkHashes", "ports"} <= set(command):
-            raise ValidationError("Некорректные поля user.create")
-        local = {
-            "password": command["sourceUserId"],
-            "vk_hash": command["vkHashes"],
-            "ports": command["ports"],
-            "label": command.get("label") or "",
-            "is_deactivated": not bool(command.get("enabled", True)),
-            **fleet_expiration(command.get("expiresAt")),
-        }
-        return create_user(local)
-    if kind == "user.update":
-        if set(command) != {"sourceUserId", "expectedRevision", "patch"} or not isinstance(command.get("patch"), dict):
-            raise ValidationError("Некорректные поля user.update")
-        current = fleet_find_user(command["sourceUserId"])
-        if str(command["expectedRevision"]) != current["revision"]:
-            raise ValidationError("Ревизия Fleet-пользователя устарела")
-        patch = command["patch"]
-        allowed = {"label", "expiresAt", "enabled", "vkHashes", "ports"}
-        if not patch or set(patch) - allowed:
-            raise ValidationError("Некорректное изменение Fleet-пользователя")
-        local: dict[str, Any] = {"current_password": current["sourceUserId"]}
-        if "label" in patch:
-            local["label"] = patch["label"] or ""
-        if "enabled" in patch:
-            if not isinstance(patch["enabled"], bool):
-                raise ValidationError("enabled должен быть логическим значением")
-            local["is_deactivated"] = not patch["enabled"]
-        if "expiresAt" in patch:
-            local.update(fleet_expiration(patch["expiresAt"]))
-        if "vkHashes" in patch:
-            local["vk_hash"] = patch["vkHashes"]
-        if "ports" in patch:
-            local["ports"] = patch["ports"]
-        return update_user(local)
-    raise ValidationError("Неподдерживаемая команда Fleet")
-
-
-def fleet_status(payload: dict[str, Any]) -> dict[str, Any]:
-    if payload:
-        raise ValidationError("Статус Fleet не принимает параметры")
-    status = fleet_public_status(load_fleet_config())
-    status["service_active"] = False if SKIP_SYSTEMD else run(["systemctl", "is-active", "--quiet", FLEET_AGENT_SERVICE]).returncode == 0
-    return status
-
-
-def fleet_configure(payload: dict[str, Any]) -> dict[str, Any]:
-    try:
-        status = configure_fleet(payload)
-    except FleetValidationError as exc:
-        raise ValidationError(str(exc)) from exc
-    if SKIP_SYSTEMD:
-        return {**status, "service_active": False}
-    command = ["systemctl", "enable", "--now", FLEET_AGENT_SERVICE] if status["enabled"] else ["systemctl", "disable", "--now", FLEET_AGENT_SERVICE]
-    result = run(command, timeout=45)
-    if result.returncode != 0:
-        raise AdminError(result.stderr.strip() or "Не удалось изменить службу Fleet Agent")
-    return fleet_status({})
 
 
 def wireguard_handshakes() -> dict[str, int]:
@@ -3311,10 +3150,6 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "users.unbind": unbind_user,
     "users.reset_traffic": reset_traffic,
     "users.bulk_action": bulk_user_action,
-    "fleet.snapshot": fleet_snapshot,
-    "fleet.command": fleet_command,
-    "fleet.status": fleet_status,
-    "fleet.configure": fleet_configure,
     "service.action": lambda payload: service_action(str(payload.get("service_action") or "")),
     "logs": journal_logs,
     "backups.list": lambda payload: list_backups(),
