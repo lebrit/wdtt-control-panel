@@ -17,6 +17,7 @@ class AdminDatabaseTests(unittest.TestCase):
         self.panel_labels = root / "user-labels.json"
         self.extension_state = root / "wdtt-extensions.json"
         self.backups = root / "backups"
+        self.backup_schedule = root / "backup-schedule.json"
         self.lock_file = root / "admin.lock"
         self.cascade_settings = root / "cascade.json"
         self.cascade_config = root / "sing-box.json"
@@ -33,6 +34,7 @@ class AdminDatabaseTests(unittest.TestCase):
             mock.patch.object(admin, "PANEL_LABELS_FILE", self.panel_labels),
             mock.patch.object(admin, "WDTT_EXTENSION_STATE", self.extension_state),
             mock.patch.object(admin, "BACKUP_DIR", self.backups),
+            mock.patch.object(admin, "BACKUP_SCHEDULE_FILE", self.backup_schedule),
             mock.patch.object(admin, "LOCK_FILE", self.lock_file),
             mock.patch.object(admin, "CASCADE_SETTINGS", self.cascade_settings),
             mock.patch.object(admin, "CASCADE_CONFIG", self.cascade_config),
@@ -163,6 +165,23 @@ class AdminDatabaseTests(unittest.TestCase):
         admin.restore_backup({"name": backup["name"]})
         self.assertIn("UserOnly123", admin.load_database()["passwords"])
         self.assertFalse(admin.load_xray_settings()["access_log"])
+
+    def test_backups_can_be_deleted_and_scheduled_with_retention(self):
+        schedule = admin.save_backup_schedule({"frequency": "daily", "time": "04:20", "type": "users", "keep": 1})
+        self.assertEqual(schedule["settings"], {"frequency": "daily", "time": "04:20", "type": "users", "keep": 1})
+        self.assertFalse(schedule["active"])
+        self.assertEqual(admin.backup_schedule_status()["settings"]["time"], "04:20")
+
+        first = admin.create_manual_backup({"type": "users", "scheduled": True})
+        second = admin.create_manual_backup({"type": "users", "scheduled": True})
+        scheduled = list(self.backups.glob("users-*-scheduled.json"))
+        self.assertEqual(len(scheduled), 1)
+        self.assertEqual(scheduled[0].name, second["name"])
+        self.assertFalse((self.backups / first["name"]).exists())
+
+        manual = admin.create_manual_backup({"type": "full"})
+        self.assertEqual(admin.delete_backup({"name": manual["name"]})["deleted"], manual["name"])
+        self.assertFalse((self.backups / manual["name"]).exists())
 
     def test_bulk_create_assigns_shared_hashes(self):
         result = admin.create_users_bulk(

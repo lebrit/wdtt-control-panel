@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from wdtt_panel import app
+from wdtt_panel import __version__, app
 from wdtt_panel.security import hash_password
 
 
@@ -25,6 +25,7 @@ config.write_text(
             "listen_host": "127.0.0.1",
             "listen_port": 8877,
             "certificate_path": "",
+            "version": __version__,
         }
     ),
     encoding="utf-8",

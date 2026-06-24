@@ -44,6 +44,12 @@ STATS_FILE = Path(os.environ.get("WDTT_STATS_FILE", "/etc/wdtt/server.log"))
 BACKUP_DIR = Path(os.environ.get("WDTT_BACKUP_DIR", "/var/lib/wdtt-panel-private/backups"))
 BACKUP_FORMAT = "wdtt-panel-backup-v1"
 BACKUP_CONTENT_LIMIT = 3 * 1024 * 1024
+BACKUP_SCHEDULE_FILE = Path(os.environ.get("WDTT_BACKUP_SCHEDULE_FILE", "/var/lib/wdtt-panel-private/backup-schedule.json"))
+BACKUP_TIMER_NAME = "wdtt-panel-backup.timer"
+BACKUP_SERVICE_NAME = "wdtt-panel-backup.service"
+BACKUP_TIMER_FILE = Path(os.environ.get("WDTT_BACKUP_TIMER_FILE", f"/etc/systemd/system/{BACKUP_TIMER_NAME}"))
+BACKUP_SERVICE_FILE = Path(os.environ.get("WDTT_BACKUP_SERVICE_FILE", f"/etc/systemd/system/{BACKUP_SERVICE_NAME}"))
+BACKUP_RUNNER = Path(os.environ.get("WDTT_BACKUP_RUNNER", "/usr/local/sbin/wdtt-panel-backup"))
 LOCK_FILE = Path(os.environ.get("WDTT_LOCK_FILE", "/var/lib/wdtt-panel-private/admin.lock"))
 SERVICE = os.environ.get("WDTT_SERVICE", "wdtt.service")
 SKIP_SYSTEMD = os.environ.get("WDTT_SKIP_SYSTEMD") == "1"
@@ -817,6 +823,7 @@ def backup_full_payload() -> dict[str, Any]:
                 "config": read_private_json(CASCADE_CONFIG),
             },
             "extension_state": read_private_json(WDTT_EXTENSION_STATE),
+            "backup_schedule": load_backup_schedule_settings(),
         },
         "warp": {
             "account": read_private_text(WARP_DIR / "wgcf-account.toml"),
@@ -854,7 +861,141 @@ def create_manual_backup(payload: dict[str, Any]) -> dict[str, Any]:
     if kind not in {"full", "users"}:
         raise ValidationError("Выберите тип резервной копии")
     data = backup_full_payload() if kind == "full" else backup_user_payload()
-    return {**write_backup(backup_name("panel" if kind == "full" else "users", "manual"), data), "type": kind}
+    scheduled = bool(payload.get("scheduled", False))
+    result = write_backup(backup_name("panel" if kind == "full" else "users", "scheduled" if scheduled else "manual"), data)
+    if scheduled:
+        prune_scheduled_backups(kind, load_backup_schedule_settings()["keep"])
+    return {**result, "type": kind}
+
+
+def default_backup_schedule() -> dict[str, Any]:
+    return {"frequency": "disabled", "time": "03:30", "type": "full", "keep": 14}
+
+
+def normalize_backup_schedule(payload: Any) -> dict[str, Any]:
+    schedule = default_backup_schedule()
+    if not isinstance(payload, dict):
+        raise ValidationError("Некорректное расписание backup")
+    frequency = str(payload.get("frequency") or schedule["frequency"])
+    if frequency not in {"disabled", "daily", "weekly"}:
+        raise ValidationError("Выберите период backup")
+    schedule["frequency"] = frequency
+    value = str(payload.get("time") or schedule["time"])
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value):
+        raise ValidationError("Укажите время backup в формате ЧЧ:ММ")
+    schedule["time"] = value
+    kind = str(payload.get("type") or schedule["type"])
+    if kind not in {"full", "users"}:
+        raise ValidationError("Выберите тип автоматической копии")
+    schedule["type"] = kind
+    try:
+        keep = int(payload.get("keep") or schedule["keep"])
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Укажите количество хранимых backup") from exc
+    if not 1 <= keep <= 100:
+        raise ValidationError("Можно хранить от 1 до 100 автоматических backup")
+    schedule["keep"] = keep
+    return schedule
+
+
+def load_backup_schedule_settings() -> dict[str, Any]:
+    saved = read_private_json(BACKUP_SCHEDULE_FILE)
+    if not saved:
+        return default_backup_schedule()
+    try:
+        return normalize_backup_schedule(saved)
+    except ValidationError:
+        return default_backup_schedule()
+
+
+def write_systemd_unit(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_name, 0o644)
+        os.replace(temp_name, path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def backup_schedule_units(schedule: dict[str, Any]) -> tuple[str, str]:
+    hour, minute = schedule["time"].split(":")
+    on_calendar = f"*-*-* {hour}:{minute}:00" if schedule["frequency"] == "daily" else f"Sun *-*-* {hour}:{minute}:00"
+    service = f"""[Unit]
+Description=WDTT panel automatic backup
+
+[Service]
+Type=oneshot
+ExecStart={BACKUP_RUNNER} {schedule['type']}
+"""
+    timer = f"""[Unit]
+Description=Schedule WDTT panel automatic backup
+
+[Timer]
+OnCalendar={on_calendar}
+Persistent=true
+Unit={BACKUP_SERVICE_NAME}
+
+[Install]
+WantedBy=timers.target
+"""
+    return service, timer
+
+
+def prune_scheduled_backups(kind: str, keep: int) -> None:
+    prefix = "panel" if kind == "full" else "users"
+    paths = sorted(BACKUP_DIR.glob(f"{prefix}-*-scheduled.json"), key=lambda item: item.stat().st_mtime, reverse=True)
+    for path in paths[keep:]:
+        path.unlink(missing_ok=True)
+
+
+def backup_schedule_status(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    schedule = load_backup_schedule_settings()
+    active = False
+    if not SKIP_SYSTEMD:
+        active = run(["systemctl", "is-enabled", "--quiet", BACKUP_TIMER_NAME], timeout=20).returncode == 0
+    return {"settings": schedule, "active": active}
+
+
+def save_backup_schedule(payload: dict[str, Any]) -> dict[str, Any]:
+    schedule = normalize_backup_schedule(payload)
+    save_private_json(BACKUP_SCHEDULE_FILE, schedule)
+    if SKIP_SYSTEMD:
+        return {"settings": schedule, "active": False, "state": "test"}
+    if schedule["frequency"] == "disabled":
+        run(["systemctl", "disable", "--now", BACKUP_TIMER_NAME], timeout=45)
+        BACKUP_TIMER_FILE.unlink(missing_ok=True)
+        BACKUP_SERVICE_FILE.unlink(missing_ok=True)
+        reloaded = run(["systemctl", "daemon-reload"], timeout=45)
+        if reloaded.returncode != 0:
+            raise AdminError(reloaded.stderr.strip() or "Не удалось обновить systemd")
+        return {"settings": schedule, "active": False}
+    if not BACKUP_RUNNER.is_file():
+        raise AdminError("Не найден модуль автоматических backup; обновите панель")
+    service, timer = backup_schedule_units(schedule)
+    write_systemd_unit(BACKUP_SERVICE_FILE, service)
+    write_systemd_unit(BACKUP_TIMER_FILE, timer)
+    reloaded = run(["systemctl", "daemon-reload"], timeout=45)
+    if reloaded.returncode != 0:
+        raise AdminError(reloaded.stderr.strip() or "Не удалось обновить systemd")
+    enabled = run(["systemctl", "enable", "--now", BACKUP_TIMER_NAME], timeout=45)
+    if enabled.returncode != 0:
+        raise AdminError(enabled.stderr.strip() or "Не удалось включить таймер backup")
+    return {"settings": schedule, "active": True}
+
+
+def delete_backup(payload: dict[str, Any]) -> dict[str, Any]:
+    name = validate_backup_name(str(payload.get("name") or ""))
+    path = BACKUP_DIR / name
+    if not path.is_file():
+        raise ValidationError("Резервная копия не найдена")
+    path.unlink()
+    return {"deleted": name}
 
 
 def validate_backup_text(value: Any, label: str) -> str | None:
@@ -887,6 +1028,7 @@ def validate_full_backup(data: Any) -> dict[str, Any]:
     xray_cascade = settings.get("xray_cascade")
     legacy_cascade = settings.get("legacy_cascade")
     extension_state = settings.get("extension_state")
+    backup_schedule = settings.get("backup_schedule", default_backup_schedule())
     if not isinstance(xray, dict) or not isinstance(xray_cascade, dict) or not isinstance(legacy_cascade, dict):
         raise ValidationError("В backup неверные настройки Xray или каскада")
     for key in ("settings", "config"):
@@ -904,6 +1046,7 @@ def validate_full_backup(data: Any) -> dict[str, Any]:
         "xray_cascade": normalized_cascade,
         "legacy_cascade": legacy_cascade,
         "extension_state": extension_state,
+        "backup_schedule": normalize_backup_schedule(backup_schedule),
         "warp_account": validate_backup_text(warp.get("account"), "профиль WARP"),
         "warp_profile": validate_backup_text(warp.get("profile"), "профиль WARP"),
     }
@@ -1012,6 +1155,7 @@ def restore_backup(payload: dict[str, Any]) -> dict[str, Any]:
         os.chmod(WARP_DIR, 0o700)
         restore_optional_text(WARP_DIR / "wgcf-account.toml", full["warp_account"])
         restore_optional_text(WARP_DIR / "wgcf-profile.conf", full["warp_profile"])
+        save_backup_schedule(full["backup_schedule"])
         warnings = apply_restored_services(full["xray"], full["xray_cascade"])
     return {"restored": name, "type": kind, "safety_backup": safety_backup, "warnings": warnings}
 
@@ -3010,9 +3154,11 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "logs": journal_logs,
     "backups.list": lambda payload: list_backups(),
     "backups.create": create_manual_backup,
+    "backups.delete": delete_backup,
     "backups.restore": restore_backup,
     "backups.export": export_backup,
     "backups.import": import_backup,
+    "backups.schedule": lambda payload: save_backup_schedule(payload) if payload else backup_schedule_status(),
     "panel.version": panel_version,
     "panel.update": start_panel_update,
     "certificate.export": export_certificate,

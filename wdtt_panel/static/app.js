@@ -25,6 +25,18 @@
     renderSidebarState();
   }
 
+  function renderTheme() {
+    const light = document.body.classList.contains("light-theme");
+    $("#theme-toggle-label").textContent = light ? "Тёмная тема" : "Светлая тема";
+    $("#theme-toggle").setAttribute("aria-pressed", String(light));
+  }
+
+  function restoreTheme() {
+    try { document.body.classList.toggle("light-theme", localStorage.getItem("wdtt-theme") === "light"); }
+    catch (_) { /* Browser storage can be disabled. */ }
+    renderTheme();
+  }
+
   function activateTab(tabName, persist = true) {
     const button = $$(".nav-item").find((item) => item.dataset.tab === tabName) || $(".nav-item");
     const name = button.dataset.tab;
@@ -37,7 +49,7 @@
     }
     if (name === "logs") loadLogs();
     if (name === "xray") Promise.all([loadXray(), loadWarp(), loadCascadeRouting()]);
-    if (name === "system") { loadBackups(); loadAudit(); loadPanelVersion(); }
+    if (name === "system") { loadBackups(); loadBackupSchedule(); loadAudit(); loadPanelVersion(); }
   }
 
   function restoreActiveTab() {
@@ -488,9 +500,39 @@
       const result = await api("backups");
       $("#backups-list").innerHTML = (result.backups || []).map((item) => {
         const type = item.type === "full" ? "Полная панель" : "Пользователи WDTT";
-        return `<div class="backup-row"><span><strong>${escapeHtml(item.name)}</strong><br><small>${escapeHtml(type)} · ${escapeHtml(formatDate(item.created_at))} · ${formatBytes(item.size)}</small></span><div class="row-actions"><button data-download-backup="${escapeHtml(item.name)}">Скачать</button><button data-restore="${escapeHtml(item.name)}" data-backup-type="${escapeHtml(item.type || "users")}">Восстановить</button></div></div>`;
+        return `<div class="backup-row"><span><strong>${escapeHtml(item.name)}</strong><br><small>${escapeHtml(type)} · ${escapeHtml(formatDate(item.created_at))} · ${formatBytes(item.size)}</small></span><div class="row-actions"><button data-download-backup="${escapeHtml(item.name)}">Скачать</button><button data-restore="${escapeHtml(item.name)}" data-backup-type="${escapeHtml(item.type || "users")}">Восстановить</button><button data-delete-backup="${escapeHtml(item.name)}" class="danger">Удалить</button></div></div>`;
       }).join("") || `<p class="muted">Резервные копии появятся после первого сохранения.</p>`;
     } catch (error) { toast(error.message, true); }
+  }
+
+  async function loadBackupSchedule() {
+    try {
+      const result = await api("backups/schedule");
+      const schedule = result.settings || {};
+      $("#backup-schedule-frequency").value = schedule.frequency || "disabled";
+      $("#backup-schedule-time").value = schedule.time || "03:30";
+      $("#backup-schedule-type").value = schedule.type || "full";
+      $("#backup-schedule-keep").value = schedule.keep || 14;
+      $("#backup-schedule-status").textContent = schedule.frequency === "disabled"
+        ? "Автоматические копии выключены."
+        : `${schedule.frequency === "daily" ? "Каждый день" : "По воскресеньям"} в ${schedule.time}; хранится последних: ${schedule.keep}.`;
+    } catch (error) { $("#backup-schedule-status").textContent = error.message; }
+  }
+
+  async function saveBackupSchedule() {
+    const button = $("#save-backup-schedule");
+    setBusy(button, true);
+    try {
+      await api("backups/schedule", { method: "POST", body: {
+        frequency: $("#backup-schedule-frequency").value,
+        time: $("#backup-schedule-time").value,
+        type: $("#backup-schedule-type").value,
+        keep: Number($("#backup-schedule-keep").value),
+      }});
+      toast("Расписание резервных копий сохранено");
+      await loadBackupSchedule();
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
   }
 
   async function createBackup(type) {
@@ -618,6 +660,15 @@
     return `<article class="xray-json-row"><div><strong>${escapeHtml(item.tag || `${kind} ${index + 1}`)}</strong><small>${escapeHtml(item.protocol || item.type || "JSON")}</small></div><textarea class="mono" data-xray-json="${kind}" data-xray-index="${index}" spellcheck="false">${escapeHtml(JSON.stringify(item, null, 2))}</textarea><button data-xray-remove="${kind}" data-xray-index="${index}" class="danger">Удалить</button></article>`;
   }
 
+  async function deleteBackup(name) {
+    if (!confirm(`Удалить ${name} без возможности восстановления?`)) return;
+    try {
+      await api("backups/delete", { method: "POST", body: { name } });
+      toast("Резервная копия удалена");
+      await loadBackups();
+    } catch (error) { toast(error.message, true); }
+  }
+
   function renderXrayItems() {
     $("#xray-inbounds").innerHTML = state.xray.inbounds.map((item, index) => xrayItemRow("inbounds", item, index)).join("") || `<p class="muted">Входящие не добавлены. Xray не откроет новые порты, пока вы не создадите inbound.</p>`;
     $("#xray-outbounds").innerHTML = state.xray.outbounds.map((item, index) => xrayItemRow("outbounds", item, index)).join("") || `<p class="muted">Используются встроенные direct и block. Добавьте VLESS, Trojan, Shadowsocks, SOCKS, HTTP или WireGuard.</p>`;
@@ -698,8 +749,18 @@
   ];
   const GOOGLE_AI_IP_CIDRS = ["64.233.160.0/19", "66.102.0.0/20", "66.249.80.0/20", "72.14.192.0/18", "74.125.0.0/16", "108.177.0.0/17", "142.250.0.0/15", "142.251.0.0/16", "172.217.0.0/16", "172.253.0.0/16", "173.194.0.0/16", "209.85.128.0/17", "216.58.192.0/19", "216.239.32.0/19"];
   const OPENAI_DOMAINS = ["chatgpt.com", "chat.openai.com", "desktop.chat.openai.com", "ios.chat.openai.com", "android.chat.openai.com", "mobile.chat.openai.com", "ab.chatgpt.com", "openai.com", "api.openai.com", "cdn.openai.com", "auth.openai.com", "auth0.openai.com", "setup.auth.openai.com", "oaistatic.com", "auth-cdn.oaistatic.com", "persistent.oaistatic.com", "oaiusercontent.com", "files.oaiusercontent.com", "uploads.oaiusercontent.com", "ws.chatgpt.com", "webrtc.chatgpt.com", "realtime.chatgpt.com", "videos.openai.com", "challenges.cloudflare.com", "statsig.com", "statsigapi.net", "api.statsig.com", "events.statsigapi.net", "featuregates.org", "featureassets.org", "intercom.io", "intercomcdn.com", "js.intercomcdn.com", "ct.sendgrid.net", "cdn.openaimerge.com", "cdn.workos.com", "forwarder.workos.com", "setup.workos.com"];
+  const META_DOMAINS = ["facebook.com", "fb.com", "facebook.net", "fbcdn.net", "fbsbx.com", "instagram.com", "cdninstagram.com", "threads.net"];
+  const X_LINKEDIN_DOMAINS = ["x.com", "twitter.com", "t.co", "twimg.com", "twittercdn.com", "linkedin.com", "licdn.com", "lnkd.in"];
+  const MESSENGER_DOMAINS = ["discord.com", "discordapp.com", "discordapp.net", "discord.media", "discordstatus.com", "signal.org", "signal.me", "signal.art", "viber.com", "viber.me", "vibercdn.com"];
+  const INDEPENDENT_MEDIA_DOMAINS = ["meduza.io", "bbc.com", "bbc.co.uk", "bbci.co.uk", "dw.com", "currenttime.tv", "svoboda.org", "rferl.org", "theins.ru", "importantstories.io", "zona.media", "novayagazeta.eu", "holod.media", "verstka.media"];
 
   const ROUTE_PRESETS = {
+    ru_blocked: {
+      name: "Ресурсы из GeoSite/GeoIP ru-blocked",
+      domains: [],
+      geosite: ["ru-blocked"],
+      geoip: ["ru-blocked"],
+    },
     google_ai: {
       name: "Google AI — WARP",
       domains: GOOGLE_AI_DOMAINS,
@@ -710,13 +771,29 @@
       domains: [...GOOGLE_AI_DOMAINS, ...OPENAI_DOMAINS, "claude.ai", "anthropic.com", "perplexity.ai", "x.ai"],
       ip_cidrs: GOOGLE_AI_IP_CIDRS,
     },
+    meta: {
+      name: "Meta: Facebook, Instagram, Threads",
+      domains: META_DOMAINS,
+    },
+    x_linkedin: {
+      name: "X (Twitter) и LinkedIn",
+      domains: X_LINKEDIN_DOMAINS,
+    },
+    messengers: {
+      name: "Discord, Signal и Viber",
+      domains: MESSENGER_DOMAINS,
+    },
+    media: {
+      name: "Независимые медиа",
+      domains: INDEPENDENT_MEDIA_DOMAINS,
+    },
     video: {
       name: "Видео",
       domains: ["youtube.com", "googlevideo.com", "ytimg.com", "youtube-nocookie.com", "twitch.tv", "ttvnw.net", "jtvnw.net", "vimeo.com"],
     },
     social: {
       name: "Соцсети и сообщества",
-      domains: ["discord.com", "discordapp.com", "discordapp.net", "discord.media", "x.com", "twitter.com", "t.co", "facebook.com", "fbcdn.net", "instagram.com", "cdninstagram.com", "reddit.com", "redd.it", "redditmedia.com", "linkedin.com"],
+      domains: [...MESSENGER_DOMAINS, ...X_LINKEDIN_DOMAINS, ...META_DOMAINS, "reddit.com", "redd.it", "redditmedia.com"],
     },
     music: {
       name: "Музыкальные сервисы",
@@ -963,6 +1040,12 @@
       catch (_) { /* Browser storage can be disabled. */ }
       renderSidebarState();
     });
+    $("#theme-toggle").addEventListener("click", () => {
+      document.body.classList.toggle("light-theme");
+      try { localStorage.setItem("wdtt-theme", document.body.classList.contains("light-theme") ? "light" : "dark"); }
+      catch (_) { /* Browser storage can be disabled. */ }
+      renderTheme();
+    });
     $("#new-user").addEventListener("click", () => openUserDialog());
     $("#bulk-users").addEventListener("click", openBulkUserDialog);
     $("#user-form").addEventListener("submit", saveUser);
@@ -1016,6 +1099,7 @@
     $("#load-backups").addEventListener("click", loadBackups);
     $("#create-full-backup").addEventListener("click", () => createBackup("full"));
     $("#create-users-backup").addEventListener("click", () => createBackup("users"));
+    $("#save-backup-schedule").addEventListener("click", saveBackupSchedule);
     $("#update-panel").addEventListener("click", updatePanel);
     $("#renew-certificate").addEventListener("click", renewCertificate);
     $("#download-certificate").addEventListener("click", downloadCertificate);
@@ -1024,6 +1108,7 @@
     $("#backups-list").addEventListener("click", (event) => {
       const restore = event.target.closest("[data-restore]"); if (restore) restoreBackup(restore.dataset.restore, restore.dataset.backupType);
       const download = event.target.closest("[data-download-backup]"); if (download) downloadBackup(download.dataset.downloadBackup);
+      const deleted = event.target.closest("[data-delete-backup]"); if (deleted) deleteBackup(deleted.dataset.deleteBackup);
     });
     $("#save-xray").addEventListener("click", saveXray);
     $("#install-xray").addEventListener("click", installXray);
@@ -1098,11 +1183,11 @@
       if (!preset) { toast("Выберите готовую настройку", true); return; }
       $("#xray-rule-name").value = preset.name;
       $("#xray-rule-domains").value = preset.domains.join("\n");
-      $("#xray-rule-ip-cidrs").value = (preset.ip_cidrs || []).join("\n"); $("#xray-rule-geosite").value = ""; $("#xray-rule-geoip").value = "";
+      $("#xray-rule-ip-cidrs").value = (preset.ip_cidrs || []).join("\n"); $("#xray-rule-geosite").value = (preset.geosite || []).join("\n"); $("#xray-rule-geoip").value = (preset.geoip || []).join("\n");
       const outbound = $("#xray-rule-outbound");
       if ((state.xray.outbounds || []).some((item) => item.tag === "warp")) outbound.value = "warp";
       else if (outbound.value === "direct" && outbound.querySelector('option[value="eu-vless"]')) outbound.value = "eu-vless";
-      toast("Домены и IP-подсети заполнены. При необходимости отредактируйте список перед сохранением.");
+      toast("Поля правила заполнены. При необходимости отредактируйте их перед сохранением.");
     });
     $("#xray-friendly-routes").addEventListener("click", (event) => {
       const edit = event.target.closest("[data-edit-friendly-route]");
@@ -1162,6 +1247,7 @@
   }
 
   restoreSidebarState();
+  restoreTheme();
   restoreActiveTab();
   bindEvents();
   restoreUserAutoRefresh();

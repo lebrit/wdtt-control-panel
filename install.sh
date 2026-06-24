@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.10.10"
+PANEL_VERSION="0.10.11"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,6 +18,7 @@ UPDATE_WRAPPER="/usr/local/sbin/wdtt-panel-update"
 UNINSTALL_WRAPPER="/usr/local/sbin/wdtt-panel-uninstall"
 STATUS_WRAPPER="/usr/local/sbin/wdtt-panel-status"
 GEOFILES_UPDATE_WRAPPER="/usr/local/sbin/wdtt-panel-geofiles-update"
+BACKUP_RUNNER="/usr/local/sbin/wdtt-panel-backup"
 CASCADE_RULES_WRAPPER="/usr/local/sbin/wdtt-panel-cascade-rules"
 GATEWAY_RULES_WRAPPER="/usr/local/sbin/wdtt-panel-xray-gateway"
 MANAGER_WRAPPER="/usr/local/sbin/wdtt-panel"
@@ -600,6 +601,15 @@ EOF
 printf '%s\n' '{"action":"xray.geofiles.refresh_auto","payload":{}}' | $ADMIN_WRAPPER
 EOF
   chmod 0755 "$GEOFILES_UPDATE_WRAPPER"
+  cat > "$BACKUP_RUNNER" <<EOF
+#!/bin/sh
+case "\${1:-full}" in
+  full) printf '%s\n' '{"action":"backups.create","payload":{"type":"full","scheduled":true}}' | $ADMIN_WRAPPER ;;
+  users) printf '%s\n' '{"action":"backups.create","payload":{"type":"users","scheduled":true}}' | $ADMIN_WRAPPER ;;
+  *) exit 2 ;;
+esac
+EOF
+  chmod 0755 "$BACKUP_RUNNER"
   cat > "$CASCADE_RULES_WRAPPER" <<EOF
 #!/bin/sh
 case "\${1:-apply}" in
@@ -1238,11 +1248,11 @@ uninstall_panel() {
     panel_port="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("https_port", ""))' "$CONFIG_FILE" 2>/dev/null || true)"
   fi
   log "Удаление только web-панели; WDTT не затрагивается"
-  systemctl disable --now "$PANEL_SERVICE" wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service "$WDTT_EXTENSIONS_TIMER" "$WDTT_EXTENSIONS_SERVICE" 2>/dev/null || true
-  rm -f "/etc/systemd/system/$PANEL_SERVICE" /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer "/etc/systemd/system/$WDTT_EXTENSIONS_SERVICE" "/etc/systemd/system/$WDTT_EXTENSIONS_TIMER"
+  systemctl disable --now "$PANEL_SERVICE" wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service "$WDTT_EXTENSIONS_TIMER" "$WDTT_EXTENSIONS_SERVICE" wdtt-panel-backup.timer wdtt-panel-backup.service 2>/dev/null || true
+  rm -f "/etc/systemd/system/$PANEL_SERVICE" /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer "/etc/systemd/system/$WDTT_EXTENSIONS_SERVICE" "/etc/systemd/system/$WDTT_EXTENSIONS_TIMER" /etc/systemd/system/wdtt-panel-backup.service /etc/systemd/system/wdtt-panel-backup.timer
   systemctl disable --now "$LEGACY_CASCADE_SERVICE" "$XRAY_SERVICE" "$XRAY_CASCADE_SERVICE" "$XRAY_GATEWAY_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service 2>/dev/null || true
   rm -f "/etc/systemd/system/$LEGACY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_SERVICE" "/etc/systemd/system/$XRAY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_GATEWAY_SERVICE" /etc/systemd/system/wdtt-panel-geofiles-update.service /etc/systemd/system/wdtt-panel-geofiles-update.timer
-  rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$GEOFILES_UPDATE_WRAPPER" "$CASCADE_RULES_WRAPPER" "$GATEWAY_RULES_WRAPPER"
+  rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$GEOFILES_UPDATE_WRAPPER" "$BACKUP_RUNNER" "$CASCADE_RULES_WRAPPER" "$GATEWAY_RULES_WRAPPER"
   rm -rf "$INSTALL_DIR" "$CONFIG_DIR"
   remove_firewall_rule "$panel_port"
   systemctl daemon-reload

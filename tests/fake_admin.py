@@ -90,6 +90,11 @@ elif action == "backups.list":
 elif action == "backups.create":
     backup_type = request.get("payload", {}).get("type", "full")
     result = {"name": f"{'panel' if backup_type == 'full' else 'users'}-20260615-090000-manual.json", "size": 3072, "created_at": 1781514000, "type": backup_type}
+elif action == "backups.delete":
+    result = {"deleted": request.get("payload", {}).get("name", "")}
+elif action == "backups.schedule":
+    schedule = request.get("payload", {}) or {"frequency": "daily", "time": "03:30", "type": "full", "keep": 14}
+    result = {"settings": schedule, "active": schedule.get("frequency") != "disabled"}
 elif action == "panel.version":
     result = {"current": "0.5.0", "latest": "0.5.0", "update_available": False}
 elif action == "panel.update":

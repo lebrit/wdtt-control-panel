@@ -32,7 +32,7 @@
   <main class="content">
     <header class="topbar">
       <div><p class="eyebrow">SERVER CONSOLE</p><h1 id="page-title">Обзор</h1></div>
-      <div class="top-actions"><span class="host-pill" id="panel-version-pill">v{{VERSION}}</span><span class="host-pill">{{PUBLIC_HOST}}</span></div>
+      <div class="top-actions"><span class="host-pill" id="panel-version-pill">v{{VERSION}}</span><span class="host-pill">{{PUBLIC_HOST}}</span><button id="theme-toggle" class="secondary theme-toggle" type="button" aria-pressed="false"><span aria-hidden="true">☀</span><span id="theme-toggle-label">Светлая тема</span></button></div>
     </header>
 
     <section class="tab active" id="tab-dashboard">
@@ -89,7 +89,7 @@
               <div id="xray-friendly-routes" class="friendly-route-list"></div>
             </section>
             <section class="xray-workflow">
-              <div class="section-head"><div><p class="eyebrow">RULES</p><h3>Какие сайты идут через маршрут</h3><p class="muted">Для Google AI используйте готовую заготовку в окне правила. Она добавит нужные домены вместо ненадёжных IP Google.</p></div><button id="add-xray-friendly-rule" class="primary">Добавить правило</button></div>
+              <div class="section-head"><div><p class="eyebrow">RULES</p><h3>Правила направления трафика</h3><p class="muted">Задайте домены, IP или Geo‑категории для любого маршрута. Заготовки ускоряют настройку сервисов и ресурсов с ограничениями.</p></div><button id="add-xray-friendly-rule" class="primary">Добавить правило</button></div>
               <div id="xray-friendly-rules" class="friendly-rule-list"></div>
             </section>
           </div>
@@ -143,6 +143,7 @@
         </article>
         <article class="panel-card wide">
           <div class="section-head"><div><p class="eyebrow">RECOVERY</p><h2>Резервные копии WDTT</h2><p class="muted">Полная копия сохраняет пользователей, метки, настройки Xray, WARP и каскада. Пользователей можно сохранить отдельно.</p></div><div class="inline-actions"><input id="backup-upload" type="file" accept=".json" hidden><button id="upload-backup" class="secondary">Загрузить с компьютера</button><button id="create-users-backup" class="secondary">Только пользователи</button><button id="create-full-backup" class="primary">Полная копия</button><button id="load-backups" class="secondary">Обновить список</button></div></div>
+          <div class="backup-schedule"><div><strong>Автоматические копии</strong><small id="backup-schedule-status">Загрузка расписания…</small></div><div class="backup-schedule-controls"><label>Период<select id="backup-schedule-frequency"><option value="disabled">Выключено</option><option value="daily">Каждый день</option><option value="weekly">Каждое воскресенье</option></select></label><label>Время<input id="backup-schedule-time" type="time" value="03:30"></label><label>Состав<select id="backup-schedule-type"><option value="full">Полная копия</option><option value="users">Только пользователи</option></select></label><label>Хранить<input id="backup-schedule-keep" type="number" min="1" max="100" value="14"></label><button id="save-backup-schedule" class="secondary">Сохранить расписание</button></div></div>
           <div id="backups-list" class="backup-list"></div>
         </article>
         <article class="panel-card wide">
@@ -223,7 +224,7 @@
         <label>GeoIP‑категории<textarea id="xray-rule-geoip" class="compact-textarea mono" spellcheck="false" placeholder="ru-blocked"></textarea></label>
         <label class="checkbox wide"><input id="xray-rule-enabled" type="checkbox" checked> Включить правило</label>
       </div>
-      <div class="dialog-actions"><select id="xray-rule-preset"><option value="">Готовая настройка…</option><option value="google_ai">Google AI</option><option value="ai">Все популярные AI‑сервисы</option><option value="video">Видео: YouTube, Twitch</option><option value="social">Соцсети и Discord</option><option value="music">Музыка: Spotify, SoundCloud</option><option value="popular">Все популярные сервисы</option></select><button id="apply-xray-rule-preset" type="button" class="secondary">Заполнить</button><button type="button" value="cancel" class="secondary">Отмена</button><button type="submit" class="primary">Сохранить правило</button></div>
+      <div class="dialog-actions"><select id="xray-rule-preset"><option value="">Готовая настройка…</option><option value="ru_blocked">Все ресурсы из GeoSite/GeoIP ru-blocked</option><option value="google_ai">Google AI</option><option value="ai">Все популярные AI‑сервисы</option><option value="meta">Meta: Facebook, Instagram, Threads</option><option value="x_linkedin">X (Twitter) и LinkedIn</option><option value="messengers">Discord, Signal и Viber</option><option value="media">Независимые медиа</option><option value="video">Видео: YouTube, Twitch</option><option value="social">Соцсети и сообщества</option><option value="music">Музыка: Spotify, SoundCloud</option><option value="popular">Все популярные сервисы</option></select><button id="apply-xray-rule-preset" type="button" class="secondary">Заполнить</button><button type="button" value="cancel" class="secondary">Отмена</button><button type="submit" class="primary">Сохранить правило</button></div>
     </form>
   </dialog>
 
