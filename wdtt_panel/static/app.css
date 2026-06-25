@@ -205,6 +205,10 @@ dialog::backdrop { background: rgba(1,4,8,.78); backdrop-filter: blur(4px); }
 .checkbox { display: flex; align-items: center; gap: 8px; }
 .checkbox input { width: 18px; min-height: 18px; margin: 0; }
 .dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+.hash-library-list { display: grid; gap: 8px; max-height: 260px; margin-top: 18px; overflow: auto; }
+.hash-library-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: #0a1019; }
+.hash-library-row code { min-width: 0; overflow-wrap: anywhere; color: var(--text); }
+.hash-library-row button { flex: 0 0 auto; }
 .toast { position: fixed; z-index: 50; top: 22px; right: 24px; max-width: 440px; padding: 13px 16px; border: 1px solid rgba(89,225,194,.3); border-radius: 11px; background: #10201d; color: #cffff4; box-shadow: 0 16px 45px rgba(0,0,0,.3); }
 .toast.error { color: #ffd6da; border-color: rgba(255,105,120,.4); background: #251116; }
 .login-body { display: grid; place-items: center; padding: 22px; }

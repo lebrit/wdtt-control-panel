@@ -115,7 +115,7 @@
     </section>
 
     <section class="tab" id="tab-users">
-      <div class="section-head"><div><p class="eyebrow">ACCESS DATABASE</p><h2>Пользователи WDTT</h2><p class="muted">Метки синхронизируются с Telegram-ботом и выводятся отдельным столбцом. Изменения перезапускают WDTT на несколько секунд.</p></div><div class="inline-actions"><button id="bulk-users" class="secondary">Создать несколько</button><button id="new-user" class="primary">Создать пользователя</button></div></div>
+      <div class="section-head"><div><p class="eyebrow">ACCESS DATABASE</p><h2>Пользователи WDTT</h2><p class="muted">Метки синхронизируются с Telegram-ботом и выводятся отдельным столбцом. Изменения перезапускают WDTT на несколько секунд.</p></div><div class="inline-actions"><button id="manage-vk-hashes" class="secondary">Библиотека VK-хешей</button><button id="bulk-users" class="secondary">Создать несколько</button><button id="new-user" class="primary">Создать пользователя</button></div></div>
       <article class="panel-card table-card">
         <div class="table-toolbar user-toolbar"><input id="user-search" placeholder="Поиск по метке, паролю, устройству или IP"><div class="user-bulk-controls"><details class="user-refresh-menu"><summary>Автообновление</summary><div class="user-refresh-popup"><label>Интервал<select id="user-auto-refresh-interval"><option value="0">Выключено</option><option value="5">Каждые 5 сек.</option><option value="10">Каждые 10 сек.</option><option value="30">Каждые 30 сек.</option><option value="60">Каждую минуту</option></select></label><small id="user-auto-refresh-status">Выключено</small></div></details><span id="selected-users">Выбрано: 0</span><select id="bulk-user-action" aria-label="Массовое действие"><option value="">Действие над выбранными…</option><option value="activate">Активировать</option><option value="deactivate">Деактивировать</option><option value="set_expiration">Изменить срок</option><option value="reset_traffic">Сбросить трафик</option><option value="unbind">Отвязать устройства</option><option value="delete">Удалить</option></select><label id="bulk-user-days-control" hidden>Срок, дней<input id="bulk-user-days" type="number" min="1" max="3650" value="30"></label><button id="apply-bulk-user-action" class="secondary" disabled>Применить</button><span id="user-limit">0 / 10</span></div></div>
         <div class="table-wrap"><table><thead><tr><th><input id="select-all-users" type="checkbox" aria-label="Выбрать всех пользователей"></th><th><button class="user-sort" data-user-sort="label">Метка <span class="sort-indicator">↕</span></button></th><th><button class="user-sort" data-user-sort="access">Доступ <span class="sort-indicator">↕</span></button></th><th><button class="user-sort" data-user-sort="status">Статус <span class="sort-indicator">↕</span></button></th><th><button class="user-sort" data-user-sort="expires">Истекает <span class="sort-indicator">↕</span></button></th><th><button class="user-sort" data-user-sort="device">Устройство <span class="sort-indicator">↕</span></button></th><th><button class="user-sort" data-user-sort="traffic">Трафик <span class="sort-indicator">↕</span></button></th><th></th></tr></thead><tbody id="users-body"></tbody></table></div>
@@ -161,6 +161,7 @@
         <label class="wide">Пароль<input id="edit-password" pattern="[A-Za-z0-9._~-]{8,64}" placeholder="Оставьте пустым для автогенерации"></label>
         <label class="wide">Метка пользователя<input id="edit-label" maxlength="64" placeholder="Например: Иван — Pixel 8"></label>
         <label class="wide">VK-хеши<input id="edit-hashes" required placeholder="До 4 хешей через запятую"></label>
+        <label class="wide">Добавить сохранённый VK-хеш<select id="edit-saved-hash"><option value="">Выберите хеш из библиотеки</option></select></label>
         <label>Срок, дней<input id="edit-days" type="number" min="1" max="3650" value="30"></label>
         <label>Порты<input id="edit-ports" value="56000,56001,9000" required></label>
         <label class="checkbox wide"><input id="edit-unlimited" type="checkbox"> Бессрочный доступ</label>
@@ -177,6 +178,7 @@
         <label>Количество<input id="bulk-count" type="number" min="1" max="10" value="2" required></label>
         <label>Назначение хешей<select id="bulk-hash-mode"><option value="shared">Все хеши каждому</option><option value="rotate">По одному по кругу</option></select></label>
         <label class="wide">VK-хеши<input id="bulk-hashes" required placeholder="Один или до 4 хешей через запятую"></label>
+        <label class="wide">Добавить сохранённый VK-хеш<select id="bulk-saved-hash"><option value="">Выберите хеш из библиотеки</option></select></label>
         <label class="wide">Префикс меток<input id="bulk-label-prefix" maxlength="61" placeholder="Например: Семья — будут «Семья 1», «Семья 2»"></label>
         <label>Срок, дней<input id="bulk-days" type="number" min="1" max="3650" value="30"></label>
         <label>Порты<input id="bulk-ports" value="56000,56001,9000" required></label>
@@ -225,6 +227,16 @@
         <label class="checkbox wide"><input id="xray-rule-enabled" type="checkbox" checked> Включить правило</label>
       </div>
       <div class="dialog-actions"><select id="xray-rule-preset"><option value="">Готовая настройка…</option><option value="ru_blocked">Все ресурсы из GeoSite/GeoIP ru-blocked</option><option value="google_ai">Google AI</option><option value="ai">Все популярные AI‑сервисы</option><option value="meta">Meta: Facebook, Instagram, Threads</option><option value="x_linkedin">X (Twitter) и LinkedIn</option><option value="messengers">Discord, Signal и Viber</option><option value="media">Независимые медиа</option><option value="video">Видео: YouTube, Twitch</option><option value="social">Соцсети и сообщества</option><option value="music">Музыка: Spotify, SoundCloud</option><option value="popular">Все популярные сервисы</option></select><button id="apply-xray-rule-preset" type="button" class="secondary">Заполнить</button><button type="button" value="cancel" class="secondary">Отмена</button><button type="submit" class="primary">Сохранить правило</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="vk-hashes-dialog">
+    <form method="dialog" id="vk-hashes-form">
+      <div class="dialog-head"><div><p class="eyebrow">VK HASH LIBRARY</p><h2>Библиотека VK-хешей</h2></div><button value="cancel" class="icon-button">&#215;</button></div>
+      <p class="muted">Вставьте один или несколько VK-хешей или ссылок на вход. Выбирать их можно будет в формах создания; ручной ввод там также останется.</p>
+      <label>Новые VK-хеши<input id="new-vk-hashes" placeholder="Хеши или ссылки через запятую, пробел или с новой строки"></label>
+      <div id="vk-hashes-list" class="hash-library-list"></div>
+      <div class="dialog-actions"><button value="cancel" class="secondary">Закрыть</button><button id="save-vk-hashes" value="default" class="primary">Добавить в библиотеку</button></div>
     </form>
   </dialog>
 

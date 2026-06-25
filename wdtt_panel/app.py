@@ -16,6 +16,7 @@ from typing import Any, Iterable
 from urllib.parse import parse_qs
 from wsgiref.simple_server import WSGIServer, make_server
 
+from .core import ValidationError, normalize_hash
 from .security import create_session, read_session, verify_csrf, verify_password
 
 
@@ -90,6 +91,10 @@ class Panel:
                     down_gb REAL NOT NULL,
                     users INTEGER NOT NULL,
                     devices INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS vk_hash_library (
+                    value TEXT PRIMARY KEY,
+                    created_at INTEGER NOT NULL
                 );
                 """
             )
@@ -187,6 +192,26 @@ class Panel:
         if method == "POST" and not self.valid_csrf(environ, session):
             return self.json_response(start_response, 403, {"error": "CSRF-проверка не пройдена"})
         payload = self.read_json(environ) if method == "POST" else {}
+        if route == "vk-hashes":
+            if method == "GET":
+                return self.json_response(start_response, 200, {"ok": True, "result": self.list_vk_hashes()})
+            try:
+                result = self.add_vk_hashes(payload)
+            except ValidationError as exc:
+                self.audit(environ, "vk-hashes.add", "error", str(exc))
+                return self.json_response(start_response, 400, {"ok": False, "error": str(exc)})
+            self.audit(environ, "vk-hashes.add", "ok")
+            return self.json_response(start_response, 200, {"ok": True, "result": result})
+        if route == "vk-hashes/delete":
+            if method != "POST":
+                return self.json_response(start_response, 405, {"error": "Требуется POST"})
+            try:
+                result = self.delete_vk_hash(payload)
+            except ValidationError as exc:
+                self.audit(environ, "vk-hashes.delete", "error", str(exc))
+                return self.json_response(start_response, 400, {"ok": False, "error": str(exc)})
+            self.audit(environ, "vk-hashes.delete", "ok")
+            return self.json_response(start_response, 200, {"ok": True, "result": result})
         mapping = {
             "overview": "overview",
             "users": "users.list",
@@ -258,6 +283,14 @@ class Panel:
         status = 200 if result.get("ok") else 400
         if result.get("ok") and action == "overview":
             self.record_metrics(result.get("result") or {})
+        if result.get("ok") and action in {"users.create", "users.create_bulk", "users.update"}:
+            raw_hashes = str(payload.get("vk_hash") or "").strip()
+            if raw_hashes:
+                try:
+                    self.add_vk_hashes({"hashes": raw_hashes})
+                except ValidationError:
+                    # A successful WDTT change should not be rolled back because the optional library is full.
+                    pass
         if method == "POST":
             self.audit(environ, action, "ok" if result.get("ok") else "error", str(result.get("error") or ""))
         return self.json_response(start_response, status, result)
@@ -303,6 +336,45 @@ class Panel:
             db.execute("INSERT OR REPLACE INTO metrics VALUES(?,?,?,?,?,?,?)", values)
             db.execute("DELETE FROM metrics WHERE captured_at < ?", (int(time.time()) - 7 * 86400,))
             db.commit()
+
+    @staticmethod
+    def list_vk_hashes() -> dict[str, Any]:
+        with closing(sqlite3.connect(STATE_DB)) as db:
+            rows = db.execute("SELECT value FROM vk_hash_library ORDER BY created_at, value").fetchall()
+        return {"hashes": [row[0] for row in rows]}
+
+    @staticmethod
+    def add_vk_hashes(payload: dict[str, Any]) -> dict[str, Any]:
+        raw = str(payload.get("hashes") or "")
+        values = [normalize_hash(item) for item in raw.replace(",", " ").split()]
+        values = list(dict.fromkeys(values))
+        if not values:
+            raise ValidationError("Укажите хотя бы один VK-хеш")
+        if len(values) > 100:
+            raise ValidationError("За один раз можно добавить не более 100 VK-хешей")
+        with closing(sqlite3.connect(STATE_DB)) as db:
+            existing = db.execute("SELECT COUNT(*) FROM vk_hash_library").fetchone()[0]
+            new_values = [
+                value for value in values
+                if db.execute("SELECT 1 FROM vk_hash_library WHERE value = ?", (value,)).fetchone() is None
+            ]
+            if existing + len(new_values) > 500:
+                raise ValidationError("В библиотеке может быть не более 500 VK-хешей")
+            now = int(time.time())
+            db.executemany(
+                "INSERT OR IGNORE INTO vk_hash_library(value, created_at) VALUES(?, ?)",
+                [(value, now) for value in values],
+            )
+            db.commit()
+        return Panel.list_vk_hashes()
+
+    @staticmethod
+    def delete_vk_hash(payload: dict[str, Any]) -> dict[str, Any]:
+        value = normalize_hash(str(payload.get("hash") or ""))
+        with closing(sqlite3.connect(STATE_DB)) as db:
+            db.execute("DELETE FROM vk_hash_library WHERE value = ?", (value,))
+            db.commit()
+        return Panel.list_vk_hashes()
 
     @staticmethod
     def history() -> dict[str, Any]:

@@ -6,7 +6,7 @@
   const CSRF = meta("csrf-token");
   const PUBLIC_HOST = meta("public-host");
   const PANEL_VERSION = meta("panel-version");
-  const state = { overview: null, users: [], selectedUsers: new Set(), userSort: { key: "", direction: "asc" }, logs: [], logsMeta: null, editing: null, userRefreshTimer: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null };
+  const state = { overview: null, users: [], selectedUsers: new Set(), userSort: { key: "", direction: "asc" }, logs: [], logsMeta: null, editing: null, userRefreshTimer: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null, vkHashes: [] };
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -120,6 +120,62 @@
     button.disabled = busy;
     if (busy) button.dataset.label = button.textContent;
     button.textContent = busy ? "Выполнение..." : (button.dataset.label || button.textContent);
+  }
+
+  function renderVkHashLibrary() {
+    const hashes = state.vkHashes;
+    $("#vk-hashes-list").innerHTML = hashes.length ? hashes.map((hash) => `<div class="hash-library-row"><code>${escapeHtml(hash)}</code><button type="button" class="danger" data-delete-vk-hash="${escapeHtml(hash)}">Удалить</button></div>`).join("") : '<p class="muted">Библиотека пока пуста.</p>';
+  }
+
+  function renderVkHashPickers() {
+    const options = state.vkHashes.map((hash) => `<option value="${escapeHtml(hash)}">${escapeHtml(hash)}</option>`).join("");
+    ["#edit-saved-hash", "#bulk-saved-hash"].forEach((selector) => {
+      const select = $(selector);
+      select.innerHTML = `<option value="">Выберите хеш из библиотеки</option>${options}`;
+    });
+  }
+
+  async function loadVkHashes() {
+    const result = await api("vk-hashes");
+    state.vkHashes = result.hashes || [];
+    renderVkHashPickers();
+    renderVkHashLibrary();
+  }
+
+  function appendSavedHash(selectId, inputId) {
+    const select = $(selectId);
+    const hash = select.value;
+    select.value = "";
+    if (!hash) return;
+    const input = $(inputId);
+    const hashes = input.value.trim() ? input.value.trim().split(/[,\s]+/).filter(Boolean) : [];
+    if (hashes.includes(hash)) return;
+    if (hashes.length >= 4) { toast("WDTT поддерживает не более четырех VK-хешей", true); return; }
+    input.value = [...hashes, hash].join(",");
+  }
+
+  async function saveVkHashes(event) {
+    event.preventDefault();
+    if (event.submitter?.value === "cancel") { $("#vk-hashes-dialog").close(); return; }
+    const input = $("#new-vk-hashes");
+    if (!input.value.trim()) { toast("Укажите хотя бы один VK-хеш", true); return; }
+    const button = $("#save-vk-hashes");
+    setBusy(button, true);
+    try {
+      await api("vk-hashes", { method: "POST", body: { hashes: input.value } });
+      input.value = "";
+      await loadVkHashes();
+      toast("Библиотека VK-хешей обновлена");
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function deleteVkHash(hash) {
+    try {
+      await api("vk-hashes/delete", { method: "POST", body: { hash } });
+      await loadVkHashes();
+      toast("Хеш удалён из библиотеки");
+    } catch (error) { toast(error.message, true); }
   }
 
   function healthRow(label, ok, value) {
@@ -1046,10 +1102,21 @@
       catch (_) { /* Browser storage can be disabled. */ }
       renderTheme();
     });
+    $("#manage-vk-hashes").addEventListener("click", async () => {
+      try { await loadVkHashes(); $("#vk-hashes-dialog").showModal(); }
+      catch (error) { toast(error.message, true); }
+    });
     $("#new-user").addEventListener("click", () => openUserDialog());
     $("#bulk-users").addEventListener("click", openBulkUserDialog);
     $("#user-form").addEventListener("submit", saveUser);
     $("#bulk-user-form").addEventListener("submit", saveBulkUsers);
+    $("#vk-hashes-form").addEventListener("submit", saveVkHashes);
+    $("#edit-saved-hash").addEventListener("change", () => appendSavedHash("#edit-saved-hash", "#edit-hashes"));
+    $("#bulk-saved-hash").addEventListener("change", () => appendSavedHash("#bulk-saved-hash", "#bulk-hashes"));
+    $("#vk-hashes-list").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-delete-vk-hash]");
+      if (button) deleteVkHash(button.dataset.deleteVkHash);
+    });
     $("#copy-bulk-links").addEventListener("click", copyBulkLinks);
     $("#user-search").addEventListener("input", renderUsers);
     $("#user-auto-refresh-interval").addEventListener("change", () => setUserAutoRefresh());
@@ -1251,6 +1318,6 @@
   restoreActiveTab();
   bindEvents();
   restoreUserAutoRefresh();
-  Promise.all([loadOverview(), loadUsers(), loadPanelVersion()]).catch((error) => toast(error.message, true));
+  Promise.all([loadOverview(), loadUsers(), loadVkHashes(), loadPanelVersion()]).catch((error) => toast(error.message, true));
   setInterval(() => loadOverview().catch(() => {}), 10000);
 })();
