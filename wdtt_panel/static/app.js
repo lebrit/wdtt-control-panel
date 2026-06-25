@@ -429,6 +429,32 @@
     finally { setBusy(button, false); }
   }
 
+  function openAutoUserDialog() {
+    const remaining = Math.max(0, 10 - state.users.filter((user) => user.role !== "admin").length);
+    if (!remaining) { toast("Достигнут лимит 10 пользователей", true); return; }
+    $("#auto-label").value = "";
+    $("#auto-user-dialog").showModal();
+    $("#auto-label").focus();
+  }
+
+  async function saveAutoUser(event) {
+    event.preventDefault();
+    if (event.submitter?.value === "cancel") { $("#auto-user-dialog").close(); return; }
+    const label = $("#auto-label").value.trim();
+    if (!label) { toast("Укажите метку пользователя", true); return; }
+    const button = $("#save-auto-user");
+    setBusy(button, true);
+    try {
+      const user = await api("users/create-auto", { method: "POST", body: { label } });
+      $("#bulk-result-links").value = quickLink(user);
+      $("#auto-user-dialog").close();
+      $("#bulk-result-dialog").showModal();
+      toast("Пользователь создан автоматически");
+      await Promise.all([loadUsers(), loadOverview()]);
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
   function openBulkUserDialog() {
     const remaining = Math.max(0, 10 - state.users.filter((user) => user.role !== "admin").length);
     if (!remaining) { toast("Достигнут лимит 10 пользователей", true); return; }
@@ -1107,8 +1133,10 @@
       catch (error) { toast(error.message, true); }
     });
     $("#new-user").addEventListener("click", () => openUserDialog());
+    $("#auto-user").addEventListener("click", openAutoUserDialog);
     $("#bulk-users").addEventListener("click", openBulkUserDialog);
     $("#user-form").addEventListener("submit", saveUser);
+    $("#auto-user-form").addEventListener("submit", saveAutoUser);
     $("#bulk-user-form").addEventListener("submit", saveBulkUsers);
     $("#vk-hashes-form").addEventListener("submit", saveVkHashes);
     $("#edit-saved-hash").addEventListener("change", () => appendSavedHash("#edit-saved-hash", "#edit-hashes"));

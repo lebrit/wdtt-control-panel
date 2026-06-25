@@ -71,6 +71,23 @@ elif action == "users.create_bulk":
             for index in range(count)
         ],
     }
+elif action == "users.create":
+    payload = request.get("payload") or {}
+    result = {
+        "password": str(payload.get("password") or "AutoDemoUser123"),
+        "label": str(payload.get("label") or ""),
+        "device_id": "",
+        "expires_at": 1798761600,
+        "down_bytes": 0,
+        "up_bytes": 0,
+        "last_upload_at": 0,
+        "last_download_at": 0,
+        "vk_hash": str(payload.get("vk_hash") or "demo_hash"),
+        "ports": str(payload.get("ports") or "56000,56001,9000"),
+        "is_deactivated": False,
+        "expired": False,
+        "device": None,
+    }
 elif action == "users.bulk_action":
     result = {"action": (request.get("payload") or {}).get("action"), "count": len((request.get("payload") or {}).get("passwords") or [])}
 elif action == "logs":

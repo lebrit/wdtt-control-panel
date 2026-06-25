@@ -131,6 +131,15 @@ class AppSmokeTests(unittest.TestCase):
         headers, body = self.request("/private-panel-path/api/vk-hashes", cookie=cookie)
         self.assertEqual(json.loads(body)["result"]["hashes"], ["hash_two", "manual_one", "manual_two"])
 
+        payload = json.dumps({"label": "Авто клиент"}).encode()
+        with mock.patch.object(app.secrets, "choice", return_value="manual_two"):
+            headers, body = self.request("/private-panel-path/api/users/create-auto", "POST", payload, cookie, csrf)
+        self.assertTrue(headers["status"].startswith("200"))
+        created = json.loads(body)["result"]
+        self.assertEqual(created["label"], "Авто клиент")
+        self.assertEqual(created["vk_hash"], "manual_two")
+        self.assertEqual(created["password"], "AutoDemoUser123")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,9 +13,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.11.3"', installer)
-        self.assertIn('__version__ = "0.11.3"', package)
-        self.assertIn("Текущая версия: 0.11.3", readme)
+        self.assertIn('PANEL_VERSION="0.11.4"', installer)
+        self.assertIn('__version__ = "0.11.4"', package)
+        self.assertIn("Текущая версия: 0.11.4", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -181,6 +181,9 @@ class InstallScriptTests(unittest.TestCase):
         html = (ROOT / "wdtt_panel" / "templates" / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "wdtt_panel" / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn('id="edit-label"', html)
+        self.assertIn('id="auto-user"', html)
+        self.assertIn('id="auto-user-dialog"', html)
+        self.assertIn('api("users/create-auto"', script)
         self.assertIn('id="bulk-label-prefix"', html)
         self.assertIn('id="select-all-users"', html)
         self.assertIn('id="bulk-user-action"', html)
@@ -216,7 +219,7 @@ class InstallScriptTests(unittest.TestCase):
 
     def test_dialog_cancel_buttons_skip_required_field_validation(self):
         html = (ROOT / "wdtt_panel" / "templates" / "index.html").read_text(encoding="utf-8")
-        self.assertEqual(html.count('value="cancel" formnovalidate'), 4)
+        self.assertEqual(html.count('value="cancel" formnovalidate'), 6)
 
 
 if __name__ == "__main__":

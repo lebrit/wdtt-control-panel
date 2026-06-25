@@ -4,6 +4,7 @@ import hmac
 import json
 import mimetypes
 import os
+import secrets
 import sqlite3
 import subprocess
 import threading
@@ -16,7 +17,7 @@ from typing import Any, Iterable
 from urllib.parse import parse_qs
 from wsgiref.simple_server import WSGIServer, make_server
 
-from .core import ValidationError, normalize_hash
+from .core import ValidationError, normalize_hash, normalize_user_label
 from .security import create_session, read_session, verify_csrf, verify_password
 
 
@@ -212,6 +213,16 @@ class Panel:
                 return self.json_response(start_response, 400, {"ok": False, "error": str(exc)})
             self.audit(environ, "vk-hashes.delete", "ok")
             return self.json_response(start_response, 200, {"ok": True, "result": result})
+        if route == "users/create-auto":
+            if method != "POST":
+                return self.json_response(start_response, 405, {"error": "Требуется POST"})
+            try:
+                result = self.create_auto_user(payload)
+            except ValidationError as exc:
+                self.audit(environ, "users.create_auto", "error", str(exc))
+                return self.json_response(start_response, 400, {"ok": False, "error": str(exc)})
+            self.audit(environ, "users.create_auto", "ok" if result.get("ok") else "error", str(result.get("error") or ""))
+            return self.json_response(start_response, 200 if result.get("ok") else 400, result)
         mapping = {
             "overview": "overview",
             "users": "users.list",
@@ -375,6 +386,23 @@ class Panel:
             db.execute("DELETE FROM vk_hash_library WHERE value = ?", (value,))
             db.commit()
         return Panel.list_vk_hashes()
+
+    def create_auto_user(self, payload: dict[str, Any]) -> dict[str, Any]:
+        label = normalize_user_label(str(payload.get("label") or ""))
+        if not label:
+            raise ValidationError("Укажите метку пользователя")
+        hashes = self.list_vk_hashes().get("hashes") or []
+        if not hashes:
+            raise ValidationError("Библиотека VK-хешей пуста")
+        return self.admin(
+            "users.create",
+            {
+                "label": label,
+                "vk_hash": secrets.choice(hashes),
+                "days": 30,
+                "ports": "56000,56001,9000",
+            },
+        )
 
     @staticmethod
     def history() -> dict[str, Any]:
