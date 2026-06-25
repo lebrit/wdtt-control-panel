@@ -401,32 +401,36 @@ def list_users() -> dict[str, Any]:
     }
     admins = []
     main_traffic_supported = "main_down_bytes" in data or "main_up_bytes" in data
+
+    def main_admin_view(device_id: str = "", device: dict[str, Any] | None = None, last_handshake: int = 0) -> dict[str, Any]:
+        return {
+            "password": "Главный пароль",
+            "role": "admin",
+            "device_id": device_id,
+            "device": device,
+            "connected": handshake_is_active(last_handshake),
+            "last_handshake": last_handshake,
+            "down_bytes": int(data.get("main_down_bytes") or 0),
+            "up_bytes": int(data.get("main_up_bytes") or 0),
+            "last_upload_at": int(data.get("main_last_upload_at") or 0),
+            "last_download_at": int(data.get("main_last_download_at") or 0),
+            "traffic_supported": main_traffic_supported,
+            "expires_at": 0,
+            "label": "Администратор WDTT",
+            "vk_hash": "Администратор WDTT",
+            "ports": "",
+            "is_deactivated": False,
+            "expired": False,
+        }
+
     for device_id, device in data["devices"].items():
         if device_id in user_devices or not isinstance(device, dict):
             continue
         public_key = str(device.get("pub_key") or device.get("PubKey") or "")
         last_handshake = int(handshakes.get(public_key) or 0)
-        admins.append(
-            {
-                "password": "Главный пароль",
-                "role": "admin",
-                "device_id": device_id,
-                "device": device,
-                "connected": handshake_is_active(last_handshake),
-                "last_handshake": last_handshake,
-                "down_bytes": int(data.get("main_down_bytes") or 0),
-                "up_bytes": int(data.get("main_up_bytes") or 0),
-                "last_upload_at": int(data.get("main_last_upload_at") or 0),
-                "last_download_at": int(data.get("main_last_download_at") or 0),
-                "traffic_supported": main_traffic_supported,
-                "expires_at": 0,
-                "label": "Администратор WDTT",
-                "vk_hash": "Администратор WDTT",
-                "ports": "",
-                "is_deactivated": False,
-                "expired": False,
-            }
-        )
+        admins.append(main_admin_view(device_id, device, last_handshake))
+    if data.get("main_password") and not admins:
+        admins.append(main_admin_view())
     return {
         "users": users,
         "admins": admins,

@@ -358,6 +358,16 @@ class AdminDatabaseTests(unittest.TestCase):
             result = admin.list_users()
         self.assertTrue(result["admins"][0]["connected"])
 
+    def test_main_administrator_is_listed_without_a_bound_device(self):
+        data = admin.load_database()
+        data["main_password"] = "admin"
+        admin.save_database(data)
+        result = admin.list_users()
+        self.assertEqual(result["admins"][0]["label"], "Администратор WDTT")
+        self.assertEqual(result["admins"][0]["device_id"], "")
+        self.assertIsNone(result["admins"][0]["device"])
+        self.assertFalse(result["admins"][0]["connected"])
+
     def test_stale_wireguard_handshake_is_not_online(self):
         self.assertFalse(admin.handshake_is_active(int(time.time()) - 76))
 
