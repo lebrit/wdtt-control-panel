@@ -21,6 +21,7 @@ body.light-theme .sidebar { background: rgba(255,255,255,.94); }
 body.light-theme .sidebar-toggle, body.light-theme .user-refresh-menu summary, body.light-theme .user-actions-menu summary, body.light-theme .row-actions button, body.light-theme .icon-button { background: #f1f5f9; }
 body.light-theme .sidebar-toggle:hover, body.light-theme .sidebar-toggle:focus-visible, body.light-theme .nav-item:hover { background: #e4edf7; }
 body.light-theme button.secondary { background: #edf3f8; border-color: #c7d4e1; }
+body.light-theme button.danger { color: #8c2332; background: #fff0f2; border-color: rgba(216,59,80,.28); }
 body.light-theme .hero-card, body.light-theme .metric-card, body.light-theme .panel-card { background: linear-gradient(145deg, rgba(255,255,255,.98), rgba(244,248,252,.98)); }
 body.light-theme input, body.light-theme select, body.light-theme textarea, body.light-theme .route-rule, body.light-theme .friendly-route, body.light-theme .friendly-rule, body.light-theme .friendly-card { color: var(--text); background: #f9fbfd; border-color: #c7d4e1; }
 body.light-theme .xray-workflow, body.light-theme .xray-advanced, body.light-theme .xray-json-row, body.light-theme .backup-schedule { background: rgba(237,243,248,.78); }
@@ -206,7 +207,7 @@ dialog::backdrop { background: rgba(1,4,8,.78); backdrop-filter: blur(4px); }
 .checkbox input { width: 18px; min-height: 18px; margin: 0; }
 .dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
 .hash-library-list { display: grid; gap: 8px; max-height: 260px; margin-top: 18px; overflow: auto; }
-.hash-library-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: #0a1019; }
+.hash-library-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-2); }
 .hash-library-row code { min-width: 0; overflow-wrap: anywhere; color: var(--text); }
 .hash-library-row button { flex: 0 0 auto; }
 .toast { position: fixed; z-index: 50; top: 22px; right: 24px; max-width: 440px; padding: 13px 16px; border: 1px solid rgba(89,225,194,.3); border-radius: 11px; background: #10201d; color: #cffff4; box-shadow: 0 16px 45px rgba(0,0,0,.3); }
