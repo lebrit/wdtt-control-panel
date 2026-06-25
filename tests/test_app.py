@@ -48,7 +48,7 @@ class AppSmokeTests(unittest.TestCase):
             patcher.stop()
         self.temp.cleanup()
 
-    def request(self, path, method="GET", body=b"", cookie="", csrf=""):
+    def request(self, path, method="GET", body=b"", cookie="", csrf="", auth=""):
         environ = {}
         setup_testing_defaults(environ)
         environ.update(
@@ -61,6 +61,7 @@ class AppSmokeTests(unittest.TestCase):
                 "REMOTE_ADDR": "127.0.0.1",
                 "HTTP_COOKIE": cookie,
                 "HTTP_X_CSRF_TOKEN": csrf,
+                "HTTP_AUTHORIZATION": auth,
             }
         )
         captured = {}
@@ -71,6 +72,36 @@ class AppSmokeTests(unittest.TestCase):
 
         response = b"".join(self.panel(environ, start_response))
         return captured, response
+
+    def test_api_v1_password_login_and_bearer_requests(self):
+        headers, body = self.request("/private-panel-path/api/v1/info")
+        self.assertTrue(headers["status"].startswith("200"))
+        parsed = json.loads(body)
+        self.assertEqual(parsed["result"]["api_version"], 1)
+        self.assertEqual(parsed["result"]["auth"]["type"], "password")
+
+        headers, body = self.request("/private-panel-path/api/v1/overview")
+        self.assertTrue(headers["status"].startswith("401"))
+        self.assertFalse(json.loads(body)["ok"])
+
+        payload = json.dumps({"password": "Panel-password-12345"}).encode()
+        headers, body = self.request("/private-panel-path/api/v1/auth/login", "POST", payload)
+        self.assertTrue(headers["status"].startswith("200"))
+        token = json.loads(body)["result"]["token"]
+
+        headers, body = self.request("/private-panel-path/api/v1/overview", auth=f"Bearer {token}")
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertTrue(json.loads(body)["ok"])
+
+        payload = json.dumps({"label": "Mobile client"}).encode()
+        headers, body = self.request(
+            "/private-panel-path/api/v1/users/create",
+            "POST",
+            payload,
+            auth=f"Bearer {token}",
+        )
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertEqual(json.loads(body)["result"]["label"], "Mobile client")
 
     def test_login_page_and_authenticated_overview(self):
         headers, body = self.request("/private-panel-path/")

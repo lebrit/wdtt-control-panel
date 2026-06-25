@@ -127,6 +127,17 @@ class Panel:
         if relative.startswith("static/"):
             return self.static(start_response, relative[7:])
 
+        if relative == "api/v1/info" and environ["REQUEST_METHOD"] == "GET":
+            return self.json_response(start_response, 200, {"ok": True, "result": self.api_v1_info_payload()})
+        if relative == "api/v1/auth/login" and environ["REQUEST_METHOD"] == "POST":
+            return self.api_v1_login(environ, start_response)
+        if relative.startswith("api/v1/"):
+            session = self.bearer_session(environ)
+            if session is None:
+                return self.json_response(start_response, 401, {"ok": False, "error": "Требуется bearer-токен"})
+            environ["wdtt.user"] = session.get("u")
+            return self.api_v1(environ, start_response, relative[7:], session)
+
         session = self.session(environ)
         if relative == "login" and environ["REQUEST_METHOD"] == "POST":
             return self.login(environ, start_response)
@@ -152,6 +163,15 @@ class Panel:
             return None
         return read_session(item.value, str(self.config["session_secret"]))
 
+    def bearer_session(self, environ: dict[str, Any]) -> dict[str, Any] | None:
+        header = str(environ.get("HTTP_AUTHORIZATION") or "").strip()
+        if not header.lower().startswith("bearer "):
+            return None
+        token = header[7:].strip()
+        if not token:
+            return None
+        return read_session(token, str(self.config["session_secret"]))
+
     def login(self, environ: dict[str, Any], start_response: Any) -> Iterable[bytes]:
         remote = self.remote_addr(environ)
         if not self.rate_limiter.allowed(remote):
@@ -176,6 +196,65 @@ class Panel:
         )
         return self.redirect(start_response, self.base, set_cookie=secure)
 
+    def api_v1_info_payload(self) -> dict[str, Any]:
+        return {
+            "name": "WDTT Control Panel",
+            "api_version": 1,
+            "panel_version": str(self.config.get("version") or "0.0.0"),
+            "base_path": self.base,
+            "public_host": str(self.config.get("public_host") or ""),
+            "https_port": int(self.config.get("https_port") or 443),
+            "auth": {"type": "password", "username_optional": True},
+            "capabilities": [
+                "overview",
+                "users",
+                "users.create",
+                "users.update",
+                "users.delete",
+                "users.unbind",
+                "users.reset_traffic",
+                "users.bulk_action",
+                "service",
+                "logs",
+                "backups",
+                "panel.version",
+            ],
+        }
+
+    def api_v1_login(self, environ: dict[str, Any], start_response: Any) -> Iterable[bytes]:
+        remote = self.remote_addr(environ)
+        if not self.rate_limiter.allowed(remote):
+            self.audit(environ, "api.v1.login", "blocked", "rate-limit")
+            return self.json_response(start_response, 429, {"ok": False, "error": "Слишком много попыток. Повторите позже."})
+        payload = self.read_json(environ)
+        username = str(payload.get("username") or "").strip()
+        password = str(payload.get("password") or "")
+        expected_user = str(self.config["username"])
+        user_ok = not username or hmac.compare_digest(username, expected_user)
+        password_ok = verify_password(password, str(self.config["password_hash"]))
+        if not (user_ok and password_ok):
+            self.rate_limiter.fail(remote)
+            self.audit(environ, "api.v1.login", "failed")
+            return self.json_response(start_response, 401, {"ok": False, "error": "Неверный пароль"})
+        self.rate_limiter.clear(remote)
+        token, _ = create_session(expected_user, str(self.config["session_secret"]))
+        environ["wdtt.user"] = expected_user
+        self.audit(environ, "api.v1.login", "ok")
+        return self.json_response(
+            start_response,
+            200,
+            {
+                "ok": True,
+                "result": {
+                    "token": token,
+                    "token_type": "Bearer",
+                    "expires_in": 43200,
+                    "username": expected_user,
+                    "server": self.api_v1_info_payload(),
+                },
+            },
+        )
+
     def valid_csrf(self, environ: dict[str, Any], session: dict[str, Any]) -> bool:
         value = str(environ.get("HTTP_X_CSRF_TOKEN") or "")
         return verify_csrf(value, session, str(self.config["session_secret"]))
@@ -186,11 +265,12 @@ class Panel:
         start_response: Any,
         route: str,
         session: dict[str, Any],
+        require_csrf: bool = True,
     ) -> Iterable[bytes]:
         method = environ["REQUEST_METHOD"]
         if method not in {"GET", "POST"}:
             return self.json_response(start_response, 405, {"error": "Метод не поддерживается"})
-        if method == "POST" and not self.valid_csrf(environ, session):
+        if method == "POST" and require_csrf and not self.valid_csrf(environ, session):
             return self.json_response(start_response, 403, {"error": "CSRF-проверка не пройдена"})
         payload = self.read_json(environ) if method == "POST" else {}
         if route == "vk-hashes":
@@ -305,6 +385,32 @@ class Panel:
         if method == "POST":
             self.audit(environ, action, "ok" if result.get("ok") else "error", str(result.get("error") or ""))
         return self.json_response(start_response, status, result)
+
+    def api_v1(
+        self,
+        environ: dict[str, Any],
+        start_response: Any,
+        route: str,
+        session: dict[str, Any],
+    ) -> Iterable[bytes]:
+        route = route.strip("/")
+        if route == "info" and environ["REQUEST_METHOD"] == "GET":
+            return self.json_response(start_response, 200, {"ok": True, "result": self.api_v1_info_payload()})
+        if route == "auth/session" and environ["REQUEST_METHOD"] == "GET":
+            return self.json_response(
+                start_response,
+                200,
+                {"ok": True, "result": {"username": session.get("u"), "server": self.api_v1_info_payload()}},
+            )
+        if route == "auth/logout" and environ["REQUEST_METHOD"] == "POST":
+            self.audit(environ, "api.v1.logout", "ok")
+            return self.json_response(start_response, 200, {"ok": True, "result": {"logged_out": True}})
+        legacy_route = {
+            "version": "panel/version",
+            "users/bulk": "users/create-bulk",
+            "users/auto": "users/create-auto",
+        }.get(route, route)
+        return self.api(environ, start_response, legacy_route, session, require_csrf=False)
 
     @staticmethod
     def admin(action: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -502,7 +608,7 @@ class Panel:
     @classmethod
     def json_response(cls, start_response: Any, status: int, data: dict[str, Any]) -> Iterable[bytes]:
         body = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode()
-        labels = {200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed"}
+        labels = {200: "OK", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed", 429: "Too Many Requests"}
         return cls.response(start_response, f"{status} {labels.get(status, 'Error')}", body, "application/json; charset=utf-8")
 
     def redirect(
