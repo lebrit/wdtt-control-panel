@@ -143,8 +143,8 @@ tbody tr:hover { background: rgba(255,255,255,.018); }
 .badge.bad { color: var(--danger); background: rgba(255,105,120,.1); }
 .row-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .row-actions button, .icon-button { min-height: 32px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: #121b28; color: var(--muted); }
-#tab-users .user-actions-menu { min-width: 0; }
-#tab-users .user-actions-menu .row-actions { display: none; min-width: 145px; margin-top: 6px; }
+#tab-users .user-actions-menu { position: relative; min-width: 0; }
+#tab-users .user-actions-menu .row-actions { display: none; position: absolute; z-index: 6; top: 0; right: calc(100% + 7px); min-width: 145px; padding: 7px; border: 1px solid var(--line); border-radius: 10px; background: #111a28; box-shadow: 0 14px 30px rgba(0,0,0,.28); }
 #tab-users .user-actions-menu[open] .row-actions { display: grid; gap: 5px; }
 #tab-users .user-actions-menu .row-actions button { width: 100%; text-align: left; font-size: 12px; }
 .log-view { min-height: 620px; border: 1px solid var(--line); border-radius: 16px; background: #05080d; overflow: auto; }
@@ -285,9 +285,10 @@ dialog::backdrop { background: rgba(1,4,8,.78); backdrop-filter: blur(4px); }
   #tab-users td:nth-child(7)::before { content: "Трафик"; }
   #tab-users td:nth-child(8) { display: block; padding-top: 12px; }
   #tab-users td:nth-child(8)::before { content: ""; }
+  #tab-users .user-actions-menu { position: static; }
   #tab-users .user-actions-menu summary { justify-content: center; width: 100%; }
   #tab-users .user-actions-menu[open] .row-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
-  #tab-users .user-actions-menu .row-actions { min-width: 0; }
+  #tab-users .user-actions-menu .row-actions { position: static; min-width: 0; margin-top: 7px; padding: 0; border: 0; background: transparent; box-shadow: none; }
   #tab-users .user-actions-menu .row-actions button { min-height: 36px; text-align: center; }
   .form-grid, .xray-easy-grid, .route-rule, .geofile-form, .xray-json-row { grid-template-columns: 1fr; }
   .form-grid .wide { grid-column: auto; }
