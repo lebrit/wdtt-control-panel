@@ -31,6 +31,8 @@ body.light-theme dialog { border-color: #c7d4e1; background: #ffffff; box-shadow
 body.light-theme .login-card { background: rgba(255,255,255,.94); }
 body.light-theme .toast { background: #e4f7f1; color: #185446; }
 body.light-theme .toast.error { background: #fff0f2; color: #8c2332; }
+body.light-theme #tab-users .user-actions-menu .row-actions { background: #ffffff; box-shadow: 0 14px 30px rgba(32,53,82,.18); }
+body.light-theme #tab-users .user-actions-menu .row-actions button { color: #24344a; background: #f7fafc; border-color: #c7d4e1; }
 button, input, select, textarea { font: inherit; }
 button { max-width: 100%; cursor: pointer; }
 .sidebar { position: fixed; inset: 0 auto 0 0; width: var(--sidebar); padding: 28px 18px; border-right: 1px solid var(--line); background: rgba(8, 12, 19, .94); display: flex; flex-direction: column; overflow: hidden; backdrop-filter: blur(18px); transition: width .2s ease, padding .2s ease; }
@@ -144,9 +146,9 @@ tbody tr:hover { background: rgba(255,255,255,.018); }
 .row-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .row-actions button, .icon-button { min-height: 32px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: #121b28; color: var(--muted); }
 #tab-users .user-actions-menu { position: relative; min-width: 0; }
-#tab-users .user-actions-menu .row-actions { display: none; position: absolute; z-index: 6; top: 0; right: calc(100% + 7px); min-width: 145px; padding: 7px; border: 1px solid var(--line); border-radius: 10px; background: #111a28; box-shadow: 0 14px 30px rgba(0,0,0,.28); }
+#tab-users .user-actions-menu .row-actions { display: none; position: absolute; z-index: 6; top: 0; right: calc(100% + 7px); width: 124px; min-width: 124px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: #0f1825; box-shadow: 0 14px 30px rgba(0,0,0,.28); justify-content: stretch; justify-items: stretch; }
 #tab-users .user-actions-menu[open] .row-actions { display: grid; gap: 5px; }
-#tab-users .user-actions-menu .row-actions button { width: 100%; text-align: left; font-size: 12px; }
+#tab-users .user-actions-menu .row-actions button { width: 100%; min-width: 0; color: #d7e4f5; background: #151f2e; text-align: left; font-size: 12px; }
 .log-view { min-height: 620px; border: 1px solid var(--line); border-radius: 16px; background: #05080d; overflow: auto; }
 .log-view pre { margin: 0; padding: 20px; color: #a7b5c8; line-height: 1.65; font: 12px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
 .system-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
