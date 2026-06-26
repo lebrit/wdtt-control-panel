@@ -286,6 +286,22 @@
     return ["ok", "свободен"];
   }
 
+  function lastUserActivity(user) {
+    return Math.max(
+      Number(user.last_handshake || 0),
+      Number(user.last_upload_at || 0),
+      Number(user.last_download_at || 0),
+    );
+  }
+
+  function lastUserActivityKind(user) {
+    const stamp = lastUserActivity(user);
+    if (!stamp) return "ещё не было";
+    if (stamp === Number(user.last_download_at || 0)) return "загрузка";
+    if (stamp === Number(user.last_upload_at || 0)) return "отправка";
+    return "подключение";
+  }
+
   function userSortValue(user, key) {
     if (key === "label") return user.label || "";
     if (key === "access") return user.password || "";
@@ -299,6 +315,7 @@
     if (key === "expires") return user.expires_at || Number.MAX_SAFE_INTEGER;
     if (key === "device") return `${user.device?.device_id || user.device_id || ""} ${user.device?.ip || ""}`;
     if (key === "traffic") return Number(user.down_bytes || 0) + Number(user.up_bytes || 0);
+    if (key === "activity") return lastUserActivity(user);
     return "";
   }
 
@@ -334,6 +351,7 @@
       const device = user.device ? `${escapeHtml(user.device.device_id || user.device_id)}<br><small>${escapeHtml(user.device.ip || "")}</small>` : "Не привязан";
       const title = user.label || user.password;
       const selectable = user.role !== "admin";
+      const lastActivity = lastUserActivity(user);
       return `<tr>
         <td>${selectable ? `<input type="checkbox" data-select-user="${escapeHtml(user.password)}" aria-label="Выбрать ${escapeHtml(title)}" ${state.selectedUsers.has(user.password) ? "checked" : ""}>` : ""}</td>
         <td>${user.label ? `<strong>${escapeHtml(user.label)}</strong>` : "<span class=\"muted\">—</span>"}</td>
@@ -341,6 +359,7 @@
         <td><span class="badge ${statusClass}">${status}</span></td>
         <td>${escapeHtml(formatDate(user.expires_at))}</td>
         <td class="mono">${device}</td><td>${escapeHtml(traffic)}</td>
+        <td><strong>${escapeHtml(formatActivityDate(lastActivity))}</strong><br><small>${escapeHtml(lastUserActivityKind(user))}</small></td>
         <td><details class="user-actions-menu"><summary>Действия</summary><div class="row-actions">
           <button data-activity="${escapeHtml(user.password)}">Активность</button>
           ${user.role === "admin" ? "" : `<button data-copy="${escapeHtml(user.password)}" title="Скопировать wdtt:// ссылку">Ссылка</button>`}
@@ -350,7 +369,7 @@
           <button data-reset="${escapeHtml(user.password)}">Сброс трафика</button>
           <button data-delete="${escapeHtml(user.password)}">Удалить</button>`}
         </div></details></td></tr>`;
-    }).join("") || `<tr><td colspan="8" class="muted">Пользователи не найдены.</td></tr>`;
+    }).join("") || `<tr><td colspan="9" class="muted">Пользователи не найдены.</td></tr>`;
     renderUserSortControls();
     renderSelectedUsersControls();
   }

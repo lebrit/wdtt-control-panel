@@ -13,9 +13,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.11.8"', installer)
-        self.assertIn('__version__ = "0.11.8"', package)
-        self.assertIn("Текущая версия: 0.11.8", readme)
+        self.assertIn('PANEL_VERSION="0.11.9"', installer)
+        self.assertIn('__version__ = "0.11.9"', package)
+        self.assertIn("Текущая версия: 0.11.9", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -192,7 +192,10 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('id="user-activity-dialog"', html)
         self.assertIn('id="user-auto-refresh-interval"', html)
         self.assertIn('data-user-sort="traffic"', html)
+        self.assertIn('data-user-sort="activity"', html)
         self.assertIn('data-user-sort="label"', html)
+        self.assertIn('lastUserActivity', script)
+        self.assertIn('colspan="9"', script)
         self.assertIn('api("users/bulk-action"', script)
         self.assertIn('openUserActivity', script)
         self.assertIn('restoreActiveTab()', script)

@@ -129,13 +129,13 @@ textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(89,225,
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th { color: #6f8098; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; text-align: left; }
 th, td { padding: 14px 17px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-#tab-users table { min-width: 980px; table-layout: fixed; font-size: 12px; }
+#tab-users table { min-width: 1080px; table-layout: fixed; font-size: 12px; }
 #tab-users th, #tab-users td { padding: 11px 9px; white-space: normal; vertical-align: middle; }
 #tab-users .user-sort { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; font-weight: inherit; letter-spacing: inherit; text-transform: inherit; white-space: nowrap; }
 #tab-users .user-sort:hover, #tab-users .user-sort.active { color: var(--accent); }
 #tab-users .sort-indicator { display: inline-block; min-width: 10px; margin-left: 2px; color: var(--muted); }
-#tab-users th:nth-child(1) { width: 42px; } #tab-users th:nth-child(2) { width: 12%; } #tab-users th:nth-child(3) { width: 23%; } #tab-users th:nth-child(4) { width: 10%; } #tab-users th:nth-child(5) { width: 13%; } #tab-users th:nth-child(6) { width: 12%; } #tab-users th:nth-child(7) { width: 13%; } #tab-users th:nth-child(8) { width: 95px; }
-#tab-users td:nth-child(2), #tab-users td:nth-child(3), #tab-users td:nth-child(6) { overflow-wrap: anywhere; }
+#tab-users th:nth-child(1) { width: 42px; } #tab-users th:nth-child(2) { width: 11%; } #tab-users th:nth-child(3) { width: 20%; } #tab-users th:nth-child(4) { width: 9%; } #tab-users th:nth-child(5) { width: 11%; } #tab-users th:nth-child(6) { width: 11%; } #tab-users th:nth-child(7) { width: 12%; } #tab-users th:nth-child(8) { width: 13%; } #tab-users th:nth-child(9) { width: 95px; }
+#tab-users td:nth-child(2), #tab-users td:nth-child(3), #tab-users td:nth-child(6), #tab-users td:nth-child(8) { overflow-wrap: anywhere; }
 #users-body input[type="checkbox"], #select-all-users { width: 17px; min-height: 17px; margin: 0; accent-color: var(--accent); }
 tbody tr:hover { background: rgba(255,255,255,.018); }
 .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
@@ -285,8 +285,9 @@ dialog::backdrop { background: rgba(1,4,8,.78); backdrop-filter: blur(4px); }
   #tab-users td:nth-child(5)::before { content: "Истекает"; }
   #tab-users td:nth-child(6)::before { content: "Устройство"; }
   #tab-users td:nth-child(7)::before { content: "Трафик"; }
-  #tab-users td:nth-child(8) { display: block; padding-top: 12px; }
-  #tab-users td:nth-child(8)::before { content: ""; }
+  #tab-users td:nth-child(8)::before { content: "Активность"; }
+  #tab-users td:nth-child(9) { display: block; padding-top: 12px; }
+  #tab-users td:nth-child(9)::before { content: ""; }
   #tab-users .user-actions-menu { position: static; }
   #tab-users .user-actions-menu summary { justify-content: center; width: 100%; }
   #tab-users .user-actions-menu[open] .row-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
