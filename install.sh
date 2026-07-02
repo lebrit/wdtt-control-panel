@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.11.10"
+PANEL_VERSION="0.11.11"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,6 +54,16 @@ die() { log "ERROR: $*"; exit 1; }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 random_token() { python3 -c "import secrets; print(secrets.token_urlsafe(${1:-24}))"; }
 random_password() { python3 -c 'import secrets,string; a=string.ascii_letters+string.digits+"._~-"; print("".join(secrets.choice(a) for _ in range(24)))'; }
+
+normalize_wdtt_main_password() {
+  if [[ "${WDTT_MAIN_PASSWORD:-}" =~ ^[[:space:]]*$ ]]; then
+    WDTT_MAIN_PASSWORD=""
+  fi
+}
+
+validate_wdtt_main_password() {
+  [[ "$WDTT_MAIN_PASSWORD" =~ ^[A-Za-z0-9._~-]{12,64}$ ]] || die "WDTT_MAIN_PASSWORD: 12-64 безопасных символа без пробелов и двоеточия"
+}
 
 require_root() {
   [ "$(id -u)" -eq 0 ] || die "Запустите установщик от root: sudo bash install.sh"
@@ -151,9 +161,7 @@ prepare_secrets() {
   PANEL_PATH="${PANEL_PATH%/}/"
   [[ "$PANEL_PATH" =~ ^/[A-Za-z0-9_-]{16,80}/$ ]] || die "PANEL_PATH должен быть случайным путем из 16-80 символов"
   SESSION_SECRET="$(random_token 48)"
-  if [ -n "$WDTT_MAIN_PASSWORD" ]; then
-    [[ "$WDTT_MAIN_PASSWORD" =~ ^[A-Za-z0-9._~-]{12,64}$ ]] || die "WDTT_MAIN_PASSWORD: 12-64 безопасных символа без пробелов и двоеточия"
-  fi
+  normalize_wdtt_main_password
 }
 
 load_panel_config() {
@@ -223,6 +231,7 @@ install_clean_wdtt() {
 
   log "Чистый сервер: сборка неизмененного WDTT из официального репозитория"
   [ -n "$WDTT_MAIN_PASSWORD" ] || WDTT_MAIN_PASSWORD="$(random_password)"
+  validate_wdtt_main_password
   BUILD_DIR="$(mktemp -d)"
   trap 'rm -rf "${BUILD_DIR:-}"' RETURN
 

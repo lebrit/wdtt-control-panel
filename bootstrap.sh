@@ -130,6 +130,29 @@ prompt_value() {
   printf '%s' "${result:-$default_value}"
 }
 
+normalize_wdtt_main_password() {
+  if [[ "${WDTT_MAIN_PASSWORD:-}" =~ ^[[:space:]]*$ ]]; then
+    WDTT_MAIN_PASSWORD=""
+  fi
+}
+
+wdtt_main_password_is_valid() {
+  [ -z "${WDTT_MAIN_PASSWORD:-}" ] || [[ "$WDTT_MAIN_PASSWORD" =~ ^[A-Za-z0-9._~-]{12,64}$ ]]
+}
+
+prompt_wdtt_main_password() {
+  while true; do
+    printf 'Главный пароль WDTT для пустого сервера (Enter = сгенерировать): ' >/dev/tty
+    IFS= read -r -s WDTT_MAIN_PASSWORD </dev/tty || true
+    printf '\n' >/dev/tty
+    normalize_wdtt_main_password
+    if wdtt_main_password_is_valid; then
+      return 0
+    fi
+    echo 'Пароль WDTT: 12-64 символа A-Z, a-z, 0-9, точка, _, ~ или -; без пробелов и двоеточия. Enter = сгенерировать.' >/dev/tty
+  done
+}
+
 prompt_install_options() {
   [ "${NON_INTERACTIVE:-0}" = "1" ] && return 0
   [ -r /dev/tty ] && [ -w /dev/tty ] || return 0
@@ -176,9 +199,7 @@ EOF
     case "${wdtt_mode:-1}" in 1) INSTALL_WDTT="auto" ;; 2) INSTALL_WDTT="no" ;; *) echo 'Неизвестный режим WDTT.' >/dev/tty; exit 2 ;; esac
   fi
   if [ "$INSTALL_WDTT" = "auto" ] && [ -z "${WDTT_MAIN_PASSWORD:-}" ]; then
-    printf 'Главный пароль WDTT для пустого сервера (Enter = сгенерировать): ' >/dev/tty
-    IFS= read -r -s WDTT_MAIN_PASSWORD </dev/tty || true
-    printf '\n' >/dev/tty
+    prompt_wdtt_main_password
   fi
 }
 
@@ -227,6 +248,11 @@ run_action() {
   [ -n "$ACTION" ] || return 0
   if [ "$ACTION" = "install" ]; then
     prompt_install_options
+    normalize_wdtt_main_password
+    wdtt_main_password_is_valid || {
+      echo 'WDTT_MAIN_PASSWORD: 12-64 символа A-Z, a-z, 0-9, точка, _, ~ или -; без пробелов и двоеточия' >&2
+      return 2
+    }
   elif [ "$ACTION" = "change-password" ]; then
     prompt_password_change
   elif [ "$ACTION" = "rollback" ]; then

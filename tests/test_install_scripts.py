@@ -13,9 +13,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.11.10"', installer)
-        self.assertIn('__version__ = "0.11.10"', package)
-        self.assertIn("Текущая версия: 0.11.10", readme)
+        self.assertIn('PANEL_VERSION="0.11.11"', installer)
+        self.assertIn('__version__ = "0.11.11"', package)
+        self.assertIn("Текущая версия: 0.11.11", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -24,6 +24,9 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("/dev/tty", script)
         self.assertIn("--domain", script)
         self.assertIn("--password", script)
+        self.assertIn("prompt_wdtt_main_password()", script)
+        self.assertIn("normalize_wdtt_main_password", script)
+        self.assertIn("wdtt_main_password_is_valid", script)
         self.assertIn("while true", script)
         self.assertIn("github_versions()", script)
         self.assertIn("refs/tags/${ROLLBACK_VERSION}", script)
@@ -68,6 +71,8 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("wdtt-panel-geofiles-update.timer", script)
         self.assertIn("wdtt-panel-backup.timer", script)
         self.assertIn("wdtt-panel-backup", script)
+        self.assertIn("validate_wdtt_main_password()", script)
+        self.assertIn("normalize_wdtt_main_password", script)
 
     def test_installer_recovers_legacy_labels_from_private_backups(self):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
