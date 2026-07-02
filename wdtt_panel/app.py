@@ -219,6 +219,12 @@ class Panel:
                 "logs",
                 "backups",
                 "panel.version",
+                "telegram",
+                "telegram.save",
+                "telegram.test",
+                "vk_hashes",
+                "vk_hashes.import",
+                "vk_hashes.export",
             ],
         }
 
@@ -294,6 +300,21 @@ class Panel:
                 return self.json_response(start_response, 400, {"ok": False, "error": str(exc)})
             self.audit(environ, "vk-hashes.delete", "ok")
             return self.json_response(start_response, 200, {"ok": True, "result": result})
+        if route == "vk-hashes/export":
+            if method != "GET":
+                return self.json_response(start_response, 405, {"error": "Требуется GET"})
+            self.audit(environ, "vk-hashes.export", "ok")
+            return self.json_response(start_response, 200, {"ok": True, "result": self.export_vk_hashes()})
+        if route == "vk-hashes/import":
+            if method != "POST":
+                return self.json_response(start_response, 405, {"error": "Требуется POST"})
+            try:
+                result = self.import_vk_hashes(payload)
+            except ValidationError as exc:
+                self.audit(environ, "vk-hashes.import", "error", str(exc))
+                return self.json_response(start_response, 400, {"ok": False, "error": str(exc)})
+            self.audit(environ, "vk-hashes.import", "ok")
+            return self.json_response(start_response, 200, {"ok": True, "result": result})
         if route == "users/create-auto":
             if method != "POST":
                 return self.json_response(start_response, 405, {"error": "Требуется POST"})
@@ -331,6 +352,9 @@ class Panel:
             "panel/update": "panel.update",
             "certificate/export": "certificate.export",
             "certificate/renew": "certificate.renew",
+            "telegram": "telegram.status",
+            "telegram/save": "telegram.save",
+            "telegram/test": "telegram.test",
             "xray": "xray.status",
             "xray/save": "xray.save",
             "xray/install": "xray.install",
@@ -353,7 +377,7 @@ class Panel:
         action = mapping.get(route)
         if action is None:
             return self.json_response(start_response, 404, {"error": "API endpoint не найден"})
-        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "backups.export", "backups.schedule", "panel.version", "certificate.export", "xray.status", "warp.status", "cascade.status"}:
+        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "backups.export", "backups.schedule", "panel.version", "certificate.export", "telegram.status", "xray.status", "warp.status", "cascade.status"}:
             return self.json_response(start_response, 405, {"error": "Требуется POST"})
         if method == "POST" and action in {"overview", "users.list", "backups.list"}:
             return self.json_response(start_response, 405, {"error": "Требуется GET"})
@@ -462,7 +486,7 @@ class Panel:
     @staticmethod
     def list_vk_hashes() -> dict[str, Any]:
         with closing(sqlite3.connect(STATE_DB)) as db:
-            rows = db.execute("SELECT value FROM vk_hash_library ORDER BY created_at, value").fetchall()
+            rows = db.execute("SELECT value FROM vk_hash_library ORDER BY created_at, rowid").fetchall()
         return {"hashes": [row[0] for row in rows]}
 
     @staticmethod
@@ -497,6 +521,71 @@ class Panel:
             db.execute("DELETE FROM vk_hash_library WHERE value = ?", (value,))
             db.commit()
         return Panel.list_vk_hashes()
+
+    @staticmethod
+    def export_vk_hashes() -> dict[str, Any]:
+        hashes = Panel.list_vk_hashes().get("hashes") or []
+        created = int(time.time())
+        content = json.dumps(
+            {
+                "format": "wdtt-panel-vk-hash-library-v1",
+                "created_at": created,
+                "hashes": hashes,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ) + "\n"
+        return {"name": f"wdtt-vk-hashes-{created}.json", "content": content, "count": len(hashes)}
+
+    @staticmethod
+    def parse_vk_hash_import(content: str) -> list[str]:
+        if not content or len(content.encode("utf-8")) > 1024 * 1024:
+            raise ValidationError("Файл библиотеки VK-хешей пустой или больше 1 МБ")
+        raw_values: list[Any]
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            raw = parsed.get("hashes") or parsed.get("vk_hashes") or parsed.get("values")
+            raw_values = raw if isinstance(raw, list) else [raw]
+        elif isinstance(parsed, list):
+            raw_values = parsed
+        else:
+            raw_values = [content]
+        values: list[str] = []
+        for item in raw_values:
+            if item is None:
+                continue
+            for part in str(item).replace(",", " ").split():
+                values.append(normalize_hash(part))
+        values = list(dict.fromkeys(values))
+        if not values:
+            raise ValidationError("В файле нет VK-хешей")
+        if len(values) > 500:
+            raise ValidationError("В библиотеке может быть не больше 500 VK-хешей")
+        return values
+
+    @staticmethod
+    def import_vk_hashes(payload: dict[str, Any]) -> dict[str, Any]:
+        values = Panel.parse_vk_hash_import(str(payload.get("content") or ""))
+        with closing(sqlite3.connect(STATE_DB)) as db:
+            existing = db.execute("SELECT COUNT(*) FROM vk_hash_library").fetchone()[0]
+            new_values = [
+                value for value in values
+                if db.execute("SELECT 1 FROM vk_hash_library WHERE value = ?", (value,)).fetchone() is None
+            ]
+            if existing + len(new_values) > 500:
+                raise ValidationError("В библиотеке может быть не больше 500 VK-хешей")
+            now = int(time.time())
+            db.executemany(
+                "INSERT OR IGNORE INTO vk_hash_library(value, created_at) VALUES(?, ?)",
+                [(value, now) for value in values],
+            )
+            db.commit()
+        result = Panel.list_vk_hashes()
+        result["imported"] = len(new_values)
+        return result
 
     def create_auto_user(self, payload: dict[str, Any]) -> dict[str, Any]:
         label = normalize_user_label(str(payload.get("label") or ""))

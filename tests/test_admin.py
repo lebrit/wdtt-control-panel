@@ -1,5 +1,6 @@
 import json
 import base64
+import subprocess
 import tempfile
 import time
 import unittest
@@ -46,6 +47,7 @@ class AdminDatabaseTests(unittest.TestCase):
             mock.patch.object(admin, "XRAY_CASCADE_SETTINGS", self.xray_cascade_settings),
             mock.patch.object(admin, "XRAY_ACCESS_LOG", self.xray_access_log),
             mock.patch.object(admin, "XRAY_ERROR_LOG", self.xray_error_log),
+            mock.patch.object(admin, "WDTT_UNIT_FILE", root / "wdtt.service"),
             mock.patch.object(admin, "SKIP_SYSTEMD", True),
         ]
         for patcher in self.patchers:
@@ -292,6 +294,38 @@ class AdminDatabaseTests(unittest.TestCase):
         user = admin.list_users()["users"][0]
         self.assertEqual(user["last_upload_at"], 1_700_000_001)
         self.assertEqual(user["last_download_at"], 1_700_000_002)
+
+    def test_telegram_settings_update_database_and_wdtt_unit(self):
+        admin.WDTT_UNIT_FILE.write_text(
+            "[Service]\nExecStart=/usr/local/bin/wdtt-server -listen 0.0.0.0:56000 -wg-port 56001 -config-dir /etc/wdtt -password MainPassword123\n",
+            encoding="utf-8",
+        )
+
+        def fake_run(command, timeout=20, check=False, cwd=None, env=None):
+            code = 1 if command[:3] == ["systemctl", "is-active", "--quiet"] else 0
+            return subprocess.CompletedProcess(command, code, "", "")
+
+        with mock.patch.object(admin, "SKIP_SYSTEMD", False), mock.patch.object(admin, "run", side_effect=fake_run):
+            result = admin.configure_telegram(
+                {
+                    "enabled": True,
+                    "admin_id": "123456789",
+                    "bot_token": "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_test",
+                }
+            )
+
+        data = admin.load_database()
+        self.assertTrue(result["enabled"])
+        self.assertEqual(data["admin_id"], "123456789")
+        self.assertEqual(data["bot_token"], "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_test")
+        unit = admin.WDTT_UNIT_FILE.read_text(encoding="utf-8")
+        self.assertIn("-admin 123456789", unit)
+        self.assertIn("-bot-token 123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_test", unit)
+
+        with mock.patch.object(admin, "SKIP_SYSTEMD", False), mock.patch.object(admin, "run", side_effect=fake_run):
+            disabled = admin.configure_telegram({"enabled": False})
+        self.assertFalse(disabled["enabled"])
+        self.assertNotIn("-bot-token", admin.WDTT_UNIT_FILE.read_text(encoding="utf-8"))
 
     def test_bulk_user_actions_apply_in_one_database_update(self):
         for password in ("FirstUser123", "SecondUser12"):

@@ -6,7 +6,7 @@
   const CSRF = meta("csrf-token");
   const PUBLIC_HOST = meta("public-host");
   const PANEL_VERSION = meta("panel-version");
-  const state = { overview: null, users: [], selectedUsers: new Set(), userSort: { key: "", direction: "asc" }, logs: [], logsMeta: null, editing: null, userRefreshTimer: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null, vkHashes: [] };
+  const state = { overview: null, users: [], selectedUsers: new Set(), userSort: { key: "", direction: "asc" }, logs: [], logsMeta: null, editing: null, userRefreshTimer: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null, vkHashes: [], telegram: null };
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -49,7 +49,7 @@
     }
     if (name === "logs") loadLogs();
     if (name === "xray") Promise.all([loadXray(), loadWarp(), loadCascadeRouting()]);
-    if (name === "system") { loadBackups(); loadBackupSchedule(); loadAudit(); loadPanelVersion(); }
+    if (name === "system") { loadBackups(); loadBackupSchedule(); loadAudit(); loadPanelVersion(); loadTelegramSettings(); }
   }
 
   function restoreActiveTab() {
@@ -176,6 +176,77 @@
       await loadVkHashes();
       toast("Хеш удалён из библиотеки");
     } catch (error) { toast(error.message, true); }
+  }
+
+  async function exportVkHashes() {
+    try {
+      const result = await api("vk-hashes/export");
+      downloadText(result.name, result.content);
+      toast(`Экспортировано VK-хешей: ${result.count || 0}`);
+    } catch (error) { toast(error.message, true); }
+  }
+
+  async function importVkHashes(file) {
+    if (!file) return;
+    try {
+      const result = await api("vk-hashes/import", { method: "POST", body: { name: file.name, content: await file.text() } });
+      state.vkHashes = result.hashes || [];
+      renderVkHashPickers();
+      renderVkHashLibrary();
+      toast(`Импортировано новых VK-хешей: ${result.imported || 0}`);
+    } catch (error) { toast(error.message, true); }
+    finally { $("#vk-hashes-upload").value = ""; }
+  }
+
+  function renderTelegramSettings() {
+    const settings = state.telegram || {};
+    const enabled = Boolean(settings.enabled);
+    $("#telegram-enabled").checked = enabled;
+    $("#telegram-admin-id").value = settings.admin_id || "";
+    $("#telegram-bot-token").value = "";
+    $("#telegram-bot-token").placeholder = settings.bot_token_set ? `Сохранён: ${settings.bot_token_hint}` : "123456:ABC...";
+    $("#telegram-status").className = `badge ${enabled ? "ok" : "warn"}`;
+    $("#telegram-status").textContent = enabled ? "включён" : "выключен";
+    $("#telegram-info").textContent = enabled
+      ? `Бот привязан к Admin ID ${settings.admin_id}. Пустой token при сохранении оставит текущий ключ.`
+      : "Бот выключен. Для включения укажите Bot Token и Admin ID.";
+  }
+
+  async function loadTelegramSettings() {
+    try {
+      state.telegram = await api("telegram");
+      renderTelegramSettings();
+    } catch (error) {
+      $("#telegram-info").textContent = error.message;
+      $("#telegram-status").className = "badge bad";
+      $("#telegram-status").textContent = "ошибка";
+    }
+  }
+
+  async function saveTelegramSettings() {
+    const button = $("#save-telegram");
+    setBusy(button, true);
+    try {
+      state.telegram = await api("telegram/save", { method: "POST", body: {
+        enabled: $("#telegram-enabled").checked,
+        admin_id: $("#telegram-admin-id").value.trim(),
+        bot_token: $("#telegram-bot-token").value.trim(),
+      }});
+      renderTelegramSettings();
+      toast("Настройки Telegram сохранены");
+      await loadOverview();
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function testTelegramSettings() {
+    const button = $("#test-telegram");
+    setBusy(button, true);
+    try {
+      await api("telegram/test", { method: "POST", body: { message: `WDTT Control Panel ${PANEL_VERSION}: тест Telegram` } });
+      toast("Тестовое сообщение отправлено в Telegram");
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
   }
 
   function healthRow(label, ok, value) {
@@ -1158,6 +1229,9 @@
     $("#auto-user-form").addEventListener("submit", saveAutoUser);
     $("#bulk-user-form").addEventListener("submit", saveBulkUsers);
     $("#vk-hashes-form").addEventListener("submit", saveVkHashes);
+    $("#export-vk-hashes").addEventListener("click", exportVkHashes);
+    $("#import-vk-hashes").addEventListener("click", () => $("#vk-hashes-upload").click());
+    $("#vk-hashes-upload").addEventListener("change", (event) => importVkHashes(event.target.files[0]));
     $("#edit-saved-hash").addEventListener("change", () => appendSavedHash("#edit-saved-hash", "#edit-hashes"));
     $("#bulk-saved-hash").addEventListener("change", () => appendSavedHash("#bulk-saved-hash", "#bulk-hashes"));
     $("#vk-hashes-list").addEventListener("click", (event) => {
@@ -1214,6 +1288,8 @@
     $("#create-full-backup").addEventListener("click", () => createBackup("full"));
     $("#create-users-backup").addEventListener("click", () => createBackup("users"));
     $("#save-backup-schedule").addEventListener("click", saveBackupSchedule);
+    $("#save-telegram").addEventListener("click", saveTelegramSettings);
+    $("#test-telegram").addEventListener("click", testTelegramSettings);
     $("#update-panel").addEventListener("click", updatePanel);
     $("#renew-certificate").addEventListener("click", renewCertificate);
     $("#download-certificate").addEventListener("click", downloadCertificate);

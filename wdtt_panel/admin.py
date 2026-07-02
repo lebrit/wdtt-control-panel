@@ -7,6 +7,7 @@ import ipaddress
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import ssl
@@ -50,6 +51,7 @@ BACKUP_SERVICE_NAME = "wdtt-panel-backup.service"
 BACKUP_TIMER_FILE = Path(os.environ.get("WDTT_BACKUP_TIMER_FILE", f"/etc/systemd/system/{BACKUP_TIMER_NAME}"))
 BACKUP_SERVICE_FILE = Path(os.environ.get("WDTT_BACKUP_SERVICE_FILE", f"/etc/systemd/system/{BACKUP_SERVICE_NAME}"))
 BACKUP_RUNNER = Path(os.environ.get("WDTT_BACKUP_RUNNER", "/usr/local/sbin/wdtt-panel-backup"))
+WDTT_UNIT_FILE = Path(os.environ.get("WDTT_UNIT_FILE", "/etc/systemd/system/wdtt.service"))
 LOCK_FILE = Path(os.environ.get("WDTT_LOCK_FILE", "/var/lib/wdtt-panel-private/admin.lock"))
 SERVICE = os.environ.get("WDTT_SERVICE", "wdtt.service")
 SKIP_SYSTEMD = os.environ.get("WDTT_SKIP_SYSTEMD") == "1"
@@ -160,6 +162,7 @@ BUILTIN_RULESETS = {
         "geosite-category-ai-!cn.srs"
     ),
 }
+VK_HASH_LIBRARY_FORMAT = "wdtt-panel-vk-hash-library-v1"
 
 
 class AdminError(RuntimeError):
@@ -203,6 +206,146 @@ def service_action(action: str) -> dict[str, Any]:
     if result.returncode != 0:
         raise AdminError(result.stderr.strip() or f"Не удалось выполнить systemctl {action}")
     return {"action": action, "active": service_active()}
+
+
+def normalize_telegram_admin_id(value: str) -> str:
+    value = (value or "").strip()
+    if value and not re.fullmatch(r"-?[0-9]{1,20}", value):
+        raise ValidationError("Telegram Admin ID должен быть числовым chat_id")
+    return value
+
+
+def normalize_telegram_bot_token(value: str) -> str:
+    value = (value or "").strip()
+    if value and not re.fullmatch(r"[0-9]{5,20}:[A-Za-z0-9_-]{20,200}", value):
+        raise ValidationError("Telegram Bot Token должен быть в формате 123456:ABC...")
+    return value
+
+
+def mask_telegram_bot_token(value: str) -> str:
+    value = str(value or "")
+    if not value:
+        return ""
+    if len(value) <= 12:
+        return "***"
+    return f"{value[:6]}...{value[-4:]}"
+
+
+def systemd_exec_token(value: str) -> str:
+    if re.fullmatch(r"[^\s\"'\\]+", value):
+        return value
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def set_wdtt_service_telegram(admin_id: str, bot_token: str) -> None:
+    if SKIP_SYSTEMD:
+        return
+    if not WDTT_UNIT_FILE.is_file():
+        raise AdminError(f"Не найден {WDTT_UNIT_FILE}; настройте Telegram в wdtt.service вручную")
+    lines = WDTT_UNIT_FILE.read_text(encoding="utf-8").splitlines()
+    changed = False
+    found = False
+    next_lines: list[str] = []
+    for line in lines:
+        if not line.startswith("ExecStart="):
+            next_lines.append(line)
+            continue
+        found = True
+        command = line.split("=", 1)[1]
+        try:
+            tokens = shlex.split(command)
+        except ValueError as exc:
+            raise AdminError(f"Не удалось разобрать ExecStart в {WDTT_UNIT_FILE}: {exc}") from exc
+        clean: list[str] = []
+        skip_next = False
+        for token in tokens:
+            if skip_next:
+                skip_next = False
+                continue
+            if token in {"-admin", "--admin", "-bot-token", "--bot-token"}:
+                skip_next = True
+                continue
+            if token.startswith(("-admin=", "--admin=", "-bot-token=", "--bot-token=")):
+                continue
+            clean.append(token)
+        if admin_id and bot_token:
+            clean.extend(["-admin", admin_id, "-bot-token", bot_token])
+        next_line = "ExecStart=" + " ".join(systemd_exec_token(token) for token in clean)
+        changed = changed or next_line != line
+        next_lines.append(next_line)
+    if not found:
+        raise AdminError(f"В {WDTT_UNIT_FILE} не найден ExecStart")
+    if changed:
+        write_systemd_unit(WDTT_UNIT_FILE, "\n".join(next_lines) + "\n")
+        reloaded = run(["systemctl", "daemon-reload"], timeout=45)
+        if reloaded.returncode != 0:
+            raise AdminError(reloaded.stderr.strip() or "Не удалось обновить systemd после настройки Telegram")
+
+
+def telegram_status(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    data = load_database()
+    admin_id = str(data.get("admin_id") or "")
+    bot_token = str(data.get("bot_token") or "")
+    return {
+        "enabled": bool(admin_id and bot_token),
+        "admin_id": admin_id,
+        "bot_token_set": bool(bot_token),
+        "bot_token_hint": mask_telegram_bot_token(bot_token),
+        "service_active": service_active(),
+    }
+
+
+def configure_telegram(payload: dict[str, Any]) -> dict[str, Any]:
+    current = load_database()
+    enabled = bool(payload.get("enabled"))
+    admin_id = ""
+    bot_token = ""
+    if enabled:
+        admin_id = normalize_telegram_admin_id(str(payload.get("admin_id") or ""))
+        bot_token = normalize_telegram_bot_token(str(payload.get("bot_token") or current.get("bot_token") or ""))
+        if not admin_id or not bot_token:
+            raise ValidationError("Для включения Telegram укажите Admin ID и Bot Token")
+    was_active = service_active()
+    if was_active:
+        service_action("stop")
+    try:
+        data = load_database()
+        create_backup("telegram-settings")
+        data["admin_id"] = admin_id
+        data["bot_token"] = bot_token
+        save_database(data)
+        set_wdtt_service_telegram(admin_id, bot_token)
+    except Exception:
+        if was_active:
+            service_action("start")
+        raise
+    if was_active:
+        service_action("start")
+    return telegram_status({})
+
+
+def telegram_test(payload: dict[str, Any]) -> dict[str, Any]:
+    data = load_database()
+    admin_id = normalize_telegram_admin_id(str(data.get("admin_id") or ""))
+    bot_token = normalize_telegram_bot_token(str(data.get("bot_token") or ""))
+    if not admin_id or not bot_token:
+        raise ValidationError("Сначала сохраните Telegram Bot Token и Admin ID")
+    message = str(payload.get("message") or "WDTT Control Panel: Telegram bot connected").strip()[:500]
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{bot_token}/sendMessage",
+        data=json.dumps({"chat_id": admin_id, "text": message}, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        raise AdminError(f"Не удалось отправить тестовое сообщение Telegram: {exc}") from exc
+    if not isinstance(result, dict) or not result.get("ok"):
+        description = result.get("description") if isinstance(result, dict) else ""
+        raise AdminError(f"Telegram вернул ошибку: {description or 'unknown'}")
+    return {"sent": True, "admin_id": admin_id}
 
 
 def empty_database() -> dict[str, Any]:
@@ -3167,6 +3310,9 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "panel.update": start_panel_update,
     "certificate.export": export_certificate,
     "certificate.renew": schedule_certificate_renew,
+    "telegram.status": lambda payload: telegram_status(payload),
+    "telegram.save": configure_telegram,
+    "telegram.test": telegram_test,
     "xray.status": xray_status,
     "xray.save": xray_save,
     "xray.install": schedule_xray_runtime,

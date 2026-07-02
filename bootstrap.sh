@@ -24,6 +24,8 @@ Install options:
   --path VALUE        Secret URL path (empty = generate)
   --wdtt MODE         WDTT mode: auto or no
   --wdtt-password PWD Main WDTT password for a clean server
+  --telegram-token T  Telegram Bot Token for WDTT bot
+  --telegram-admin-id ID Telegram Admin chat ID for WDTT bot
   --non-interactive   Do not ask questions; generate missing values
 
 Change-password options:
@@ -153,6 +155,38 @@ prompt_wdtt_main_password() {
   done
 }
 
+normalize_telegram_settings() {
+  if [[ "${WDTT_TELEGRAM_BOT_TOKEN:-}" =~ ^[[:space:]]*$ ]]; then
+    WDTT_TELEGRAM_BOT_TOKEN=""
+  fi
+  if [[ "${WDTT_TELEGRAM_ADMIN_ID:-}" =~ ^[[:space:]]*$ ]]; then
+    WDTT_TELEGRAM_ADMIN_ID=""
+  fi
+}
+
+telegram_settings_are_valid() {
+  normalize_telegram_settings
+  [ -z "${WDTT_TELEGRAM_BOT_TOKEN:-}${WDTT_TELEGRAM_ADMIN_ID:-}" ] && return 0
+  [[ "${WDTT_TELEGRAM_ADMIN_ID:-}" =~ ^-?[0-9]{1,20}$ ]] && [[ "${WDTT_TELEGRAM_BOT_TOKEN:-}" =~ ^[0-9]{5,20}:[A-Za-z0-9_-]{20,200}$ ]]
+}
+
+prompt_telegram_settings() {
+  normalize_telegram_settings
+  if [ -z "${WDTT_TELEGRAM_BOT_TOKEN:-}" ] && [ -z "${WDTT_TELEGRAM_ADMIN_ID:-}" ]; then
+    printf 'Telegram Bot Token для WDTT-бота (Enter = не настраивать): ' >/dev/tty
+    IFS= read -r -s WDTT_TELEGRAM_BOT_TOKEN </dev/tty || true
+    printf '\n' >/dev/tty
+  fi
+  normalize_telegram_settings
+  if [ -n "${WDTT_TELEGRAM_BOT_TOKEN:-}" ] && [ -z "${WDTT_TELEGRAM_ADMIN_ID:-}" ]; then
+    WDTT_TELEGRAM_ADMIN_ID="$(prompt_value 'Telegram Admin ID')"
+  elif [ -n "${WDTT_TELEGRAM_ADMIN_ID:-}" ] && [ -z "${WDTT_TELEGRAM_BOT_TOKEN:-}" ]; then
+    printf 'Telegram Bot Token для WDTT-бота: ' >/dev/tty
+    IFS= read -r -s WDTT_TELEGRAM_BOT_TOKEN </dev/tty || true
+    printf '\n' >/dev/tty
+  fi
+}
+
 prompt_install_options() {
   [ "${NON_INTERACTIVE:-0}" = "1" ] && return 0
   [ -r /dev/tty ] && [ -w /dev/tty ] || return 0
@@ -201,6 +235,7 @@ EOF
   if [ "$INSTALL_WDTT" = "auto" ] && [ -z "${WDTT_MAIN_PASSWORD:-}" ]; then
     prompt_wdtt_main_password
   fi
+  prompt_telegram_settings
 }
 
 while [ "$#" -gt 0 ]; do
@@ -215,6 +250,8 @@ while [ "$#" -gt 0 ]; do
     --path) [ "$#" -ge 2 ] || { usage; exit 2; }; PANEL_PATH="$2"; shift 2 ;;
     --wdtt) [ "$#" -ge 2 ] || { usage; exit 2; }; INSTALL_WDTT="$2"; shift 2 ;;
     --wdtt-password) [ "$#" -ge 2 ] || { usage; exit 2; }; WDTT_MAIN_PASSWORD="$2"; shift 2 ;;
+    --telegram-token) [ "$#" -ge 2 ] || { usage; exit 2; }; WDTT_TELEGRAM_BOT_TOKEN="$2"; shift 2 ;;
+    --telegram-admin-id) [ "$#" -ge 2 ] || { usage; exit 2; }; WDTT_TELEGRAM_ADMIN_ID="$2"; shift 2 ;;
     --version) [ "$#" -ge 2 ] || { usage; exit 2; }; ROLLBACK_VERSION="$2"; shift 2 ;;
     --non-interactive) NON_INTERACTIVE=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -253,6 +290,10 @@ run_action() {
       echo 'WDTT_MAIN_PASSWORD: 12-64 символа A-Z, a-z, 0-9, точка, _, ~ или -; без пробелов и двоеточия' >&2
       return 2
     }
+    telegram_settings_are_valid || {
+      echo 'Telegram: укажите оба значения, Bot Token в формате 123456:ABC... и числовой Admin ID' >&2
+      return 2
+    }
   elif [ "$ACTION" = "change-password" ]; then
     prompt_password_change
   elif [ "$ACTION" = "rollback" ]; then
@@ -268,6 +309,8 @@ run_action() {
   export PANEL_PATH="${PANEL_PATH:-}"
   export INSTALL_WDTT="${INSTALL_WDTT:-auto}"
   export WDTT_MAIN_PASSWORD="${WDTT_MAIN_PASSWORD:-}"
+  export WDTT_TELEGRAM_BOT_TOKEN="${WDTT_TELEGRAM_BOT_TOKEN:-}"
+  export WDTT_TELEGRAM_ADMIN_ID="${WDTT_TELEGRAM_ADMIN_ID:-}"
 
   cleanup
   WORK_DIR="$(mktemp -d)"

@@ -161,13 +161,26 @@ class AppSmokeTests(unittest.TestCase):
         self.assertTrue(headers["status"].startswith("200"))
         self.assertEqual(json.loads(body)["result"]["hashes"], ["hash_two"])
 
+        headers, body = self.request("/private-panel-path/api/vk-hashes/export", cookie=cookie)
+        self.assertTrue(headers["status"].startswith("200"))
+        exported = json.loads(body)["result"]
+        self.assertEqual(exported["count"], 1)
+        self.assertIn("wdtt-panel-vk-hash-library-v1", exported["content"])
+
+        payload = json.dumps({"content": '{"format":"wdtt-panel-vk-hash-library-v1","hashes":["hash_two","hash_three"]}'}).encode()
+        headers, body = self.request("/private-panel-path/api/vk-hashes/import", "POST", payload, cookie, csrf)
+        self.assertTrue(headers["status"].startswith("200"))
+        imported = json.loads(body)["result"]
+        self.assertEqual(imported["imported"], 1)
+        self.assertEqual(imported["hashes"], ["hash_two", "hash_three"])
+
         payload = json.dumps(
             {"count": 2, "vk_hash": "manual_one, manual_two", "ports": "56000,56001,9000"}
         ).encode()
         headers, _ = self.request("/private-panel-path/api/users/create-bulk", "POST", payload, cookie, csrf)
         self.assertTrue(headers["status"].startswith("200"))
         headers, body = self.request("/private-panel-path/api/vk-hashes", cookie=cookie)
-        self.assertEqual(json.loads(body)["result"]["hashes"], ["hash_two", "manual_one", "manual_two"])
+        self.assertEqual(json.loads(body)["result"]["hashes"], ["hash_two", "hash_three", "manual_one", "manual_two"])
 
         payload = json.dumps({"label": "Авто клиент"}).encode()
         with mock.patch.object(app.secrets, "choice", return_value="manual_two"):
@@ -177,6 +190,27 @@ class AppSmokeTests(unittest.TestCase):
         self.assertEqual(created["label"], "Авто клиент")
         self.assertEqual(created["vk_hash"], "manual_two")
         self.assertEqual(created["password"], "AutoDemoUser123")
+
+    def test_telegram_settings_routes_call_root_helper(self):
+        form = b"username=admin&password=Panel-password-12345"
+        headers, _ = self.request("/private-panel-path/login", "POST", form)
+        cookie = headers["headers"]["Set-Cookie"].split(";", 1)[0]
+        token = cookie.split("=", 1)[1]
+        session = read_session(token, "test-session-secret")
+        csrf = csrf_token(session["n"], "test-session-secret")
+
+        headers, body = self.request("/private-panel-path/api/telegram", cookie=cookie)
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertTrue(json.loads(body)["result"]["enabled"])
+
+        payload = json.dumps({"enabled": True, "admin_id": "123456789", "bot_token": "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_test"}).encode()
+        headers, body = self.request("/private-panel-path/api/telegram/save", "POST", payload, cookie, csrf)
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertEqual(json.loads(body)["result"]["admin_id"], "123456789")
+
+        headers, body = self.request("/private-panel-path/api/telegram/test", "POST", b"{}", cookie, csrf)
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertTrue(json.loads(body)["result"]["sent"])
 
 
 if __name__ == "__main__":

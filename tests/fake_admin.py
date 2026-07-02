@@ -116,6 +116,13 @@ elif action == "panel.version":
     result = {"current": "0.5.0", "latest": "0.5.0", "update_available": False}
 elif action == "panel.update":
     result = {"scheduled": True, "state": "test"}
+elif action == "telegram.status":
+    result = {"enabled": True, "admin_id": "123456789", "bot_token_set": True, "bot_token_hint": "123456...test", "service_active": True}
+elif action == "telegram.save":
+    payload = request.get("payload") or {}
+    result = {"enabled": bool(payload.get("enabled")), "admin_id": str(payload.get("admin_id") or ""), "bot_token_set": bool(payload.get("bot_token")), "bot_token_hint": "123456...test", "service_active": True}
+elif action == "telegram.test":
+    result = {"sent": True, "admin_id": "123456789"}
 elif action == "xray.status":
     result = {"settings": {"enabled": False, "mode": "managed", "log_level": "warning", "inbounds": [], "outbounds": [], "routing_rules": [], "geofiles": []}, "active": False, "installed": False, "version": "", "config_exists": False, "logs": [], "geofiles": []}
 elif action == "warp.status":

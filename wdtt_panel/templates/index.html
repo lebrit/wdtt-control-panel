@@ -135,6 +135,16 @@
           <div class="button-row"><button data-service="start" class="primary">Запустить</button><button data-service="restart" class="secondary">Перезапустить</button><button data-service="stop" class="danger">Остановить</button></div>
         </article>
         <article class="panel-card">
+          <div class="section-head"><div><p class="eyebrow">TELEGRAM BOT</p><h2>Бот WDTT</h2></div><span id="telegram-status" class="badge warn">загрузка</span></div>
+          <div class="form-grid compact-grid">
+            <label class="checkbox wide"><input id="telegram-enabled" type="checkbox"> Включить Telegram-бота</label>
+            <label>Admin ID<input id="telegram-admin-id" inputmode="numeric" placeholder="123456789"></label>
+            <label class="wide">Bot Token<input id="telegram-bot-token" autocomplete="off" placeholder="123456:ABC..."></label>
+          </div>
+          <p id="telegram-info" class="muted">Настройки ещё не загружены.</p>
+          <div class="button-row"><button id="save-telegram" class="primary">Сохранить Telegram</button><button id="test-telegram" class="secondary">Отправить тест</button></div>
+        </article>
+        <article class="panel-card">
           <p class="eyebrow">TLS CERTIFICATE</p><h2>Сертификат панели</h2><div id="certificate-info" class="detail-list"></div><div class="button-row"><button id="renew-certificate" class="secondary">Проверить/обновить</button><button id="download-certificate" class="secondary">Скачать сертификат</button></div>
         </article>
         <article class="panel-card wide">
@@ -245,8 +255,9 @@
       <div class="dialog-head"><div><p class="eyebrow">VK HASH LIBRARY</p><h2>Библиотека VK-хешей</h2></div><button value="cancel" class="icon-button">&#215;</button></div>
       <p class="muted">Вставьте один или несколько VK-хешей или ссылок на вход. Выбирать их можно будет в формах создания; ручной ввод там также останется.</p>
       <label>Новые VK-хеши<input id="new-vk-hashes" placeholder="Хеши или ссылки через запятую, пробел или с новой строки"></label>
+      <input id="vk-hashes-upload" type="file" accept=".json,.txt" hidden>
       <div id="vk-hashes-list" class="hash-library-list"></div>
-      <div class="dialog-actions"><button value="cancel" class="secondary">Закрыть</button><button id="save-vk-hashes" value="default" class="primary">Добавить в библиотеку</button></div>
+      <div class="dialog-actions"><button value="cancel" class="secondary">Закрыть</button><button type="button" id="import-vk-hashes" class="secondary">Импорт</button><button type="button" id="export-vk-hashes" class="secondary">Экспорт</button><button id="save-vk-hashes" value="default" class="primary">Добавить в библиотеку</button></div>
     </form>
   </dialog>
 

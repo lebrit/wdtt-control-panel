@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.11.11"
+PANEL_VERSION="0.11.12"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,6 +42,8 @@ PANEL_LISTEN_PORT="${PANEL_LISTEN_PORT:-8787}"
 PANEL_EMAIL="${PANEL_EMAIL:-}"
 INSTALL_WDTT="${INSTALL_WDTT:-auto}"
 WDTT_MAIN_PASSWORD="${WDTT_MAIN_PASSWORD:-}"
+WDTT_TELEGRAM_BOT_TOKEN="${WDTT_TELEGRAM_BOT_TOKEN:-}"
+WDTT_TELEGRAM_ADMIN_ID="${WDTT_TELEGRAM_ADMIN_ID:-}"
 WDTT_REF="${WDTT_REF:-main}"
 GO_VERSION="${GO_VERSION:-1.25.0}"
 WDTT_SERVICE="wdtt.service"
@@ -63,6 +65,22 @@ normalize_wdtt_main_password() {
 
 validate_wdtt_main_password() {
   [[ "$WDTT_MAIN_PASSWORD" =~ ^[A-Za-z0-9._~-]{12,64}$ ]] || die "WDTT_MAIN_PASSWORD: 12-64 безопасных символа без пробелов и двоеточия"
+}
+
+normalize_telegram_settings() {
+  if [[ "${WDTT_TELEGRAM_BOT_TOKEN:-}" =~ ^[[:space:]]*$ ]]; then
+    WDTT_TELEGRAM_BOT_TOKEN=""
+  fi
+  if [[ "${WDTT_TELEGRAM_ADMIN_ID:-}" =~ ^[[:space:]]*$ ]]; then
+    WDTT_TELEGRAM_ADMIN_ID=""
+  fi
+}
+
+validate_telegram_settings() {
+  normalize_telegram_settings
+  [ -z "$WDTT_TELEGRAM_BOT_TOKEN$WDTT_TELEGRAM_ADMIN_ID" ] && return 0
+  [[ "$WDTT_TELEGRAM_ADMIN_ID" =~ ^-?[0-9]{1,20}$ ]] || die "WDTT_TELEGRAM_ADMIN_ID должен быть числовым chat_id"
+  [[ "$WDTT_TELEGRAM_BOT_TOKEN" =~ ^[0-9]{5,20}:[A-Za-z0-9_-]{20,200}$ ]] || die "WDTT_TELEGRAM_BOT_TOKEN должен быть в формате 123456:ABC..."
 }
 
 require_root() {
@@ -162,6 +180,7 @@ prepare_secrets() {
   [[ "$PANEL_PATH" =~ ^/[A-Za-z0-9_-]{16,80}/$ ]] || die "PANEL_PATH должен быть случайным путем из 16-80 символов"
   SESSION_SECRET="$(random_token 48)"
   normalize_wdtt_main_password
+  validate_telegram_settings
 }
 
 load_panel_config() {
@@ -221,6 +240,102 @@ except (OSError, ValueError, AttributeError):
 PY
 }
 
+build_wdtt_args() {
+  local args="-password $WDTT_MAIN_PASSWORD"
+  if [ -n "$WDTT_TELEGRAM_BOT_TOKEN" ]; then
+    args="$args -admin $WDTT_TELEGRAM_ADMIN_ID -bot-token $WDTT_TELEGRAM_BOT_TOKEN"
+  fi
+  printf '%s' "$args"
+}
+
+apply_telegram_settings() {
+  [ -n "$WDTT_TELEGRAM_BOT_TOKEN$WDTT_TELEGRAM_ADMIN_ID" ] || return 0
+  validate_telegram_settings
+  [ -f /etc/wdtt/passwords.json ] || die "Не найдена база WDTT /etc/wdtt/passwords.json для настройки Telegram"
+  [ -f "/etc/systemd/system/$WDTT_SERVICE" ] || die "Не найден /etc/systemd/system/$WDTT_SERVICE для сохранения Telegram-настроек"
+  python3 - /etc/wdtt/passwords.json "/etc/systemd/system/$WDTT_SERVICE" "$WDTT_TELEGRAM_ADMIN_ID" "$WDTT_TELEGRAM_BOT_TOKEN" <<'PY'
+import json
+import os
+import re
+import shlex
+import sys
+import tempfile
+from pathlib import Path
+
+db_path = Path(sys.argv[1])
+unit_path = Path(sys.argv[2])
+admin_id = sys.argv[3]
+bot_token = sys.argv[4]
+
+data = json.loads(db_path.read_text(encoding="utf-8")) if db_path.exists() else {}
+if not isinstance(data, dict):
+    raise SystemExit("passwords.json is not an object")
+data.setdefault("passwords", {})
+data.setdefault("devices", {})
+data["admin_id"] = admin_id
+data["bot_token"] = bot_token
+fd, tmp = tempfile.mkstemp(prefix="passwords.", suffix=".tmp", dir=db_path.parent)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, db_path)
+finally:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+
+def quote(token: str) -> str:
+    if re.fullmatch(r"[^\s\"'\\]+", token):
+        return token
+    return '"' + token.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+lines = unit_path.read_text(encoding="utf-8").splitlines()
+next_lines = []
+found = False
+for line in lines:
+    if not line.startswith("ExecStart="):
+        next_lines.append(line)
+        continue
+    found = True
+    tokens = shlex.split(line.split("=", 1)[1])
+    clean = []
+    skip = False
+    for token in tokens:
+        if skip:
+            skip = False
+            continue
+        if token in {"-admin", "--admin", "-bot-token", "--bot-token"}:
+            skip = True
+            continue
+        if token.startswith(("-admin=", "--admin=", "-bot-token=", "--bot-token=")):
+            continue
+        clean.append(token)
+    clean.extend(["-admin", admin_id, "-bot-token", bot_token])
+    next_lines.append("ExecStart=" + " ".join(quote(token) for token in clean))
+if not found:
+    raise SystemExit("ExecStart not found")
+fd, tmp = tempfile.mkstemp(prefix=f"{unit_path.name}.", suffix=".tmp", dir=unit_path.parent)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(next_lines) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, unit_path)
+finally:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+PY
+  systemctl daemon-reload
+  if systemctl is-active --quiet "$WDTT_SERVICE"; then
+    systemctl restart "$WDTT_SERVICE" >>"$LOG_FILE" 2>&1 || die "Не удалось перезапустить WDTT после настройки Telegram"
+  fi
+  log "Telegram-бот WDTT настроен"
+}
+
 install_clean_wdtt() {
   case "$INSTALL_WDTT" in
     0|false|no) log "Установка WDTT отключена"; return ;;
@@ -259,7 +374,7 @@ install_clean_wdtt() {
     PATH="$BUILD_DIR/go/bin:$PATH" GOPATH="$BUILD_DIR/gopath" GOMODCACHE="$BUILD_DIR/gopath/pkg/mod" GOCACHE="$BUILD_DIR/go-cache" CGO_ENABLED=0 "$BUILD_DIR/go/bin/go" build -mod=mod -trimpath -ldflags='-s -w' -o /tmp/wdtt-server ./server.go
   ) >>"$LOG_FILE" 2>&1
   chmod 0755 /tmp/wdtt-server
-  WDTT_ARGS="-password $WDTT_MAIN_PASSWORD" bash "$WDTT_SOURCE/app/src/main/assets/deploy.sh" install >>"$LOG_FILE" 2>&1
+  WDTT_ARGS="$(build_wdtt_args)" bash "$WDTT_SOURCE/app/src/main/assets/deploy.sh" install >>"$LOG_FILE" 2>&1
   log "WDTT установлен официальным deploy.sh"
 }
 
@@ -1310,6 +1425,7 @@ install_panel() {
   install_panel_files
   remove_obsolete_fleet_agent
   install_wdtt_extensions
+  apply_telegram_settings
   write_maintenance_scripts
 
   if request_certificate; then
