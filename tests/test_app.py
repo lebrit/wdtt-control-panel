@@ -93,6 +93,13 @@ class AppSmokeTests(unittest.TestCase):
         self.assertTrue(headers["status"].startswith("200"))
         self.assertTrue(json.loads(body)["ok"])
 
+        headers, body = self.request("/private-panel-path/api/v1/qwdtt/subscription", auth=f"Bearer {token}")
+        self.assertTrue(headers["status"].startswith("200"))
+        subscription = json.loads(body)["result"]
+        self.assertEqual(subscription["subscriptionName"], "WDTT panel.example.com")
+        self.assertEqual(subscription["profiles"][0]["peer"], "panel.example.com:56000")
+        self.assertEqual(subscription["profiles"][0]["workers"], 16)
+
         payload = json.dumps({"label": "Mobile client"}).encode()
         headers, body = self.request(
             "/private-panel-path/api/v1/users/create",

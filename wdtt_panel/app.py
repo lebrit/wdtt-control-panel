@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 from contextlib import closing
+from datetime import datetime, timezone
 from http import cookies
 from pathlib import Path
 from socketserver import ThreadingMixIn
@@ -303,6 +304,10 @@ class Panel:
                 return self.json_response(start_response, 400, {"ok": False, "error": str(exc)})
             self.audit(environ, "users.create_auto", "ok" if result.get("ok") else "error", str(result.get("error") or ""))
             return self.json_response(start_response, 200 if result.get("ok") else 400, result)
+        if route == "qwdtt/subscription":
+            if method != "GET":
+                return self.json_response(start_response, 405, {"error": "Требуется GET"})
+            return self.json_response(start_response, 200, {"ok": True, "result": self.qwdtt_subscription()})
         mapping = {
             "overview": "overview",
             "users": "users.list",
@@ -509,6 +514,39 @@ class Panel:
                 "ports": "56000,56001,9000",
             },
         )
+
+    def qwdtt_subscription(self) -> dict[str, Any]:
+        users_result = self.admin("users.list", {})
+        root = users_result.get("result") if users_result.get("ok") else {}
+        users = root.get("users") if isinstance(root, dict) else []
+        users = [user for user in users if isinstance(user, dict) and user.get("password")]
+        used_bytes = sum(int(user.get("down_bytes") or 0) + int(user.get("up_bytes") or 0) for user in users)
+        host = str(self.config.get("public_host") or "WDTT")
+        return {
+            "subscriptionName": f"WDTT {host}",
+            "description": f"WDTT Control Panel {self.config.get('version') or '0.0.0'}",
+            "trafficUsedMb": round(used_bytes / 1024 / 1024, 2),
+            "updatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "version": 1,
+            "profiles": [self.qwdtt_profile(user) for user in users],
+        }
+
+    def qwdtt_profile(self, user: dict[str, Any]) -> dict[str, Any]:
+        ports = [item.strip() for item in str(user.get("ports") or "56000,56001,9000").split(",")]
+        dtls_port = ports[0] if len(ports) > 0 and ports[0] else "56000"
+        local_port = ports[2] if len(ports) > 2 and ports[2] else "9000"
+        host = str(self.config.get("public_host") or "")
+        peer = f"{host}:{dtls_port}" if host else f":{dtls_port}"
+        return {
+            "name": str(user.get("label") or user.get("password") or "WDTT"),
+            "peer": peer,
+            "hashes": str(user.get("vk_hash") or ""),
+            "workers": 16,
+            "port": int(local_port) if local_port.isdigit() else 9000,
+            "password": str(user.get("password") or ""),
+            "expiresAt": int(user.get("expires_at") or 0),
+            "trafficUsedMb": round((int(user.get("down_bytes") or 0) + int(user.get("up_bytes") or 0)) / 1024 / 1024, 2),
+        }
 
     @staticmethod
     def history() -> dict[str, Any]:
