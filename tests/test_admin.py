@@ -30,6 +30,9 @@ class AdminDatabaseTests(unittest.TestCase):
         self.xray_cascade_settings = root / "xray-cascade.json"
         self.xray_access_log = root / "xray-access.log"
         self.xray_error_log = root / "xray-error.log"
+        self.install_log = root / "install.log"
+        self.nginx_access_log = root / "nginx-access.log"
+        self.nginx_error_log = root / "nginx-error.log"
         self.patchers = [
             mock.patch.object(admin, "DB_FILE", self.db_file),
             mock.patch.object(admin, "PANEL_LABELS_FILE", self.panel_labels),
@@ -47,6 +50,9 @@ class AdminDatabaseTests(unittest.TestCase):
             mock.patch.object(admin, "XRAY_CASCADE_SETTINGS", self.xray_cascade_settings),
             mock.patch.object(admin, "XRAY_ACCESS_LOG", self.xray_access_log),
             mock.patch.object(admin, "XRAY_ERROR_LOG", self.xray_error_log),
+            mock.patch.object(admin, "INSTALL_LOG_FILE", self.install_log),
+            mock.patch.object(admin, "NGINX_ACCESS_LOG", self.nginx_access_log),
+            mock.patch.object(admin, "NGINX_ERROR_LOG", self.nginx_error_log),
             mock.patch.object(admin, "WDTT_UNIT_FILE", root / "wdtt.service"),
             mock.patch.object(admin, "SKIP_SYSTEMD", True),
         ]
@@ -358,6 +364,20 @@ class AdminDatabaseTests(unittest.TestCase):
         parsed = json.loads(self.db_file.read_text(encoding="utf-8"))
         self.assertIn("passwords", parsed)
         self.assertIn("devices", parsed)
+
+    def test_cleanup_preview_and_apply_only_known_safe_targets(self):
+        self.install_log.write_text("install log\n", encoding="utf-8")
+        self.xray_access_log.write_text("route log\n", encoding="utf-8")
+        preview = admin.cleanup_system({"targets": ["service_logs"], "keep_days": 7}, False)
+        self.assertFalse(preview["applied"])
+        self.assertGreater(preview["estimated_freed_bytes"], 0)
+        self.assertTrue(self.install_log.read_text(encoding="utf-8"))
+
+        result = admin.cleanup_system({"targets": ["service_logs", "unknown"], "keep_days": 7}, True)
+        self.assertTrue(result["applied"])
+        self.assertEqual(self.install_log.read_text(encoding="utf-8"), "")
+        self.assertEqual(self.xray_access_log.read_text(encoding="utf-8"), "")
+        self.assertEqual(admin.load_database()["passwords"], {})
 
     def test_version_comparison_normalizes_short_versions(self):
         self.assertEqual(admin.version_parts("1.2"), admin.version_parts("1.2.0"))

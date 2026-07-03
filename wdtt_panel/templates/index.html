@@ -135,6 +135,18 @@
           <div class="button-row"><button data-service="start" class="primary">Запустить</button><button data-service="restart" class="secondary">Перезапустить</button><button data-service="stop" class="danger">Остановить</button></div>
         </article>
         <article class="panel-card">
+          <p class="eyebrow">SAFE CLEANUP</p><h2>Очистка журналов и мусора</h2><p class="muted">Очищаются только известные журналы и безопасные системные кэши. База пользователей, резервные копии, сертификаты и настройки не затрагиваются.</p>
+          <div class="form-grid compact-grid">
+            <label>Хранить journal, дней<input id="cleanup-keep-days" type="number" min="1" max="365" value="14"></label>
+            <label class="checkbox"><input id="cleanup-service-logs" type="checkbox" checked> Журналы служб</label>
+            <label class="checkbox"><input id="cleanup-journal" type="checkbox" checked> Systemd journal</label>
+            <label class="checkbox"><input id="cleanup-package-cache" type="checkbox" checked> Кэш пакетов</label>
+            <label class="checkbox wide"><input id="cleanup-failed-units" type="checkbox"> Сбросить failed-units</label>
+          </div>
+          <div id="cleanup-info" class="detail-list"><p class="muted">Сначала нажмите «Оценить», чтобы увидеть безопасный план очистки.</p></div>
+          <div class="button-row"><button id="cleanup-preview" class="secondary">Оценить</button><button id="cleanup-apply" class="danger">Очистить</button></div>
+        </article>
+        <article class="panel-card">
           <div class="section-head"><div><p class="eyebrow">TELEGRAM BOT</p><h2>Бот WDTT</h2></div><span id="telegram-status" class="badge warn">загрузка</span></div>
           <div class="form-grid compact-grid">
             <label class="checkbox wide"><input id="telegram-enabled" type="checkbox"> Включить Telegram-бота</label>

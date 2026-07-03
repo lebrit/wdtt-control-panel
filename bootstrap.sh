@@ -10,7 +10,7 @@ ROLLBACK_VERSION=""
 
 usage() {
   cat <<EOF
-Usage: bootstrap.sh [install|update|rollback|uninstall|status|renew-cert|change-password] [options]
+Usage: bootstrap.sh [install|update|rollback|uninstall|status|renew-cert|change-password|clean-system] [options]
 
 Without arguments an interactive management menu is shown.
 
@@ -50,8 +50,9 @@ WDTT Control Panel
 3) Показать статус и адрес
 4) Проверить/обновить сертификат
 5) Сменить пароль входа в панель
-6) Удалить панель
-7) Откатить панель к прошлой версии
+6) Очистить журналы и системный мусор
+7) Удалить панель
+8) Откатить панель к прошлой версии
 0) Выход
 EOF
   printf 'Выберите действие [1]: ' >/dev/tty
@@ -63,11 +64,16 @@ EOF
     4) ACTION="renew-cert" ;;
     5) ACTION="change-password" ;;
     6)
+      printf 'Безопасно очистить журналы, systemd journal, кэш пакетов Ubuntu/Linux и failed-units? [y/N]: ' >/dev/tty
+      IFS= read -r confirm </dev/tty || true
+      case "$confirm" in y|Y|yes|YES|да|Да|ДА) ACTION="clean-system" ;; *) echo 'Отменено.' >/dev/tty; ACTION="" ;; esac
+      ;;
+    7)
       printf 'Удалить web-панель? WDTT и его пользователи останутся [y/N]: ' >/dev/tty
       IFS= read -r confirm </dev/tty || true
       case "$confirm" in y|Y|yes|YES|да|Да|ДА) ACTION="uninstall" ;; *) echo 'Отменено.' >/dev/tty; ACTION="" ;; esac
       ;;
-    7) ACTION="rollback" ;;
+    8) ACTION="rollback" ;;
     0) ACTION="exit" ;;
     *) echo 'Неизвестный пункт меню.' >/dev/tty; ACTION="" ;;
   esac
@@ -240,7 +246,7 @@ EOF
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    install|update|rollback|uninstall|status|renew-cert|change-password) ACTION="$1"; shift ;;
+    install|update|rollback|uninstall|status|renew-cert|change-password|clean-system|clean-logs) ACTION="$1"; shift ;;
     --domain|--host) [ "$#" -ge 2 ] || { usage; exit 2; }; PANEL_HOST="$2"; shift 2 ;;
     --ip) [ "$#" -ge 2 ] || { usage; exit 2; }; PANEL_HOST="$2"; shift 2 ;;
     --user) [ "$#" -ge 2 ] || { usage; exit 2; }; PANEL_USER="$2"; shift 2 ;;
@@ -283,6 +289,7 @@ command -v tar >/dev/null 2>&1 || {
 run_action() {
   [ "$ACTION" != "exit" ] || return 10
   [ -n "$ACTION" ] || return 0
+  [ "$ACTION" != "clean-logs" ] || ACTION="clean-system"
   if [ "$ACTION" = "install" ]; then
     prompt_install_options
     normalize_wdtt_main_password

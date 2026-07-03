@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.11.12"
+PANEL_VERSION="0.11.13"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -1328,6 +1328,41 @@ PY
   log "Пароль входа в панель изменен; все активные сессии завершены"
 }
 
+clean_system_safe() {
+  require_root
+  local keep_days="${CLEAN_KEEP_DAYS:-14}"
+  [[ "$keep_days" =~ ^[0-9]+$ ]] || keep_days=14
+  log "Безопасная очистка журналов и системного кэша"
+  for file in \
+    /var/log/wdtt-panel-install.log \
+    /var/lib/wdtt-panel-private/xray-access.log \
+    /var/lib/wdtt-panel-private/xray-error.log \
+    /var/log/nginx/access.log \
+    /var/log/nginx/error.log
+  do
+    if [ -f "$file" ]; then
+      : > "$file" || true
+      log "Очищен журнал: $file"
+    fi
+  done
+  if command_exists journalctl; then
+    journalctl "--vacuum-time=${keep_days}d" >>"$LOG_FILE" 2>&1 || log "Systemd journal не очищен, подробности в $LOG_FILE"
+  fi
+  if command_exists apt-get; then
+    apt-get clean >>"$LOG_FILE" 2>&1 || log "Кэш apt не очищен"
+  elif command_exists dnf; then
+    dnf clean all >>"$LOG_FILE" 2>&1 || log "Кэш dnf не очищен"
+  elif command_exists yum; then
+    yum clean all >>"$LOG_FILE" 2>&1 || log "Кэш yum не очищен"
+  elif command_exists paccache; then
+    paccache -rk1 >>"$LOG_FILE" 2>&1 || log "Кэш pacman не очищен"
+  fi
+  if command_exists systemctl; then
+    systemctl reset-failed >>"$LOG_FILE" 2>&1 || true
+  fi
+  log "Очистка завершена. Пользователи, backup, сертификаты и настройки не затронуты"
+}
+
 status_panel() {
   local attempt
   systemctl --no-pager --full status "$PANEL_SERVICE" || true
@@ -1460,9 +1495,10 @@ case "${1:-install}" in
   renew-cert|--renew-cert) renew_certificates ;;
   status|--status|-s) require_root; load_panel_config; status_panel ;;
   change-password|--change-password) change_panel_password ;;
+  clean-system|--clean-system|clean-logs) clean_system_safe ;;
   uninstall|--uninstall|-u) require_root; uninstall_panel ;;
   install-xray-runtime) install_xray_runtime ;;
   install-warp-runtime) install_warp_runtime ;;
   enable-wdtt-extensions) install_wdtt_extensions ;;
-  *) die "Использование: $0 [install|update|renew-cert|status|change-password|uninstall|install-xray-runtime|install-warp-runtime|enable-wdtt-extensions]" ;;
+  *) die "Использование: $0 [install|update|renew-cert|status|change-password|clean-system|uninstall|install-xray-runtime|install-warp-runtime|enable-wdtt-extensions]" ;;
 esac

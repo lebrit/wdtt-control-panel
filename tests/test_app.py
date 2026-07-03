@@ -110,6 +110,55 @@ class AppSmokeTests(unittest.TestCase):
         self.assertTrue(headers["status"].startswith("200"))
         self.assertEqual(json.loads(body)["result"]["label"], "Mobile client")
 
+        payload = json.dumps({"keep_days": 14, "targets": ["service_logs", "package_cache"]}).encode()
+        headers, body = self.request(
+            "/private-panel-path/api/v1/cleanup/preview",
+            "POST",
+            payload,
+            auth=f"Bearer {token}",
+        )
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertEqual(json.loads(body)["result"]["estimated_freed_bytes"], 1024)
+
+    def test_user_statistics_accumulate_daily_and_total_traffic(self):
+        first = {
+            "users": [{"password": "TrafficUser123", "down_bytes": 100, "up_bytes": 50, "connected": False}],
+            "admins": [],
+        }
+        with mock.patch.object(app.time, "time", return_value=1_800_000_000):
+            enriched = self.panel.enrich_user_statistics(first)
+        self.assertEqual(enriched["users"][0]["traffic_total_bytes"], 150)
+        self.assertEqual(enriched["users"][0]["traffic_today_bytes"], 0)
+        self.assertEqual(enriched["users"][0]["connection_state"], "offline")
+
+        second = {
+            "users": [
+                {
+                    "password": "TrafficUser123",
+                    "down_bytes": 140,
+                    "up_bytes": 70,
+                    "connected": False,
+                    "last_upload_at": 1_800_000_003,
+                }
+            ],
+            "admins": [],
+        }
+        with mock.patch.object(app.time, "time", return_value=1_800_000_010):
+            enriched = self.panel.enrich_user_statistics(second)
+        self.assertEqual(enriched["users"][0]["traffic_today_bytes"], 60)
+        self.assertEqual(enriched["users"][0]["traffic_total_bytes"], 210)
+        self.assertTrue(enriched["users"][0]["recently_active"])
+        self.assertEqual(enriched["users"][0]["connection_state"], "active")
+
+        reset_counter = {
+            "users": [{"password": "TrafficUser123", "down_bytes": 5, "up_bytes": 1, "connected": False}],
+            "admins": [],
+        }
+        with mock.patch.object(app.time, "time", return_value=1_800_000_020):
+            enriched = self.panel.enrich_user_statistics(reset_counter)
+        self.assertEqual(enriched["users"][0]["traffic_today_bytes"], 66)
+        self.assertEqual(enriched["users"][0]["traffic_total_bytes"], 216)
+
     def test_login_page_and_authenticated_overview(self):
         headers, body = self.request("/private-panel-path/")
         self.assertTrue(headers["status"].startswith("200"))

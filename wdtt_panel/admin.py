@@ -105,6 +105,9 @@ XRAY_ACCESS_LOG = Path(
 XRAY_ERROR_LOG = Path(
     os.environ.get("WDTT_XRAY_ERROR_LOG", "/var/lib/wdtt-panel-private/xray-error.log")
 )
+INSTALL_LOG_FILE = Path(os.environ.get("WDTT_INSTALL_LOG_FILE", "/var/log/wdtt-panel-install.log"))
+NGINX_ACCESS_LOG = Path(os.environ.get("WDTT_NGINX_ACCESS_LOG", "/var/log/nginx/access.log"))
+NGINX_ERROR_LOG = Path(os.environ.get("WDTT_NGINX_ERROR_LOG", "/var/log/nginx/error.log"))
 XRAY_DEFAULT_GEOFILES = (
     {
         "tag": "geoip",
@@ -1439,7 +1442,7 @@ def journal_logs(payload: dict[str, Any]) -> dict[str, Any]:
         "all": ([SERVICE, XRAY_SERVICE, XRAY_CASCADE_SERVICE, "wdtt-panel.service", "nginx.service"], "Все службы панели"),
     }
     if source == "installer":
-        path = Path("/var/log/wdtt-panel-install.log")
+        path = INSTALL_LOG_FILE
         try:
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]
         except OSError as exc:
@@ -1486,6 +1489,121 @@ def journal_logs(payload: dict[str, Any]) -> dict[str, Any]:
         for unit in units
     ]
     return {"lines": result.stdout.splitlines(), "source": source, "title": title, "units": states, "limit": limit}
+
+
+def directory_size(path: Path) -> int:
+    if not path.exists():
+        return 0
+    if path.is_file():
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+    total = 0
+    try:
+        iterator = path.rglob("*")
+    except OSError:
+        return 0
+    for item in iterator:
+        try:
+            if item.is_file() or item.is_symlink():
+                total += item.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def cleanup_log_files(apply: bool) -> dict[str, Any]:
+    targets = {
+        "installer": INSTALL_LOG_FILE,
+        "xray_access": XRAY_ACCESS_LOG,
+        "xray_errors": XRAY_ERROR_LOG,
+        "nginx_access": NGINX_ACCESS_LOG,
+        "nginx_error": NGINX_ERROR_LOG,
+    }
+    files = []
+    freed = 0
+    for name, path in targets.items():
+        size = directory_size(path)
+        files.append({"name": name, "path": str(path), "bytes": size, "exists": path.is_file()})
+        freed += size
+        if apply and path.is_file():
+            with path.open("w", encoding="utf-8"):
+                pass
+            os.chmod(path, 0o640 if name.startswith("nginx") else 0o600)
+    return {"target": "service_logs", "freed_bytes": freed, "files": files}
+
+
+def cleanup_package_cache(apply: bool) -> dict[str, Any]:
+    cache_paths = [Path("/var/cache/apt/archives"), Path("/var/cache/dnf"), Path("/var/cache/yum"), Path("/var/cache/pacman/pkg")]
+    size = sum(directory_size(path) for path in cache_paths)
+    command: list[str] = []
+    if shutil.which("apt-get"):
+        command = ["apt-get", "clean"]
+    elif shutil.which("dnf"):
+        command = ["dnf", "clean", "all"]
+    elif shutil.which("yum"):
+        command = ["yum", "clean", "all"]
+    elif shutil.which("paccache"):
+        command = ["paccache", "-rk1"]
+    if apply and command:
+        result = run(command, timeout=120)
+        if result.returncode != 0:
+            raise AdminError(result.stderr.strip() or "Не удалось очистить кэш пакетного менеджера")
+    return {"target": "package_cache", "freed_bytes": size, "command": " ".join(command) if command else ""}
+
+
+def cleanup_journal(apply: bool, keep_days: int) -> dict[str, Any]:
+    if SKIP_SYSTEMD or not shutil.which("journalctl"):
+        return {"target": "journal", "freed_bytes": 0, "available": False, "detail": "systemd journal недоступен"}
+    usage = run(["journalctl", "--disk-usage"], timeout=20)
+    detail = usage.stdout.strip() or usage.stderr.strip()
+    if apply:
+        result = run(["journalctl", f"--vacuum-time={keep_days}d"], timeout=120)
+        if result.returncode != 0:
+            raise AdminError(result.stderr.strip() or "Не удалось очистить systemd journal")
+        detail = result.stdout.strip() or detail
+    return {"target": "journal", "freed_bytes": 0, "available": True, "detail": detail}
+
+
+def cleanup_failed_units(apply: bool) -> dict[str, Any]:
+    if SKIP_SYSTEMD or not shutil.which("systemctl"):
+        return {"target": "failed_units", "freed_bytes": 0, "available": False}
+    if apply:
+        result = run(["systemctl", "reset-failed"], timeout=30)
+        if result.returncode != 0:
+            raise AdminError(result.stderr.strip() or "Не удалось сбросить failed-units")
+    return {"target": "failed_units", "freed_bytes": 0, "available": True}
+
+
+def cleanup_system(payload: dict[str, Any], apply: bool) -> dict[str, Any]:
+    try:
+        keep_days = max(1, min(int(payload.get("keep_days") or 14), 365))
+    except (TypeError, ValueError):
+        keep_days = 14
+    raw_targets = payload.get("targets")
+    allowed = {"service_logs", "journal", "package_cache", "failed_units"}
+    targets = [str(item) for item in raw_targets] if isinstance(raw_targets, list) else ["service_logs", "journal", "package_cache"]
+    targets = [target for target in dict.fromkeys(targets) if target in allowed]
+    if not targets:
+        raise ValidationError("Выберите хотя бы один безопасный раздел очистки")
+    items = []
+    for target in targets:
+        if target == "service_logs":
+            items.append(cleanup_log_files(apply))
+        elif target == "journal":
+            items.append(cleanup_journal(apply, keep_days))
+        elif target == "package_cache":
+            items.append(cleanup_package_cache(apply))
+        elif target == "failed_units":
+            items.append(cleanup_failed_units(apply))
+    return {
+        "applied": apply,
+        "keep_days": keep_days,
+        "targets": targets,
+        "items": items,
+        "estimated_freed_bytes": sum(int(item.get("freed_bytes") or 0) for item in items),
+    }
 
 
 def certificate_info(path: str) -> dict[str, Any]:
@@ -3299,6 +3417,8 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "users.bulk_action": bulk_user_action,
     "service.action": lambda payload: service_action(str(payload.get("service_action") or "")),
     "logs": journal_logs,
+    "cleanup.preview": lambda payload: cleanup_system(payload, False),
+    "cleanup.apply": lambda payload: cleanup_system(payload, True),
     "backups.list": lambda payload: list_backups(),
     "backups.create": create_manual_backup,
     "backups.delete": delete_backup,

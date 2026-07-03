@@ -431,18 +431,70 @@
         <td>${escapeHtml(formatDate(user.expires_at))}</td>
         <td class="mono">${device}</td><td>${escapeHtml(traffic)}</td>
         <td><strong>${escapeHtml(formatActivityDate(lastActivity))}</strong><br><small>${escapeHtml(lastUserActivityKind(user))}</small></td>
-        <td><details class="user-actions-menu"><summary>Действия</summary><div class="row-actions">
-          <button data-activity="${escapeHtml(user.password)}">Активность</button>
-          ${user.role === "admin" ? "" : `<button data-copy="${escapeHtml(user.password)}" title="Скопировать wdtt:// ссылку">Ссылка</button>`}
-          ${user.role === "admin" ? "" : `
-          <button data-edit="${escapeHtml(user.password)}">Изменить</button>
-          ${user.device_id ? `<button data-unbind="${escapeHtml(user.password)}">Отвязать</button>` : ""}
-          <button data-reset="${escapeHtml(user.password)}">Сброс трафика</button>
-          <button data-delete="${escapeHtml(user.password)}">Удалить</button>`}
-        </div></details></td></tr>`;
+        <td><button class="user-actions-trigger" data-actions-toggle="${escapeHtml(user.password)}">Действия</button></td></tr>`;
     }).join("") || `<tr><td colspan="9" class="muted">Пользователи не найдены.</td></tr>`;
+    closeUserActions();
     renderUserSortControls();
     renderSelectedUsersControls();
+  }
+
+  function ensureUserActionsPopover() {
+    let popover = $("#user-actions-popover");
+    if (!popover) {
+      popover = document.createElement("div");
+      popover.id = "user-actions-popover";
+      popover.className = "user-actions-popover";
+      popover.hidden = true;
+      document.body.appendChild(popover);
+    }
+    return popover;
+  }
+
+  function closeUserActions() {
+    const popover = $("#user-actions-popover");
+    if (!popover) return;
+    popover.hidden = true;
+    popover.dataset.password = "";
+  }
+
+  function openUserActions(button, user) {
+    if (!user) return;
+    const popover = ensureUserActionsPopover();
+    popover.dataset.password = user.password;
+    popover.innerHTML = `
+      <button data-activity="${escapeHtml(user.password)}">Активность</button>
+      ${user.role === "admin" ? "" : `<button data-copy="${escapeHtml(user.password)}" title="Скопировать wdtt:// ссылку">Ссылка</button>`}
+      ${user.role === "admin" ? "" : `
+      <button data-edit="${escapeHtml(user.password)}">Изменить</button>
+      ${user.device_id ? `<button data-unbind="${escapeHtml(user.password)}">Отвязать</button>` : ""}
+      <button data-reset="${escapeHtml(user.password)}">Сброс трафика</button>
+      <button data-delete="${escapeHtml(user.password)}">Удалить</button>`}
+    `;
+    popover.hidden = false;
+    popover.style.visibility = "hidden";
+    const rect = button.getBoundingClientRect();
+    const menu = popover.getBoundingClientRect();
+    let left = rect.left - menu.width - 8;
+    if (left < 8) left = rect.right + 8;
+    left = Math.min(Math.max(8, left), window.innerWidth - menu.width - 8);
+    const top = Math.min(Math.max(8, rect.top), window.innerHeight - menu.height - 8);
+    popover.style.left = `${left}px`;
+    popover.style.top = `${top}px`;
+    popover.style.visibility = "";
+  }
+
+  async function handleUserActionButton(button) {
+    const find = (password) => state.users.find((item) => item.password === password);
+    if (button.dataset.activity) openUserActivity(find(button.dataset.activity));
+    if (button.dataset.edit) openUserDialog(find(button.dataset.edit));
+    if (button.dataset.unbind) userAction("users/unbind", button.dataset.unbind, "Отвязать устройство? Следующее подключение создаст новую привязку.");
+    if (button.dataset.reset) userAction("users/reset-traffic", button.dataset.reset, "Сбросить счетчики трафика пользователя?");
+    if (button.dataset.delete) userAction("users/delete", button.dataset.delete, "Удалить пользователя и его устройство без возможности отмены?");
+    if (button.dataset.copy) {
+      const user = find(button.dataset.copy);
+      await navigator.clipboard.writeText(quickLink(user));
+      toast("Ссылка wdtt:// скопирована");
+    }
   }
 
   function renderSelectedUsersControls() {
@@ -654,6 +706,49 @@
     if (!state.logs.length) { toast("Сначала загрузите журнал", true); return; }
     const header = [`# ${meta.title || "WDTT diagnostics"}`, `# Exported: ${new Date().toISOString()}`, ""].join("\n");
     downloadText(`wdtt-diagnostics-${meta.source || "logs"}.log`, `${header}${state.logs.join("\n")}\n`, "text/plain;charset=utf-8");
+  }
+
+  function cleanupPayload() {
+    const targets = [];
+    if ($("#cleanup-service-logs").checked) targets.push("service_logs");
+    if ($("#cleanup-journal").checked) targets.push("journal");
+    if ($("#cleanup-package-cache").checked) targets.push("package_cache");
+    if ($("#cleanup-failed-units").checked) targets.push("failed_units");
+    return { keep_days: Number($("#cleanup-keep-days").value) || 14, targets };
+  }
+
+  function renderCleanupResult(result) {
+    const items = result.items || [];
+    const rows = [
+      ["Режим", result.applied ? "Очистка выполнена" : "Предпросмотр"],
+      ["Оценка освобождения", formatBytes(result.estimated_freed_bytes || 0)],
+      ["Journal хранится", `${result.keep_days || 14} дней`],
+    ];
+    items.forEach((item) => {
+      if (item.target === "service_logs") {
+        rows.push(["Журналы служб", `${formatBytes(item.freed_bytes || 0)} · ${(item.files || []).filter((file) => file.exists).length} файлов`]);
+      } else if (item.target === "package_cache") {
+        rows.push(["Кэш пакетов", `${formatBytes(item.freed_bytes || 0)}${item.command ? ` · ${item.command}` : ""}`]);
+      } else if (item.target === "journal") {
+        rows.push(["Systemd journal", item.available === false ? item.detail || "недоступен" : item.detail || "готов"]);
+      } else if (item.target === "failed_units") {
+        rows.push(["Failed-units", item.available === false ? "недоступно" : "готово"]);
+      }
+    });
+    $("#cleanup-info").innerHTML = rows.map(([label, value]) => `<div class="detail-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+  }
+
+  async function cleanupSystem(apply, button) {
+    const payload = cleanupPayload();
+    if (!payload.targets.length) { toast("Выберите хотя бы один раздел очистки", true); return; }
+    if (apply && !confirm("Очистить выбранные журналы и системный кэш? База WDTT, резервные копии и настройки не будут затронуты.")) return;
+    setBusy(button, true);
+    try {
+      const result = await api(apply ? "cleanup/apply" : "cleanup/preview", { method: "POST", body: payload });
+      renderCleanupResult(result);
+      toast(apply ? "Очистка завершена" : "Оценка очистки готова");
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
   }
 
   async function serviceAction(action, button) {
@@ -1266,20 +1361,31 @@
     });
     $("#users-body").addEventListener("click", async (event) => {
       const button = event.target.closest("button"); if (!button) return;
-      const find = (password) => state.users.find((item) => item.password === password);
-      if (button.dataset.activity) openUserActivity(find(button.dataset.activity));
-      if (button.dataset.edit) openUserDialog(find(button.dataset.edit));
-      if (button.dataset.unbind) userAction("users/unbind", button.dataset.unbind, "Отвязать устройство? Следующее подключение создаст новую привязку.");
-      if (button.dataset.reset) userAction("users/reset-traffic", button.dataset.reset, "Сбросить счетчики трафика пользователя?");
-      if (button.dataset.delete) userAction("users/delete", button.dataset.delete, "Удалить пользователя и его устройство без возможности отмены?");
-      if (button.dataset.copy) {
-        const user = find(button.dataset.copy);
-        await navigator.clipboard.writeText(quickLink(user));
-        toast("Ссылка wdtt:// скопирована");
+      if (button.dataset.actionsToggle) {
+        const user = state.users.find((item) => item.password === button.dataset.actionsToggle);
+        openUserActions(button, user);
+        return;
+      }
+      closeUserActions();
+      await handleUserActionButton(button);
+    });
+    document.addEventListener("click", async (event) => {
+      const action = event.target.closest("#user-actions-popover button");
+      if (action) {
+        closeUserActions();
+        await handleUserActionButton(action);
+        return;
+      }
+      if (!event.target.closest("[data-actions-toggle]") && !event.target.closest("#user-actions-popover")) {
+        closeUserActions();
       }
     });
+    window.addEventListener("resize", closeUserActions);
+    window.addEventListener("scroll", closeUserActions, true);
     $("#load-logs").addEventListener("click", loadLogs);
     $("#download-logs").addEventListener("click", downloadLogs);
+    $("#cleanup-preview").addEventListener("click", (event) => cleanupSystem(false, event.currentTarget));
+    $("#cleanup-apply").addEventListener("click", (event) => cleanupSystem(true, event.currentTarget));
     $("#log-source").addEventListener("change", loadLogs);
     $("#log-limit").addEventListener("change", loadLogs);
     $("#log-filter").addEventListener("change", renderLogs);

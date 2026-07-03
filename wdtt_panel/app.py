@@ -98,6 +98,20 @@ class Panel:
                     value TEXT PRIMARY KEY,
                     created_at INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS user_traffic_state (
+                    user_key TEXT PRIMARY KEY,
+                    password TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    down_bytes INTEGER NOT NULL DEFAULT 0,
+                    up_bytes INTEGER NOT NULL DEFAULT 0,
+                    total_down_bytes INTEGER NOT NULL DEFAULT 0,
+                    total_up_bytes INTEGER NOT NULL DEFAULT 0,
+                    today_key TEXT NOT NULL DEFAULT '',
+                    today_down_bytes INTEGER NOT NULL DEFAULT 0,
+                    today_up_bytes INTEGER NOT NULL DEFAULT 0,
+                    last_seen_at INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL
+                );
                 """
             )
             db.commit()
@@ -217,6 +231,7 @@ class Panel:
                 "users.bulk_action",
                 "service",
                 "logs",
+                "cleanup",
                 "backups",
                 "panel.version",
                 "telegram",
@@ -341,6 +356,8 @@ class Panel:
             "users/bulk-action": "users.bulk_action",
             "service": "service.action",
             "logs": "logs",
+            "cleanup/preview": "cleanup.preview",
+            "cleanup/apply": "cleanup.apply",
             "backups": "backups.list",
             "backups/create": "backups.create",
             "backups/delete": "backups.delete",
@@ -403,6 +420,8 @@ class Panel:
         status = 200 if result.get("ok") else 400
         if result.get("ok") and action == "overview":
             self.record_metrics(result.get("result") or {})
+        if result.get("ok") and action == "users.list":
+            result["result"] = self.enrich_user_statistics(result.get("result") or {})
         if result.get("ok") and action in {"users.create", "users.create_bulk", "users.update"}:
             raw_hashes = str(payload.get("vk_hash") or "").strip()
             if raw_hashes:
@@ -482,6 +501,115 @@ class Panel:
             db.execute("INSERT OR REPLACE INTO metrics VALUES(?,?,?,?,?,?,?)", values)
             db.execute("DELETE FROM metrics WHERE captured_at < ?", (int(time.time()) - 7 * 86400,))
             db.commit()
+
+    @staticmethod
+    def _int_value(value: Any) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def enrich_user_statistics(self, root: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(root, dict):
+            return root
+        entries: list[dict[str, Any]] = []
+        for role, key in (("user", "users"), ("admin", "admins")):
+            values = root.get(key)
+            if isinstance(values, list):
+                for item in values:
+                    if isinstance(item, dict):
+                        item.setdefault("role", role)
+                        entries.append(item)
+        if not entries:
+            return root
+
+        now = int(time.time())
+        today_key = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+        with closing(sqlite3.connect(STATE_DB)) as db:
+            for item in entries:
+                password = str(item.get("password") or "")
+                role = str(item.get("role") or "user")
+                if not password:
+                    continue
+                user_key = f"{role}:{password}"
+                down = self._int_value(item.get("down_bytes"))
+                up = self._int_value(item.get("up_bytes"))
+                activity_at = max(
+                    self._int_value(item.get("last_handshake")),
+                    self._int_value(item.get("last_upload_at")),
+                    self._int_value(item.get("last_download_at")),
+                )
+                row = db.execute(
+                    "SELECT down_bytes, up_bytes, total_down_bytes, total_up_bytes, today_key, "
+                    "today_down_bytes, today_up_bytes, last_seen_at FROM user_traffic_state WHERE user_key = ?",
+                    (user_key,),
+                ).fetchone()
+                if row is None:
+                    total_down, total_up = down, up
+                    today_down, today_up = 0, 0
+                    last_seen_at = activity_at
+                else:
+                    previous_down, previous_up, total_down, total_up, previous_day, today_down, today_up, last_seen_at = row
+                    delta_down = down - int(previous_down or 0) if down >= int(previous_down or 0) else down
+                    delta_up = up - int(previous_up or 0) if up >= int(previous_up or 0) else up
+                    total_down = max(int(total_down or 0) + delta_down, down)
+                    total_up = max(int(total_up or 0) + delta_up, up)
+                    if previous_day == today_key:
+                        today_down = int(today_down or 0) + delta_down
+                        today_up = int(today_up or 0) + delta_up
+                    else:
+                        today_down, today_up = delta_down, delta_up
+                    if delta_down or delta_up:
+                        last_seen_at = now
+                    last_seen_at = max(int(last_seen_at or 0), activity_at)
+                strict_connected = bool(item.get("connected"))
+                recently_active = strict_connected or (last_seen_at > 0 and now - last_seen_at <= 300)
+                connection_state = "online" if strict_connected else "active" if recently_active else "offline"
+                item.update(
+                    {
+                        "strict_connected": strict_connected,
+                        "recently_active": recently_active,
+                        "connection_state": connection_state,
+                        "last_seen_at": last_seen_at,
+                        "traffic_current_down_bytes": down,
+                        "traffic_current_up_bytes": up,
+                        "traffic_current_bytes": down + up,
+                        "traffic_total_down_bytes": total_down,
+                        "traffic_total_up_bytes": total_up,
+                        "traffic_total_bytes": total_down + total_up,
+                        "traffic_today_down_bytes": today_down,
+                        "traffic_today_up_bytes": today_up,
+                        "traffic_today_bytes": today_down + today_up,
+                    }
+                )
+                db.execute(
+                    "INSERT INTO user_traffic_state(user_key, password, role, down_bytes, up_bytes, "
+                    "total_down_bytes, total_up_bytes, today_key, today_down_bytes, today_up_bytes, "
+                    "last_seen_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(user_key) DO UPDATE SET password=excluded.password, role=excluded.role, "
+                    "down_bytes=excluded.down_bytes, up_bytes=excluded.up_bytes, "
+                    "total_down_bytes=excluded.total_down_bytes, total_up_bytes=excluded.total_up_bytes, "
+                    "today_key=excluded.today_key, today_down_bytes=excluded.today_down_bytes, "
+                    "today_up_bytes=excluded.today_up_bytes, last_seen_at=excluded.last_seen_at, "
+                    "updated_at=excluded.updated_at",
+                    (
+                        user_key,
+                        password,
+                        role,
+                        down,
+                        up,
+                        total_down,
+                        total_up,
+                        today_key,
+                        today_down,
+                        today_up,
+                        last_seen_at,
+                        now,
+                    ),
+                )
+            db.execute("DELETE FROM user_traffic_state WHERE updated_at < ?", (now - 90 * 86400,))
+            db.commit()
+        return root
 
     @staticmethod
     def list_vk_hashes() -> dict[str, Any]:

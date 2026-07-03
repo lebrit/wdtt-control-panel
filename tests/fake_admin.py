@@ -102,6 +102,15 @@ elif action == "logs":
             "2026-06-15T08:00:12+00:00 wdtt-server[100]: [WG] Новое устройство pixel-8-demo",
         ]
     }
+elif action in {"cleanup.preview", "cleanup.apply"}:
+    payload = request.get("payload") or {}
+    result = {
+        "applied": action == "cleanup.apply",
+        "keep_days": int(payload.get("keep_days") or 14),
+        "targets": payload.get("targets") or ["service_logs"],
+        "estimated_freed_bytes": 1024,
+        "items": [{"target": "service_logs", "freed_bytes": 1024, "files": [{"name": "installer", "path": "/var/log/wdtt-panel-install.log", "bytes": 1024, "exists": True}]}],
+    }
 elif action == "backups.list":
     result = {"backups": [{"name": "panel-20260615-080000-manual.json", "size": 2048, "created_at": 1781510400, "type": "full"}]}
 elif action == "backups.create":
