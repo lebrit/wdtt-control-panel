@@ -1,5 +1,6 @@
 import json
 import base64
+import errno
 import subprocess
 import tempfile
 import time
@@ -378,6 +379,40 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual(self.install_log.read_text(encoding="utf-8"), "")
         self.assertEqual(self.xray_access_log.read_text(encoding="utf-8"), "")
         self.assertEqual(admin.load_database()["passwords"], {})
+
+    def test_cleanup_apply_skips_read_only_log_without_failing(self):
+        self.install_log.write_text("locked log\n", encoding="utf-8")
+        self.xray_access_log.write_text("route log\n", encoding="utf-8")
+        original_open = type(self.install_log).open
+
+        def guarded_open(path, *args, **kwargs):
+            mode = args[0] if args else kwargs.get("mode", "r")
+            if path == self.install_log and "w" in mode:
+                raise OSError(errno.EROFS, "Read-only file system", str(path))
+            return original_open(path, *args, **kwargs)
+
+        with mock.patch.object(type(self.install_log), "open", new=guarded_open):
+            result = admin.cleanup_system({"targets": ["service_logs"], "keep_days": 14}, True)
+
+        service_logs = result["items"][0]
+        files = {item["name"]: item for item in service_logs["files"]}
+        self.assertTrue(result["applied"])
+        self.assertTrue(files["installer"]["skipped"])
+        self.assertIn("только для чтения", files["installer"]["error"])
+        self.assertTrue(files["xray_access"]["cleared"])
+        self.assertEqual(self.install_log.read_text(encoding="utf-8"), "locked log\n")
+        self.assertEqual(self.xray_access_log.read_text(encoding="utf-8"), "")
+
+    def test_cleanup_target_error_is_reported_without_stopping_other_targets(self):
+        self.install_log.write_text("install log\n", encoding="utf-8")
+        with mock.patch.object(admin, "cleanup_package_cache", side_effect=admin.AdminError("cache locked")):
+            result = admin.cleanup_system({"targets": ["package_cache", "service_logs"], "keep_days": 14}, True)
+
+        items = {item["target"]: item for item in result["items"]}
+        self.assertFalse(items["package_cache"]["available"])
+        self.assertEqual(items["package_cache"]["error"], "cache locked")
+        self.assertTrue(items["service_logs"]["files"][0]["cleared"])
+        self.assertEqual(self.install_log.read_text(encoding="utf-8"), "")
 
     def test_version_comparison_normalizes_short_versions(self):
         self.assertEqual(admin.version_parts("1.2"), admin.version_parts("1.2.0"))

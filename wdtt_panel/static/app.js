@@ -726,13 +726,19 @@
     ];
     items.forEach((item) => {
       if (item.target === "service_logs") {
-        rows.push(["Журналы служб", `${formatBytes(item.freed_bytes || 0)} · ${(item.files || []).filter((file) => file.exists).length} файлов`]);
+        const files = item.files || [];
+        const existing = files.filter((file) => file.exists).length;
+        const skipped = files.filter((file) => file.skipped || file.error).length;
+        const details = [`${formatBytes(item.freed_bytes || 0)}`, `${existing} файлов`];
+        if (skipped) details.push(`пропущено: ${skipped}`);
+        if (item.error) details.push(item.error);
+        rows.push(["Журналы служб", details.join(" · ")]);
       } else if (item.target === "package_cache") {
-        rows.push(["Кэш пакетов", `${formatBytes(item.freed_bytes || 0)}${item.command ? ` · ${item.command}` : ""}`]);
+        rows.push(["Кэш пакетов", item.error || `${formatBytes(item.freed_bytes || 0)}${item.command ? ` · ${item.command}` : ""}`]);
       } else if (item.target === "journal") {
-        rows.push(["Systemd journal", item.available === false ? item.detail || "недоступен" : item.detail || "готов"]);
+        rows.push(["Systemd journal", item.error || (item.available === false ? item.detail || "недоступен" : item.detail || "готов")]);
       } else if (item.target === "failed_units") {
-        rows.push(["Failed-units", item.available === false ? "недоступно" : "готово"]);
+        rows.push(["Failed-units", item.error || (item.available === false ? "недоступно" : "готово")]);
       }
     });
     $("#cleanup-info").innerHTML = rows.map(([label, value]) => `<div class="detail-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");

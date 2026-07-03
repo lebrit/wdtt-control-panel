@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 import configparser
+import errno
 import ipaddress
 import json
 import os
@@ -1513,6 +1514,25 @@ def directory_size(path: Path) -> int:
     return total
 
 
+def cleanup_os_error(exc: OSError) -> str:
+    code = getattr(exc, "errno", None)
+    if code == errno.EROFS:
+        return "Файловая система только для чтения"
+    if code in {errno.EACCES, errno.EPERM}:
+        return "Нет прав на запись"
+    return str(exc) or exc.__class__.__name__
+
+
+def cleanup_target_error(target: str, exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, OSError):
+        message = cleanup_os_error(exc)
+    elif isinstance(exc, subprocess.TimeoutExpired):
+        message = "Команда очистки не ответила вовремя"
+    else:
+        message = str(exc) or exc.__class__.__name__
+    return {"target": target, "freed_bytes": 0, "available": False, "error": message}
+
+
 def cleanup_log_files(apply: bool) -> dict[str, Any]:
     targets = {
         "installer": INSTALL_LOG_FILE,
@@ -1525,12 +1545,37 @@ def cleanup_log_files(apply: bool) -> dict[str, Any]:
     freed = 0
     for name, path in targets.items():
         size = directory_size(path)
-        files.append({"name": name, "path": str(path), "bytes": size, "exists": path.is_file()})
-        freed += size
-        if apply and path.is_file():
-            with path.open("w", encoding="utf-8"):
-                pass
-            os.chmod(path, 0o640 if name.startswith("nginx") else 0o600)
+        try:
+            exists = path.is_file()
+        except OSError as exc:
+            exists = False
+            file_info = {
+                "name": name,
+                "path": str(path),
+                "bytes": size,
+                "exists": False,
+                "skipped": True,
+                "error": cleanup_os_error(exc),
+            }
+            files.append(file_info)
+            continue
+        file_info = {"name": name, "path": str(path), "bytes": size, "exists": exists}
+        if apply and exists:
+            try:
+                with path.open("w", encoding="utf-8"):
+                    pass
+                try:
+                    os.chmod(path, 0o640 if name.startswith("nginx") else 0o600)
+                except OSError as exc:
+                    file_info["warning"] = cleanup_os_error(exc)
+                file_info["cleared"] = True
+                freed += size
+            except OSError as exc:
+                file_info["skipped"] = True
+                file_info["error"] = cleanup_os_error(exc)
+        else:
+            freed += size
+        files.append(file_info)
     return {"target": "service_logs", "freed_bytes": freed, "files": files}
 
 
@@ -1589,14 +1634,17 @@ def cleanup_system(payload: dict[str, Any], apply: bool) -> dict[str, Any]:
         raise ValidationError("Выберите хотя бы один безопасный раздел очистки")
     items = []
     for target in targets:
-        if target == "service_logs":
-            items.append(cleanup_log_files(apply))
-        elif target == "journal":
-            items.append(cleanup_journal(apply, keep_days))
-        elif target == "package_cache":
-            items.append(cleanup_package_cache(apply))
-        elif target == "failed_units":
-            items.append(cleanup_failed_units(apply))
+        try:
+            if target == "service_logs":
+                items.append(cleanup_log_files(apply))
+            elif target == "journal":
+                items.append(cleanup_journal(apply, keep_days))
+            elif target == "package_cache":
+                items.append(cleanup_package_cache(apply))
+            elif target == "failed_units":
+                items.append(cleanup_failed_units(apply))
+        except (AdminError, OSError, subprocess.TimeoutExpired) as exc:
+            items.append(cleanup_target_error(target, exc))
     return {
         "applied": apply,
         "keep_days": keep_days,
