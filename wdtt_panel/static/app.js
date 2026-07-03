@@ -721,22 +721,26 @@
     const items = result.items || [];
     const rows = [
       ["Режим", result.applied ? "Очистка выполнена" : "Предпросмотр"],
-      ["Оценка освобождения", formatBytes(result.estimated_freed_bytes || 0)],
+      [result.applied ? "Освобождено" : "Можно очистить", formatBytes(result.estimated_freed_bytes || 0)],
       ["Journal хранится", `${result.keep_days || 14} дней`],
     ];
     items.forEach((item) => {
+      const freedLabel = result.applied ? `освобождено ${formatBytes(item.freed_bytes || 0)}` : `можно очистить ${formatBytes(item.freed_bytes || 0)}`;
+      const remaining = result.applied && item.remaining_bytes !== undefined ? `осталось ${formatBytes(item.remaining_bytes || 0)}` : "";
       if (item.target === "service_logs") {
         const files = item.files || [];
         const existing = files.filter((file) => file.exists).length;
         const skipped = files.filter((file) => file.skipped || file.error).length;
-        const details = [`${formatBytes(item.freed_bytes || 0)}`, `${existing} файлов`];
+        const details = [freedLabel, `${existing} файлов`];
+        if (remaining) details.push(remaining);
         if (skipped) details.push(`пропущено: ${skipped}`);
         if (item.error) details.push(item.error);
         rows.push(["Журналы служб", details.join(" · ")]);
       } else if (item.target === "package_cache") {
-        rows.push(["Кэш пакетов", item.error || `${formatBytes(item.freed_bytes || 0)}${item.command ? ` · ${item.command}` : ""}`]);
+        rows.push(["Кэш пакетов", item.error || [freedLabel, remaining, item.command].filter(Boolean).join(" · ")]);
       } else if (item.target === "journal") {
-        rows.push(["Systemd journal", item.error || (item.available === false ? item.detail || "недоступен" : item.detail || "готов")]);
+        const journalDetails = [freedLabel, remaining, item.detail].filter(Boolean).join(" · ");
+        rows.push(["Systemd journal", item.error || (item.available === false ? item.detail || "недоступен" : journalDetails || "готов")]);
       } else if (item.target === "failed_units") {
         rows.push(["Failed-units", item.error || (item.available === false ? "недоступно" : "готово")]);
       }

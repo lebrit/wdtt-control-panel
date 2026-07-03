@@ -372,10 +372,14 @@ class AdminDatabaseTests(unittest.TestCase):
         preview = admin.cleanup_system({"targets": ["service_logs"], "keep_days": 7}, False)
         self.assertFalse(preview["applied"])
         self.assertGreater(preview["estimated_freed_bytes"], 0)
+        self.assertGreater(preview["items"][0]["before_bytes"], 0)
+        self.assertEqual(preview["items"][0]["remaining_bytes"], preview["items"][0]["before_bytes"])
         self.assertTrue(self.install_log.read_text(encoding="utf-8"))
 
         result = admin.cleanup_system({"targets": ["service_logs", "unknown"], "keep_days": 7}, True)
         self.assertTrue(result["applied"])
+        self.assertGreater(result["items"][0]["freed_bytes"], 0)
+        self.assertEqual(result["items"][0]["remaining_bytes"], 0)
         self.assertEqual(self.install_log.read_text(encoding="utf-8"), "")
         self.assertEqual(self.xray_access_log.read_text(encoding="utf-8"), "")
         self.assertEqual(admin.load_database()["passwords"], {})
@@ -400,8 +404,26 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertTrue(files["installer"]["skipped"])
         self.assertIn("только для чтения", files["installer"]["error"])
         self.assertTrue(files["xray_access"]["cleared"])
+        self.assertGreater(service_logs["remaining_bytes"], 0)
         self.assertEqual(self.install_log.read_text(encoding="utf-8"), "locked log\n")
         self.assertEqual(self.xray_access_log.read_text(encoding="utf-8"), "")
+
+    def test_cleanup_package_cache_reports_remaining_size_after_apply(self):
+        sizes = [100, 0, 0, 0, 25, 0, 0, 0]
+        with (
+            mock.patch.object(admin, "directory_size", side_effect=sizes),
+            mock.patch.object(admin.shutil, "which", side_effect=lambda name: "/usr/bin/apt-get" if name == "apt-get" else None),
+            mock.patch.object(admin, "run", return_value=subprocess.CompletedProcess(["apt-get", "clean"], 0, "", "")),
+        ):
+            result = admin.cleanup_package_cache(True)
+
+        self.assertEqual(result["before_bytes"], 100)
+        self.assertEqual(result["freed_bytes"], 75)
+        self.assertEqual(result["remaining_bytes"], 25)
+
+    def test_journal_disk_usage_size_is_parsed(self):
+        self.assertEqual(admin.parse_size_text("Archived and active journals take up 781.0M in the file system."), 781 * 1024 * 1024)
+        self.assertEqual(admin.parse_size_text("8K"), 8 * 1024)
 
     def test_cleanup_target_error_is_reported_without_stopping_other_targets(self):
         self.install_log.write_text("install log\n", encoding="utf-8")

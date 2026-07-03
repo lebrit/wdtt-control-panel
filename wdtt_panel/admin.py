@@ -1514,6 +1514,24 @@ def directory_size(path: Path) -> int:
     return total
 
 
+def parse_size_text(value: str) -> int | None:
+    match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*([KMGTPE]?)(?:i?B)?", value, re.IGNORECASE)
+    if not match:
+        return None
+    number = float(match.group(1))
+    unit = match.group(2).upper()
+    multipliers = {
+        "": 1,
+        "K": 1024,
+        "M": 1024**2,
+        "G": 1024**3,
+        "T": 1024**4,
+        "P": 1024**5,
+        "E": 1024**6,
+    }
+    return int(number * multipliers.get(unit, 1))
+
+
 def cleanup_os_error(exc: OSError) -> str:
     code = getattr(exc, "errno", None)
     if code == errno.EROFS:
@@ -1530,7 +1548,7 @@ def cleanup_target_error(target: str, exc: Exception) -> dict[str, Any]:
         message = "Команда очистки не ответила вовремя"
     else:
         message = str(exc) or exc.__class__.__name__
-    return {"target": target, "freed_bytes": 0, "available": False, "error": message}
+    return {"target": target, "before_bytes": 0, "freed_bytes": 0, "remaining_bytes": 0, "available": False, "error": message}
 
 
 def cleanup_log_files(apply: bool) -> dict[str, Any]:
@@ -1543,8 +1561,11 @@ def cleanup_log_files(apply: bool) -> dict[str, Any]:
     }
     files = []
     freed = 0
+    before_total = 0
+    remaining = 0
     for name, path in targets.items():
         size = directory_size(path)
+        before_total += size
         try:
             exists = path.is_file()
         except OSError as exc:
@@ -1553,35 +1574,45 @@ def cleanup_log_files(apply: bool) -> dict[str, Any]:
                 "name": name,
                 "path": str(path),
                 "bytes": size,
+                "before_bytes": size,
+                "after_bytes": size,
                 "exists": False,
                 "skipped": True,
                 "error": cleanup_os_error(exc),
             }
+            remaining += size
             files.append(file_info)
             continue
-        file_info = {"name": name, "path": str(path), "bytes": size, "exists": exists}
+        file_info = {"name": name, "path": str(path), "bytes": size, "before_bytes": size, "exists": exists}
         if apply and exists:
             try:
                 with path.open("w", encoding="utf-8"):
                     pass
+                after_size = directory_size(path)
                 try:
                     os.chmod(path, 0o640 if name.startswith("nginx") else 0o600)
                 except OSError as exc:
                     file_info["warning"] = cleanup_os_error(exc)
                 file_info["cleared"] = True
-                freed += size
+                file_info["after_bytes"] = after_size
+                freed += max(0, size - after_size)
+                remaining += after_size
             except OSError as exc:
                 file_info["skipped"] = True
                 file_info["error"] = cleanup_os_error(exc)
+                file_info["after_bytes"] = size
+                remaining += size
         else:
             freed += size
+            file_info["after_bytes"] = size
+            remaining += size
         files.append(file_info)
-    return {"target": "service_logs", "freed_bytes": freed, "files": files}
+    return {"target": "service_logs", "before_bytes": before_total, "freed_bytes": freed, "remaining_bytes": remaining, "files": files}
 
 
 def cleanup_package_cache(apply: bool) -> dict[str, Any]:
     cache_paths = [Path("/var/cache/apt/archives"), Path("/var/cache/dnf"), Path("/var/cache/yum"), Path("/var/cache/pacman/pkg")]
-    size = sum(directory_size(path) for path in cache_paths)
+    before = sum(directory_size(path) for path in cache_paths)
     command: list[str] = []
     if shutil.which("apt-get"):
         command = ["apt-get", "clean"]
@@ -1595,30 +1626,53 @@ def cleanup_package_cache(apply: bool) -> dict[str, Any]:
         result = run(command, timeout=120)
         if result.returncode != 0:
             raise AdminError(result.stderr.strip() or "Не удалось очистить кэш пакетного менеджера")
-    return {"target": "package_cache", "freed_bytes": size, "command": " ".join(command) if command else ""}
+    remaining = sum(directory_size(path) for path in cache_paths) if apply else before
+    freed = max(0, before - remaining) if apply else before
+    return {
+        "target": "package_cache",
+        "before_bytes": before,
+        "freed_bytes": freed,
+        "remaining_bytes": remaining,
+        "command": " ".join(command) if command else "",
+    }
 
 
 def cleanup_journal(apply: bool, keep_days: int) -> dict[str, Any]:
     if SKIP_SYSTEMD or not shutil.which("journalctl"):
-        return {"target": "journal", "freed_bytes": 0, "available": False, "detail": "systemd journal недоступен"}
+        return {"target": "journal", "before_bytes": 0, "freed_bytes": 0, "remaining_bytes": 0, "available": False, "detail": "systemd journal недоступен"}
     usage = run(["journalctl", "--disk-usage"], timeout=20)
-    detail = usage.stdout.strip() or usage.stderr.strip()
+    before_detail = usage.stdout.strip() or usage.stderr.strip()
+    before = parse_size_text(before_detail) or 0
+    detail = before_detail
+    remaining = before
+    freed = before
     if apply:
         result = run(["journalctl", f"--vacuum-time={keep_days}d"], timeout=120)
         if result.returncode != 0:
             raise AdminError(result.stderr.strip() or "Не удалось очистить systemd journal")
-        detail = result.stdout.strip() or detail
-    return {"target": "journal", "freed_bytes": 0, "available": True, "detail": detail}
+        after_usage = run(["journalctl", "--disk-usage"], timeout=20)
+        after_detail = after_usage.stdout.strip() or after_usage.stderr.strip()
+        remaining = parse_size_text(after_detail) or 0
+        freed = max(0, before - remaining)
+        detail = after_detail or result.stdout.strip() or detail
+    return {
+        "target": "journal",
+        "before_bytes": before,
+        "freed_bytes": freed,
+        "remaining_bytes": remaining,
+        "available": True,
+        "detail": detail,
+    }
 
 
 def cleanup_failed_units(apply: bool) -> dict[str, Any]:
     if SKIP_SYSTEMD or not shutil.which("systemctl"):
-        return {"target": "failed_units", "freed_bytes": 0, "available": False}
+        return {"target": "failed_units", "before_bytes": 0, "freed_bytes": 0, "remaining_bytes": 0, "available": False}
     if apply:
         result = run(["systemctl", "reset-failed"], timeout=30)
         if result.returncode != 0:
             raise AdminError(result.stderr.strip() or "Не удалось сбросить failed-units")
-    return {"target": "failed_units", "freed_bytes": 0, "available": True}
+    return {"target": "failed_units", "before_bytes": 0, "freed_bytes": 0, "remaining_bytes": 0, "available": True}
 
 
 def cleanup_system(payload: dict[str, Any], apply: bool) -> dict[str, Any]:
