@@ -158,7 +158,8 @@ class AppSmokeTests(unittest.TestCase):
         self.assertTrue(headers["status"].startswith("200"))
         script = body.decode()
         self.assertIn("podkop-plus", script)
-        self.assertIn("proxy_config_type='subscription'", script)
+        self.assertIn("podkop-plus.$PODKOP_PLUS_SECTION.action=proxy", script)
+        self.assertIn("podkop-plus.$PODKOP_PLUS_SECTION.subscription_urls=$SUB_URL", script)
 
         payload = json.dumps({"password": "WaitingUser123"}).encode()
         headers, body = self.request(

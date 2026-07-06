@@ -870,11 +870,14 @@ class Panel:
             "vless": {"uri": vless_uri, "uuid": client_id, "server": host, "server_port": https_port, "ws_path": ws_path},
             "podkop_plus": {
                 "mode": "native-vless-subscription",
-                "section": "main",
+                "config": "podkop-plus",
+                "section": "wdtt",
                 "uci": {
-                    "connection_type": "proxy",
-                    "proxy_config_type": "subscription",
-                    "subscription_url": f"{base}/sub/openwrt/{token}/podkop-plus.json",
+                    "enabled": "1",
+                    "action": "proxy",
+                    "subscription_urls": [f"{base}/sub/openwrt/{token}/podkop-plus.json"],
+                    "subscription_update_enabled": "1",
+                    "subscription_update_interval": "6h",
                 },
                 "reload_commands": [
                     "/etc/init.d/podkop-plus reload",
@@ -929,6 +932,7 @@ set -eu
 SUB_URL={metadata_url}
 VLESS_URL={vless_url}
 STATE_DIR="/etc/wdtt-openwrt"
+PODKOP_PLUS_SECTION="wdtt"
 
 fetch_url() {{
   url="$1"
@@ -948,7 +952,22 @@ fetch_url "$SUB_URL" "$STATE_DIR/subscription.json"
 fetch_url "$VLESS_URL" "$STATE_DIR/vless.txt"
 chmod 600 "$STATE_DIR/subscription.json" "$STATE_DIR/vless.txt"
 
-if uci -q show podkop >/dev/null 2>&1; then
+if uci -q show podkop-plus >/dev/null 2>&1; then
+  if ! uci -q show "podkop-plus.$PODKOP_PLUS_SECTION" >/dev/null 2>&1; then
+    uci set "podkop-plus.$PODKOP_PLUS_SECTION=section"
+    uci add_list "podkop-plus.$PODKOP_PLUS_SECTION.community_lists=russia_inside"
+  fi
+  uci set "podkop-plus.$PODKOP_PLUS_SECTION.label=WDTT"
+  uci set "podkop-plus.$PODKOP_PLUS_SECTION.enabled=1"
+  uci set "podkop-plus.$PODKOP_PLUS_SECTION.action=proxy"
+  uci -q delete "podkop-plus.$PODKOP_PLUS_SECTION.selector_proxy_links"
+  uci -q delete "podkop-plus.$PODKOP_PLUS_SECTION.subscription_urls"
+  uci add_list "podkop-plus.$PODKOP_PLUS_SECTION.subscription_urls=$SUB_URL"
+  uci set "podkop-plus.$PODKOP_PLUS_SECTION.subscription_update_enabled=1"
+  uci set "podkop-plus.$PODKOP_PLUS_SECTION.subscription_update_interval=6h"
+  uci set "podkop-plus.$PODKOP_PLUS_SECTION.urltest_enabled=0"
+  uci commit podkop-plus
+elif uci -q show podkop >/dev/null 2>&1; then
   uci set podkop.main.connection_type='proxy'
   uci set podkop.main.proxy_config_type='subscription'
   uci set podkop.main.subscription_url="$SUB_URL"
@@ -956,6 +975,9 @@ if uci -q show podkop >/dev/null 2>&1; then
   uci -q delete podkop.main.selector_proxy_links
   uci -q delete podkop.main.urltest_proxy_links
   uci commit podkop
+else
+  echo "Podkop Plus config is not found. Install/enable Podkop Plus first." >&2
+  exit 2
 fi
 
 if [ -d /etc/crontabs ]; then
@@ -967,6 +989,7 @@ fi
 
 if [ -x /etc/init.d/podkop-plus ]; then
   /etc/init.d/podkop-plus reload || /usr/bin/podkop-plus reload || /etc/init.d/podkop-plus restart
+  /usr/bin/podkop-plus subscription_update "$PODKOP_PLUS_SECTION" >/dev/null 2>&1 || true
 elif [ -x /etc/init.d/podkop ]; then
   /etc/init.d/podkop reload || /etc/init.d/podkop restart
 elif command -v podkop-plus >/dev/null 2>&1; then
