@@ -6,7 +6,7 @@
   const CSRF = meta("csrf-token");
   const PUBLIC_HOST = meta("public-host");
   const PANEL_VERSION = meta("panel-version");
-  const state = { overview: null, users: [], selectedUsers: new Set(), userSort: { key: "", direction: "asc" }, logs: [], logsMeta: null, editing: null, userRefreshTimer: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null, vkHashes: [], telegram: null };
+  const state = { overview: null, users: [], selectedUsers: new Set(), userSort: { key: "", direction: "asc" }, logs: [], logsMeta: null, editing: null, userRefreshTimer: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null, vkHashes: [], telegram: null, openwrt: null };
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -465,6 +465,7 @@
       <button data-activity="${escapeHtml(user.password)}">Активность</button>
       ${user.role === "admin" ? "" : `<button data-copy="${escapeHtml(user.password)}" title="Скопировать wdtt:// ссылку">Ссылка</button>`}
       ${user.role === "admin" ? "" : `
+      <button data-openwrt="${escapeHtml(user.password)}">OpenWrt</button>
       <button data-edit="${escapeHtml(user.password)}">Изменить</button>
       ${user.device_id ? `<button data-unbind="${escapeHtml(user.password)}">Отвязать</button>` : ""}
       <button data-reset="${escapeHtml(user.password)}">Сброс трафика</button>
@@ -486,6 +487,7 @@
   async function handleUserActionButton(button) {
     const find = (password) => state.users.find((item) => item.password === password);
     if (button.dataset.activity) openUserActivity(find(button.dataset.activity));
+    if (button.dataset.openwrt) openOpenWrtDialog(find(button.dataset.openwrt));
     if (button.dataset.edit) openUserDialog(find(button.dataset.edit));
     if (button.dataset.unbind) userAction("users/unbind", button.dataset.unbind, "Отвязать устройство? Следующее подключение создаст новую привязку.");
     if (button.dataset.reset) userAction("users/reset-traffic", button.dataset.reset, "Сбросить счетчики трафика пользователя?");
@@ -679,6 +681,39 @@
   function quickLink(user) {
     const ports = (user.ports || "56000,56001,9000").split(",");
     return `wdtt://${PUBLIC_HOST}:${ports[0]}:${ports[1]}:${ports[2]}:${user.password}:${user.vk_hash}`;
+  }
+
+  async function openOpenWrtDialog(user) {
+    if (!user) return;
+    try {
+      const result = await api("openwrt/podkop-plus", { method: "POST", body: { password: user.password } });
+      state.openwrt = result;
+      $("#openwrt-user-title").textContent = user.label || user.password;
+      $("#openwrt-subscription-url").value = result.subscription_url || "";
+      $("#openwrt-wdtt-url").value = result.wdtt_url || "";
+      $("#openwrt-qwdtt-url").value = result.qwdtt_url || "";
+      $("#openwrt-install-command").value = result.install_command || "";
+      $("#openwrt-warning").textContent = result.warning || "Для Podkop Plus нужен WDTT-клиент на роутере, который поднимает интерфейс wdtt0.";
+      $("#openwrt-dialog").showModal();
+    } catch (error) { toast(error.message, true); }
+  }
+
+  async function copyOpenWrtField(selector, message) {
+    try {
+      await navigator.clipboard.writeText($(selector).value);
+      toast(message);
+    } catch (error) { toast(`Не удалось скопировать: ${error.message}`, true); }
+  }
+
+  async function downloadOpenWrtScript() {
+    const url = state.openwrt?.install_script_url;
+    if (!url) { toast("Сначала откройте OpenWrt-подписку пользователя", true); return; }
+    try {
+      const response = await fetch(new URL(url).pathname);
+      const script = await response.text();
+      if (!response.ok) throw new Error(script || `HTTP ${response.status}`);
+      downloadText("wdtt-openwrt-podkop-plus-install.sh", script, "text/x-shellscript;charset=utf-8");
+    } catch (error) { toast(error.message, true); }
   }
 
   async function loadLogs() {
@@ -1344,6 +1379,10 @@
       if (button) deleteVkHash(button.dataset.deleteVkHash);
     });
     $("#copy-bulk-links").addEventListener("click", copyBulkLinks);
+    $("#copy-openwrt-subscription").addEventListener("click", () => copyOpenWrtField("#openwrt-subscription-url", "OpenWrt subscription скопирована"));
+    $("#copy-openwrt-command").addEventListener("click", () => copyOpenWrtField("#openwrt-install-command", "Команда установки скопирована"));
+    $("#copy-openwrt-wdtt").addEventListener("click", () => copyOpenWrtField("#openwrt-wdtt-url", "WDTT-ссылка скопирована"));
+    $("#download-openwrt-script").addEventListener("click", downloadOpenWrtScript);
     $("#user-search").addEventListener("input", renderUsers);
     $("#user-auto-refresh-interval").addEventListener("change", () => setUserAutoRefresh());
     $$("[data-user-sort]").forEach((button) => button.addEventListener("click", () => {

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import hmac
 import json
 import mimetypes
@@ -18,7 +20,7 @@ from typing import Any, Iterable
 from urllib.parse import parse_qs
 from wsgiref.simple_server import WSGIServer, make_server
 
-from .core import ValidationError, normalize_hash, normalize_user_label
+from .core import ValidationError, normalize_hash, normalize_user_label, quick_link
 from .security import create_session, read_session, verify_csrf, verify_password
 
 
@@ -141,6 +143,8 @@ class Panel:
         relative = path[len(self.base) :]
         if relative.startswith("static/"):
             return self.static(start_response, relative[7:])
+        if relative.startswith("sub/openwrt/"):
+            return self.openwrt_subscription_response(environ, start_response, relative)
 
         if relative == "api/v1/info" and environ["REQUEST_METHOD"] == "GET":
             return self.json_response(start_response, 200, {"ok": True, "result": self.api_v1_info_payload()})
@@ -237,6 +241,7 @@ class Panel:
                 "telegram",
                 "telegram.save",
                 "telegram.test",
+                "openwrt.podkop_plus",
                 "vk_hashes",
                 "vk_hashes.import",
                 "vk_hashes.export",
@@ -344,6 +349,16 @@ class Panel:
             if method != "GET":
                 return self.json_response(start_response, 405, {"error": "Требуется GET"})
             return self.json_response(start_response, 200, {"ok": True, "result": self.qwdtt_subscription()})
+        if route == "openwrt/podkop-plus":
+            if method != "POST":
+                return self.json_response(start_response, 405, {"error": "Требуется POST"})
+            try:
+                result = self.openwrt_subscription_info(str(payload.get("password") or ""))
+            except ValidationError as exc:
+                self.audit(environ, "openwrt.podkop_plus", "error", str(exc))
+                return self.json_response(start_response, 400, {"ok": False, "error": str(exc)})
+            self.audit(environ, "openwrt.podkop_plus", "ok", "subscription-issued")
+            return self.json_response(start_response, 200, {"ok": True, "result": result})
         mapping = {
             "overview": "overview",
             "users": "users.list",
@@ -765,6 +780,232 @@ class Panel:
             "trafficUsedMb": round((int(user.get("down_bytes") or 0) + int(user.get("up_bytes") or 0)) / 1024 / 1024, 2),
         }
 
+    def external_base_url(self) -> str:
+        host = str(self.config.get("public_host") or "").strip()
+        if not host:
+            raise ValidationError("Не указан public_host панели")
+        https_port = int(self.config.get("https_port") or 443)
+        port = "" if https_port == 443 else f":{https_port}"
+        return f"https://{host}{port}{self.base.rstrip('/')}"
+
+    def openwrt_token(self, password: str) -> str:
+        secret = str(self.config.get("openwrt_subscription_secret") or self.config["session_secret"])
+        digest = hmac.new(secret.encode(), f"openwrt-podkop-plus:{password}".encode(), hashlib.sha256).digest()
+        return base64.urlsafe_b64encode(digest).decode().rstrip("=")
+
+    def active_openwrt_users(self) -> list[dict[str, Any]]:
+        users_result = self.admin("users.list", {})
+        root = users_result.get("result") if users_result.get("ok") else {}
+        users = root.get("users") if isinstance(root, dict) else []
+        return [user for user in users if isinstance(user, dict) and user.get("password")]
+
+    def find_openwrt_user_by_password(self, password: str) -> dict[str, Any] | None:
+        for user in self.active_openwrt_users():
+            if hmac.compare_digest(str(user.get("password") or ""), password):
+                return user
+        return None
+
+    def find_openwrt_user_by_token(self, token: str) -> dict[str, Any] | None:
+        if not token or len(token) < 32:
+            return None
+        for user in self.active_openwrt_users():
+            password = str(user.get("password") or "")
+            if hmac.compare_digest(self.openwrt_token(password), token):
+                return user
+        return None
+
+    @staticmethod
+    def openwrt_user_enabled(user: dict[str, Any]) -> bool:
+        expires_at = int(user.get("expires_at") or 0)
+        return not bool(user.get("is_deactivated")) and not bool(user.get("expired")) and not (expires_at > 0 and expires_at < int(time.time()))
+
+    def openwrt_profile(self, user: dict[str, Any], token: str) -> dict[str, Any]:
+        host = str(self.config.get("public_host") or "")
+        password = str(user.get("password") or "")
+        uri = quick_link(host, password, user)
+        base = self.external_base_url()
+        label = str(user.get("label") or password or "WDTT OpenWrt")
+        ports = [item.strip() for item in str(user.get("ports") or "56000,56001,9000").split(",")]
+        return {
+            "version": 1,
+            "type": "wdtt-openwrt-podkop-plus",
+            "name": label,
+            "panel": {
+                "host": host,
+                "base_url": base,
+                "version": str(self.config.get("version") or "0.0.0"),
+            },
+            "user": {
+                "label": label,
+                "password": password,
+                "expires_at": int(user.get("expires_at") or 0),
+                "traffic_used_mb": round((int(user.get("down_bytes") or 0) + int(user.get("up_bytes") or 0)) / 1024 / 1024, 2),
+                "active": self.openwrt_user_enabled(user),
+            },
+            "wdtt": {
+                "uri": uri,
+                "host": host,
+                "ports": {
+                    "dtls": ports[0] if len(ports) > 0 else "56000",
+                    "wireguard": ports[1] if len(ports) > 1 else "56001",
+                    "tun": ports[2] if len(ports) > 2 else "9000",
+                },
+                "vk_hash": str(user.get("vk_hash") or ""),
+            },
+            "podkop_plus": {
+                "mode": "vpn-interface",
+                "interface": "wdtt0",
+                "section": "main",
+                "uci": {
+                    "connection_type": "vpn",
+                    "interface": "wdtt0",
+                },
+                "reload_commands": [
+                    "/etc/init.d/podkop-plus reload",
+                    "/usr/bin/podkop-plus reload",
+                    "/etc/init.d/podkop reload",
+                ],
+                "notes": [
+                    "Podkop Plus routes traffic through an existing VPN interface.",
+                    "WDTT must be started on the router by a compatible OpenWrt client that creates wdtt0.",
+                    "This subscription is not a sing-box VLESS JSON and must not be imported as a generic proxy outbound.",
+                ],
+            },
+            "links": {
+                "metadata_json": f"{base}/sub/openwrt/{token}/podkop-plus.json",
+                "wdtt_uri": f"{base}/sub/openwrt/{token}/wdtt.txt",
+                "qwdtt_json": f"{base}/sub/openwrt/{token}/qwdtt.json",
+                "install_script": f"{base}/sub/openwrt/{token}/install.sh",
+            },
+            "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+
+    def openwrt_subscription_info(self, password: str) -> dict[str, Any]:
+        user = self.find_openwrt_user_by_password(password)
+        if not user:
+            raise ValidationError("Пользователь WDTT не найден")
+        if not self.openwrt_user_enabled(user):
+            raise ValidationError("Пользователь отключён или истёк")
+        token = self.openwrt_token(password)
+        profile = self.openwrt_profile(user, token)
+        command = f"sh -c \"$(wget -qO- '{profile['links']['install_script']}')\""
+        return {
+            "profile": profile,
+            "subscription_url": profile["links"]["metadata_json"],
+            "wdtt_url": profile["links"]["wdtt_uri"],
+            "qwdtt_url": profile["links"]["qwdtt_json"],
+            "install_script_url": profile["links"]["install_script"],
+            "install_command": command,
+            "warning": "Для реального подключения на OpenWrt нужен совместимый WDTT-клиент/модуль Podkop Plus, который поднимает интерфейс wdtt0.",
+        }
+
+    def openwrt_install_script(self, profile: dict[str, Any]) -> str:
+        metadata_url = shell_single_quote(profile["links"]["metadata_json"])
+        wdtt_url = shell_single_quote(profile["links"]["wdtt_uri"])
+        interface = shell_single_quote(str(profile["podkop_plus"]["interface"]))
+        return f"""#!/bin/sh
+set -eu
+
+SUB_URL={metadata_url}
+WDTT_URL={wdtt_url}
+INTERFACE={interface}
+STATE_DIR="/etc/wdtt-openwrt"
+
+fetch_url() {{
+  url="$1"
+  output="$2"
+  if command -v uclient-fetch >/dev/null 2>&1; then
+    uclient-fetch -q -O "$output" "$url"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$output" "$url"
+  else
+    echo "wget/uclient-fetch not found" >&2
+    exit 1
+  fi
+}}
+
+mkdir -p "$STATE_DIR"
+fetch_url "$SUB_URL" "$STATE_DIR/subscription.json"
+fetch_url "$WDTT_URL" "$STATE_DIR/wdtt.txt"
+chmod 600 "$STATE_DIR/subscription.json" "$STATE_DIR/wdtt.txt"
+
+if ! ip link show "$INTERFACE" >/dev/null 2>&1; then
+  echo "WDTT interface $INTERFACE is not found."
+  echo "Install or enable a compatible WDTT OpenWrt/Podkop Plus client first."
+  echo "Saved subscription: $STATE_DIR/subscription.json"
+  echo "Saved WDTT link: $STATE_DIR/wdtt.txt"
+  exit 2
+fi
+
+if uci -q show podkop >/dev/null 2>&1; then
+  uci set podkop.main.connection_type='vpn'
+  uci set podkop.main.interface="$INTERFACE"
+  uci commit podkop
+fi
+
+if [ -d /etc/crontabs ]; then
+  touch /etc/crontabs/root
+  sed -i '/WDTT_OPENWRT_SUBSCRIPTION/d' /etc/crontabs/root
+  echo "17 */6 * * * wget -qO $STATE_DIR/subscription.json $SUB_URL && wget -qO $STATE_DIR/wdtt.txt $WDTT_URL # WDTT_OPENWRT_SUBSCRIPTION" >> /etc/crontabs/root
+  /etc/init.d/cron restart >/dev/null 2>&1 || true
+fi
+
+if [ -x /etc/init.d/podkop-plus ]; then
+  /etc/init.d/podkop-plus reload || /usr/bin/podkop-plus reload || /etc/init.d/podkop-plus restart
+elif [ -x /etc/init.d/podkop ]; then
+  /etc/init.d/podkop reload || /etc/init.d/podkop restart
+elif command -v podkop-plus >/dev/null 2>&1; then
+  podkop-plus reload || true
+fi
+
+echo "WDTT OpenWrt subscription installed for $INTERFACE."
+"""
+
+    def openwrt_subscription_response(
+        self,
+        environ: dict[str, Any],
+        start_response: Any,
+        relative: str,
+    ) -> Iterable[bytes]:
+        if environ["REQUEST_METHOD"] != "GET":
+            return self.response(start_response, "405 Method Not Allowed", b"Method not allowed", "text/plain; charset=utf-8")
+        parts = relative.strip("/").split("/")
+        if len(parts) < 3:
+            return self.response(start_response, "404 Not Found", b"Not found", "text/plain; charset=utf-8")
+        token = parts[2]
+        name = parts[3] if len(parts) > 3 and parts[3] else "podkop-plus.json"
+        user = self.find_openwrt_user_by_token(token)
+        if not user:
+            return self.response(start_response, "404 Not Found", b"Subscription not found", "text/plain; charset=utf-8")
+        if not self.openwrt_user_enabled(user):
+            return self.response(start_response, "403 Forbidden", b"Subscription disabled", "text/plain; charset=utf-8")
+        try:
+            profile = self.openwrt_profile(user, token)
+        except ValidationError as exc:
+            return self.response(start_response, "400 Bad Request", str(exc).encode(), "text/plain; charset=utf-8")
+        safe_name = "".join(char for char in name if char.isalnum() or char in "._-") or "subscription"
+        headers = [("Content-Disposition", f'inline; filename="{safe_name}"')]
+        if name in {"podkop-plus.json", "metadata.json", "subscription.json"}:
+            body = json.dumps(profile, ensure_ascii=False, indent=2).encode()
+            return self.response(start_response, "200 OK", body, "application/json; charset=utf-8", extra_headers=headers)
+        if name == "qwdtt.json":
+            payload = {
+                "subscriptionName": f"WDTT OpenWrt {profile['name']}",
+                "description": "Single-user WDTT profile for OpenWrt/Podkop Plus integration",
+                "version": 1,
+                "profiles": [self.qwdtt_profile(user)],
+                "updatedAt": profile["updated_at"],
+            }
+            body = json.dumps(payload, ensure_ascii=False, indent=2).encode()
+            return self.response(start_response, "200 OK", body, "application/json; charset=utf-8", extra_headers=headers)
+        if name in {"wdtt.txt", "links.txt"}:
+            body = (profile["wdtt"]["uri"] + "\n").encode()
+            return self.response(start_response, "200 OK", body, "text/plain; charset=utf-8", extra_headers=headers)
+        if name in {"install.sh", "podkop-plus.sh"}:
+            body = self.openwrt_install_script(profile).encode()
+            return self.response(start_response, "200 OK", body, "text/x-shellscript; charset=utf-8", extra_headers=headers)
+        return self.response(start_response, "404 Not Found", b"Format not found", "text/plain; charset=utf-8")
+
     @staticmethod
     def history() -> dict[str, Any]:
         cutoff = int(time.time()) - 24 * 3600
@@ -889,6 +1130,10 @@ def escape_html(value: str) -> str:
         .replace('"', "&quot;")
         .replace("'", "&#39;")
     )
+
+
+def shell_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
 def main() -> None:
