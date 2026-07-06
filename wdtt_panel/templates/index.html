@@ -235,14 +235,14 @@
     <form method="dialog">
       <div class="dialog-head"><div><p class="eyebrow">OPENWRT / PODKOP PLUS</p><h2>Подписка для роутера</h2><p class="muted" id="openwrt-user-title"></p></div><button value="cancel" class="icon-button">×</button></div>
       <div class="form-grid">
-        <label class="wide">Podkop Plus metadata JSON<input id="openwrt-subscription-url" class="mono" readonly></label>
-        <label class="wide">Команда установки на OpenWrt<textarea id="openwrt-install-command" class="compact-textarea mono" readonly></textarea></label>
-        <label class="wide">WDTT quick link<input id="openwrt-wdtt-url" class="mono" readonly></label>
+        <label class="wide">Podkop Plus subscription JSON<input id="openwrt-subscription-url" class="mono" readonly></label>
+        <label class="wide">Команда настройки Podkop Plus<textarea id="openwrt-install-command" class="compact-textarea mono" readonly></textarea></label>
+        <label class="wide">VLESS URL<input id="openwrt-vless-url" class="mono" readonly></label>
         <label class="wide">QWDTT JSON<input id="openwrt-qwdtt-url" class="mono" readonly></label>
       </div>
-      <p id="openwrt-warning" class="muted">Для Podkop Plus нужен WDTT-клиент на роутере, который поднимает интерфейс wdtt0.</p>
-      <p class="muted">Скрипт сохраняет подписку на роутере, добавляет автообновление и переключает Podkop/Podkop Plus на VPN-интерфейс wdtt0, если он уже создан совместимым WDTT-клиентом.</p>
-      <div class="dialog-actions"><button value="cancel" class="secondary">Закрыть</button><button type="button" id="copy-openwrt-subscription" class="secondary">Копировать JSON</button><button type="button" id="copy-openwrt-wdtt" class="secondary">Копировать WDTT</button><button type="button" id="copy-openwrt-command" class="secondary">Копировать команду</button><button type="button" id="download-openwrt-script" class="primary">Скачать скрипт</button></div>
+      <p id="openwrt-warning" class="muted">Импортируйте подписку в Podkop Plus. На роутер не ставится отдельный WDTT-клиент.</p>
+      <p class="muted">Сервер использует Xray VLESS over WebSocket через HTTPS панели. Скрипт только записывает URL подписки в настройки уже установленного Podkop/Podkop Plus и добавляет автообновление.</p>
+      <div class="dialog-actions"><button value="cancel" class="secondary">Закрыть</button><button type="button" id="copy-openwrt-subscription" class="secondary">Копировать JSON</button><button type="button" id="copy-openwrt-vless" class="secondary">Копировать VLESS</button><button type="button" id="copy-openwrt-command" class="secondary">Копировать команду</button><button type="button" id="download-openwrt-script" class="primary">Скачать скрипт</button></div>
     </form>
   </dialog>
 

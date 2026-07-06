@@ -31,6 +31,7 @@ from .core import (
     normalize_hashes,
     normalize_user_label,
     parse_expiration,
+    podkop_vless_uuid,
     user_label_from_entry,
     user_view,
     validate_password,
@@ -98,6 +99,9 @@ XRAY_CASCADE_SETTINGS = Path(
 )
 XRAY_CASCADE_SERVICE = os.environ.get("WDTT_XRAY_CASCADE_SERVICE", "wdtt-xray-cascade.service")
 XRAY_GATEWAY_SERVICE = os.environ.get("WDTT_XRAY_GATEWAY_SERVICE", "wdtt-xray-gateway.service")
+PODKOP_VLESS_TAG = "podkop-plus-in"
+PODKOP_VLESS_PORT = 12347
+PODKOP_VLESS_PATH = "/wdtt-podkop-vless"
 IPTABLES_BINARY: str | None = None
 XTABLES_LOCK_FILE = os.environ.get("WDTT_XTABLES_LOCK_FILE", "/var/lib/wdtt-panel-private/xtables.lock")
 XRAY_ACCESS_LOG = Path(
@@ -2247,6 +2251,9 @@ def default_xray_settings() -> dict[str, Any]:
         "gateway_enabled": False,
         "gateway_source_cidr": "10.66.66.0/24",
         "gateway_inbound_port": 12346,
+        "podkop_native_enabled": False,
+        "podkop_inbound_port": PODKOP_VLESS_PORT,
+        "podkop_ws_path": PODKOP_VLESS_PATH,
         "inbounds": [],
         "outbounds": [],
         "routing_rules": [],
@@ -2298,6 +2305,14 @@ def load_xray_settings() -> dict[str, Any]:
     settings["log_level"] = str(settings.get("log_level") or "warning")
     settings["access_log"] = bool(settings.get("access_log", False))
     settings["gateway_enabled"] = bool(settings.get("gateway_enabled", False))
+    settings["podkop_native_enabled"] = bool(settings.get("podkop_native_enabled", False))
+    try:
+        podkop_port = int(settings.get("podkop_inbound_port") or PODKOP_VLESS_PORT)
+        settings["podkop_inbound_port"] = podkop_port if 1024 <= podkop_port <= 65535 else PODKOP_VLESS_PORT
+    except (TypeError, ValueError):
+        settings["podkop_inbound_port"] = PODKOP_VLESS_PORT
+    podkop_path = str(settings.get("podkop_ws_path") or PODKOP_VLESS_PATH).strip()
+    settings["podkop_ws_path"] = podkop_path if re.fullmatch(r"/[A-Za-z0-9._~/-]{3,80}", podkop_path) else PODKOP_VLESS_PATH
     try:
         gateway_network = ipaddress.ip_network(str(settings.get("gateway_source_cidr") or ""), strict=False)
         settings["gateway_source_cidr"] = str(gateway_network) if gateway_network.version == 4 and gateway_network.prefixlen <= 30 else "10.66.66.0/24"
@@ -2484,6 +2499,18 @@ def normalize_xray_settings(payload: dict[str, Any]) -> dict[str, Any]:
     if not 1024 <= gateway_port <= 65535:
         raise ValidationError("Порт шлюза Xray должен быть от 1024 до 65535")
     settings["gateway_inbound_port"] = gateway_port
+    settings["podkop_native_enabled"] = bool(payload.get("podkop_native_enabled", settings.get("podkop_native_enabled", False)))
+    try:
+        podkop_port = int(payload.get("podkop_inbound_port") or settings["podkop_inbound_port"])
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Укажите корректный локальный порт Podkop Plus VLESS") from exc
+    if not 1024 <= podkop_port <= 65535:
+        raise ValidationError("Порт Podkop Plus VLESS должен быть от 1024 до 65535")
+    settings["podkop_inbound_port"] = podkop_port
+    podkop_path = str(payload.get("podkop_ws_path") or settings["podkop_ws_path"]).strip()
+    if not re.fullmatch(r"/[A-Za-z0-9._~/-]{3,80}", podkop_path):
+        raise ValidationError("Некорректный WebSocket path Podkop Plus")
+    settings["podkop_ws_path"] = podkop_path
     settings["geofiles"] = normalize_xray_geofiles(payload.get("geofiles", settings["geofiles"]))
     settings["routes"] = normalize_xray_routes(payload.get("routes", []))
     settings["friendly_rules"] = normalize_xray_friendly_rules(payload.get("friendly_rules", []))
@@ -2507,6 +2534,35 @@ def normalize_xray_settings(payload: dict[str, Any]) -> dict[str, Any]:
             raise ValidationError(f"{label}: некорректный список")
         settings[key] = [xray_object(item, f"{label} {index + 1}") for index, item in enumerate(values)]
     return settings
+
+
+def podkop_vless_clients() -> list[dict[str, str]]:
+    try:
+        data = load_database()
+    except (ValidationError, OSError, json.JSONDecodeError):
+        return []
+    clients: list[dict[str, str]] = []
+    for password, entry in (data.get("passwords") or {}).items():
+        if not isinstance(entry, dict) or is_expired(entry) or bool(entry.get("is_deactivated")):
+            continue
+        label = user_label_from_entry(entry) or password
+        email = re.sub(r"[^A-Za-z0-9_.-]+", "-", label).strip("-")[:48] or "wdtt-user"
+        clients.append({"id": podkop_vless_uuid(str(password)), "email": f"podkop-{email}"})
+    return clients
+
+
+def build_podkop_vless_inbound(settings: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "tag": PODKOP_VLESS_TAG,
+        "listen": "127.0.0.1",
+        "port": int(settings.get("podkop_inbound_port") or PODKOP_VLESS_PORT),
+        "protocol": "vless",
+        "settings": {"clients": podkop_vless_clients(), "decryption": "none"},
+        "streamSettings": {
+            "network": "ws",
+            "wsSettings": {"path": str(settings.get("podkop_ws_path") or PODKOP_VLESS_PATH)},
+        },
+    }
 
 
 def build_xray_config(settings: dict[str, Any], extra_outbound_tags: set[str] | None = None) -> dict[str, Any]:
@@ -2545,6 +2601,12 @@ def build_xray_config(settings: dict[str, Any], extra_outbound_tags: set[str] | 
                 "streamSettings": {"sockopt": {"tproxy": "tproxy"}},
             }
         )
+    if settings.get("podkop_native_enabled"):
+        if any(item.get("tag") == PODKOP_VLESS_TAG for item in inbounds):
+            raise ValidationError(f"Tag {PODKOP_VLESS_TAG} зарезервирован для OpenWrt / Podkop Plus")
+        if any(str(item.get("port") or "") == str(settings["podkop_inbound_port"]) for item in inbounds):
+            raise ValidationError("Локальный порт Podkop Plus VLESS уже занят входящим Xray")
+        inbounds.append(build_podkop_vless_inbound(settings))
     outbound_tags = {"direct", "block", *(extra_outbound_tags or set())}
     inbound_tags: set[str] = set()
     for item in inbounds:
@@ -2871,6 +2933,27 @@ def xray_save(payload: dict[str, Any]) -> dict[str, Any]:
     if cascade.get("enabled"):
         cascade_apply_rules({})
     return xray_status({})
+
+
+def xray_podkop_enable(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = load_xray_settings()
+    settings["enabled"] = True
+    settings["mode"] = "managed"
+    settings["podkop_native_enabled"] = True
+    settings["podkop_inbound_port"] = PODKOP_VLESS_PORT
+    settings["podkop_ws_path"] = PODKOP_VLESS_PATH
+    cascade = load_xray_cascade_settings()
+    persist_xray_configuration(settings, build_effective_xray_config(settings, cascade))
+    return xray_status({})
+
+
+def xray_podkop_refresh(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = load_xray_settings()
+    if not settings.get("podkop_native_enabled"):
+        return {"enabled": False}
+    cascade = load_xray_cascade_settings()
+    persist_xray_configuration(settings, build_effective_xray_config(settings, cascade))
+    return {"enabled": True, "clients": len(podkop_vless_clients())}
 
 
 def schedule_xray_runtime(payload: dict[str, Any]) -> dict[str, Any]:
@@ -3538,6 +3621,8 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "xray.status": xray_status,
     "xray.save": xray_save,
     "xray.install": schedule_xray_runtime,
+    "xray.podkop.enable": xray_podkop_enable,
+    "xray.podkop.refresh": xray_podkop_refresh,
     "xray.geofiles.refresh": xray_refresh_geofile,
     "xray.geofiles.refresh_auto": xray_refresh_auto_geofiles,
     "xray.gateway.apply": xray_gateway_apply_rules,

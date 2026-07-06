@@ -17,10 +17,10 @@ from http import cookies
 from pathlib import Path
 from socketserver import ThreadingMixIn
 from typing import Any, Iterable
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 from wsgiref.simple_server import WSGIServer, make_server
 
-from .core import ValidationError, normalize_hash, normalize_user_label, quick_link
+from .core import ValidationError, normalize_hash, normalize_user_label, podkop_vless_uuid
 from .security import create_session, read_session, verify_csrf, verify_password
 
 
@@ -445,6 +445,8 @@ class Panel:
                 except ValidationError:
                     # A successful WDTT change should not be rolled back because the optional library is full.
                     pass
+        if result.get("ok") and action in {"users.create", "users.create_bulk", "users.update", "users.delete", "users.bulk_action"}:
+            self.admin("xray.podkop.refresh", {})
         if method == "POST":
             self.audit(environ, action, "ok" if result.get("ok") else "error", str(result.get("error") or ""))
         return self.json_response(start_response, status, result)
@@ -822,13 +824,36 @@ class Panel:
     def openwrt_profile(self, user: dict[str, Any], token: str) -> dict[str, Any]:
         host = str(self.config.get("public_host") or "")
         password = str(user.get("password") or "")
-        uri = quick_link(host, password, user)
         base = self.external_base_url()
         label = str(user.get("label") or password or "WDTT OpenWrt")
-        ports = [item.strip() for item in str(user.get("ports") or "56000,56001,9000").split(",")]
+        https_port = int(self.config.get("https_port") or 443)
+        tls_mode = str(self.config.get("tls_mode") or "").lower()
+        ws_path = "/wdtt-podkop-vless"
+        client_id = podkop_vless_uuid(password)
+        query = {
+            "type": "ws",
+            "security": "tls",
+            "encryption": "none",
+            "host": host,
+            "sni": host,
+            "path": ws_path,
+        }
+        if tls_mode and tls_mode != "letsencrypt":
+            query["allowInsecure"] = "1"
+        query_string = "&".join(f"{key}={quote(str(value), safe='')}" for key, value in query.items())
+        vless_uri = f"vless://{client_id}@{host}:{https_port}?{query_string}#{quote(label, safe='')}"
+        outbound = {
+            "type": "vless",
+            "tag": f"wdtt-{password[:8]}",
+            "server": host,
+            "server_port": https_port,
+            "uuid": client_id,
+            "tls": {"enabled": True, "server_name": host, "insecure": bool(tls_mode and tls_mode != "letsencrypt")},
+            "transport": {"type": "ws", "path": ws_path, "headers": {"Host": host}},
+        }
         return {
             "version": 1,
-            "type": "wdtt-openwrt-podkop-plus",
+            "type": "wdtt-podkop-plus-vless",
             "name": label,
             "panel": {
                 "host": host,
@@ -842,23 +867,14 @@ class Panel:
                 "traffic_used_mb": round((int(user.get("down_bytes") or 0) + int(user.get("up_bytes") or 0)) / 1024 / 1024, 2),
                 "active": self.openwrt_user_enabled(user),
             },
-            "wdtt": {
-                "uri": uri,
-                "host": host,
-                "ports": {
-                    "dtls": ports[0] if len(ports) > 0 else "56000",
-                    "wireguard": ports[1] if len(ports) > 1 else "56001",
-                    "tun": ports[2] if len(ports) > 2 else "9000",
-                },
-                "vk_hash": str(user.get("vk_hash") or ""),
-            },
+            "vless": {"uri": vless_uri, "uuid": client_id, "server": host, "server_port": https_port, "ws_path": ws_path},
             "podkop_plus": {
-                "mode": "vpn-interface",
-                "interface": "wdtt0",
+                "mode": "native-vless-subscription",
                 "section": "main",
                 "uci": {
-                    "connection_type": "vpn",
-                    "interface": "wdtt0",
+                    "connection_type": "proxy",
+                    "proxy_config_type": "subscription",
+                    "subscription_url": f"{base}/sub/openwrt/{token}/podkop-plus.json",
                 },
                 "reload_commands": [
                     "/etc/init.d/podkop-plus reload",
@@ -866,14 +882,15 @@ class Panel:
                     "/etc/init.d/podkop reload",
                 ],
                 "notes": [
-                    "Podkop Plus routes traffic through an existing VPN interface.",
-                    "WDTT must be started on the router by a compatible OpenWrt client that creates wdtt0.",
-                    "This subscription is not a sing-box VLESS JSON and must not be imported as a generic proxy outbound.",
+                    "No WDTT client is required on the router.",
+                    "Podkop Plus imports this as a native sing-box VLESS outbound subscription.",
+                    "The server side uses Xray behind the panel HTTPS endpoint.",
                 ],
             },
+            "outbounds": [outbound],
             "links": {
                 "metadata_json": f"{base}/sub/openwrt/{token}/podkop-plus.json",
-                "wdtt_uri": f"{base}/sub/openwrt/{token}/wdtt.txt",
+                "vless_uri": f"{base}/sub/openwrt/{token}/vless.txt",
                 "qwdtt_json": f"{base}/sub/openwrt/{token}/qwdtt.json",
                 "install_script": f"{base}/sub/openwrt/{token}/install.sh",
             },
@@ -887,28 +904,30 @@ class Panel:
         if not self.openwrt_user_enabled(user):
             raise ValidationError("Пользователь отключён или истёк")
         token = self.openwrt_token(password)
+        podkop_state = self.admin("xray.podkop.enable", {})
         profile = self.openwrt_profile(user, token)
         command = f"sh -c \"$(wget -qO- '{profile['links']['install_script']}')\""
+        installed = bool((podkop_state.get("result") or {}).get("installed")) if podkop_state.get("ok") else False
+        active = bool((podkop_state.get("result") or {}).get("active")) if podkop_state.get("ok") else False
         return {
             "profile": profile,
             "subscription_url": profile["links"]["metadata_json"],
-            "wdtt_url": profile["links"]["wdtt_uri"],
+            "vless_url": profile["links"]["vless_uri"],
             "qwdtt_url": profile["links"]["qwdtt_json"],
             "install_script_url": profile["links"]["install_script"],
             "install_command": command,
-            "warning": "Для реального подключения на OpenWrt нужен совместимый WDTT-клиент/модуль Podkop Plus, который поднимает интерфейс wdtt0.",
+            "server": {"xray_installed": installed, "xray_active": active, "configured": bool(podkop_state.get("ok"))},
+            "warning": "На роутере ничего дополнительно ставить не нужно: импортируйте VLESS-подписку в Podkop Plus. На сервере должен быть установлен и активен Xray.",
         }
 
     def openwrt_install_script(self, profile: dict[str, Any]) -> str:
         metadata_url = shell_single_quote(profile["links"]["metadata_json"])
-        wdtt_url = shell_single_quote(profile["links"]["wdtt_uri"])
-        interface = shell_single_quote(str(profile["podkop_plus"]["interface"]))
+        vless_url = shell_single_quote(profile["links"]["vless_uri"])
         return f"""#!/bin/sh
 set -eu
 
 SUB_URL={metadata_url}
-WDTT_URL={wdtt_url}
-INTERFACE={interface}
+VLESS_URL={vless_url}
 STATE_DIR="/etc/wdtt-openwrt"
 
 fetch_url() {{
@@ -926,27 +945,23 @@ fetch_url() {{
 
 mkdir -p "$STATE_DIR"
 fetch_url "$SUB_URL" "$STATE_DIR/subscription.json"
-fetch_url "$WDTT_URL" "$STATE_DIR/wdtt.txt"
-chmod 600 "$STATE_DIR/subscription.json" "$STATE_DIR/wdtt.txt"
-
-if ! ip link show "$INTERFACE" >/dev/null 2>&1; then
-  echo "WDTT interface $INTERFACE is not found."
-  echo "Install or enable a compatible WDTT OpenWrt/Podkop Plus client first."
-  echo "Saved subscription: $STATE_DIR/subscription.json"
-  echo "Saved WDTT link: $STATE_DIR/wdtt.txt"
-  exit 2
-fi
+fetch_url "$VLESS_URL" "$STATE_DIR/vless.txt"
+chmod 600 "$STATE_DIR/subscription.json" "$STATE_DIR/vless.txt"
 
 if uci -q show podkop >/dev/null 2>&1; then
-  uci set podkop.main.connection_type='vpn'
-  uci set podkop.main.interface="$INTERFACE"
+  uci set podkop.main.connection_type='proxy'
+  uci set podkop.main.proxy_config_type='subscription'
+  uci set podkop.main.subscription_url="$SUB_URL"
+  uci -q delete podkop.main.proxy_string
+  uci -q delete podkop.main.selector_proxy_links
+  uci -q delete podkop.main.urltest_proxy_links
   uci commit podkop
 fi
 
 if [ -d /etc/crontabs ]; then
   touch /etc/crontabs/root
   sed -i '/WDTT_OPENWRT_SUBSCRIPTION/d' /etc/crontabs/root
-  echo "17 */6 * * * wget -qO $STATE_DIR/subscription.json $SUB_URL && wget -qO $STATE_DIR/wdtt.txt $WDTT_URL # WDTT_OPENWRT_SUBSCRIPTION" >> /etc/crontabs/root
+  echo "17 */6 * * * wget -qO $STATE_DIR/subscription.json $SUB_URL && wget -qO $STATE_DIR/vless.txt $VLESS_URL # WDTT_OPENWRT_SUBSCRIPTION" >> /etc/crontabs/root
   /etc/init.d/cron restart >/dev/null 2>&1 || true
 fi
 
@@ -958,7 +973,7 @@ elif command -v podkop-plus >/dev/null 2>&1; then
   podkop-plus reload || true
 fi
 
-echo "WDTT OpenWrt subscription installed for $INTERFACE."
+echo "WDTT Podkop Plus VLESS subscription installed."
 """
 
     def openwrt_subscription_response(
@@ -986,7 +1001,7 @@ echo "WDTT OpenWrt subscription installed for $INTERFACE."
         safe_name = "".join(char for char in name if char.isalnum() or char in "._-") or "subscription"
         headers = [("Content-Disposition", f'inline; filename="{safe_name}"')]
         if name in {"podkop-plus.json", "metadata.json", "subscription.json"}:
-            body = json.dumps(profile, ensure_ascii=False, indent=2).encode()
+            body = json.dumps({"outbounds": profile["outbounds"], "metadata": profile}, ensure_ascii=False, indent=2).encode()
             return self.response(start_response, "200 OK", body, "application/json; charset=utf-8", extra_headers=headers)
         if name == "qwdtt.json":
             payload = {
@@ -998,8 +1013,8 @@ echo "WDTT OpenWrt subscription installed for $INTERFACE."
             }
             body = json.dumps(payload, ensure_ascii=False, indent=2).encode()
             return self.response(start_response, "200 OK", body, "application/json; charset=utf-8", extra_headers=headers)
-        if name in {"wdtt.txt", "links.txt"}:
-            body = (profile["wdtt"]["uri"] + "\n").encode()
+        if name in {"vless.txt", "links.txt", "wdtt.txt"}:
+            body = (profile["vless"]["uri"] + "\n").encode()
             return self.response(start_response, "200 OK", body, "text/plain; charset=utf-8", extra_headers=headers)
         if name in {"install.sh", "podkop-plus.sh"}:
             body = self.openwrt_install_script(profile).encode()

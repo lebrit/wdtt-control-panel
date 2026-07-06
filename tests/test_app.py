@@ -137,25 +137,28 @@ class AppSmokeTests(unittest.TestCase):
         self.assertTrue(headers["status"].startswith("200"))
         result = json.loads(body)["result"]
         self.assertIn("/sub/openwrt/", result["subscription_url"])
-        self.assertIn("wdtt0", result["warning"])
+        self.assertIn("Podkop Plus", result["warning"])
+        self.assertIn("/vless.txt", result["vless_url"])
+        self.assertTrue(result["server"]["xray_installed"])
 
         subscription_path = urlparse(result["subscription_url"]).path
         headers, body = self.request(subscription_path)
         self.assertTrue(headers["status"].startswith("200"))
         subscription = json.loads(body)
-        self.assertEqual(subscription["type"], "wdtt-openwrt-podkop-plus")
-        self.assertEqual(subscription["podkop_plus"]["interface"], "wdtt0")
-        self.assertTrue(subscription["wdtt"]["uri"].startswith("wdtt://panel.example.com:56000:56001:9000:DemoUserA123:"))
+        self.assertIn("outbounds", subscription)
+        self.assertEqual(subscription["metadata"]["type"], "wdtt-podkop-plus-vless")
+        self.assertEqual(subscription["outbounds"][0]["type"], "vless")
+        self.assertEqual(subscription["outbounds"][0]["transport"]["type"], "ws")
 
-        headers, body = self.request(urlparse(result["wdtt_url"]).path)
+        headers, body = self.request(urlparse(result["vless_url"]).path)
         self.assertTrue(headers["status"].startswith("200"))
-        self.assertEqual(body.decode().strip(), subscription["wdtt"]["uri"])
+        self.assertTrue(body.decode().strip().startswith("vless://"))
 
         headers, body = self.request(urlparse(result["install_script_url"]).path)
         self.assertTrue(headers["status"].startswith("200"))
         script = body.decode()
         self.assertIn("podkop-plus", script)
-        self.assertIn("wdtt0", script)
+        self.assertIn("proxy_config_type='subscription'", script)
 
         payload = json.dumps({"password": "WaitingUser123"}).encode()
         headers, body = self.request(

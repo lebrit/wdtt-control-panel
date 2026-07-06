@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.11.16"
+PANEL_VERSION="0.11.17"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,6 +30,8 @@ XRAY_ASSETS="$PRIVATE_STATE_DIR/xray-assets"
 XRAY_CASCADE_SETTINGS="$PRIVATE_STATE_DIR/xray-cascade.json"
 XRAY_CASCADE_SERVICE="wdtt-xray-cascade.service"
 XRAY_GATEWAY_SERVICE="wdtt-xray-gateway.service"
+PODKOP_VLESS_PATH="/wdtt-podkop-vless"
+PODKOP_VLESS_PORT="12347"
 WARP_DIR="$PRIVATE_STATE_DIR/warp"
 LOG_FILE="/var/log/wdtt-panel-install.log"
 
@@ -1165,6 +1167,14 @@ server {
 $HSTS_HEADER
 
     location = ${PANEL_PATH%/} { return 302 $PANEL_PATH; }
+    location ^~ $PODKOP_VLESS_PATH {
+        proxy_pass http://127.0.0.1:$PODKOP_VLESS_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_read_timeout 3600s;
+    }
     location ^~ $PANEL_PATH {
         proxy_pass http://127.0.0.1:$PANEL_LISTEN_PORT;
         proxy_http_version 1.1;

@@ -690,10 +690,12 @@
       state.openwrt = result;
       $("#openwrt-user-title").textContent = user.label || user.password;
       $("#openwrt-subscription-url").value = result.subscription_url || "";
-      $("#openwrt-wdtt-url").value = result.wdtt_url || "";
+      $("#openwrt-vless-url").value = result.vless_url || "";
       $("#openwrt-qwdtt-url").value = result.qwdtt_url || "";
       $("#openwrt-install-command").value = result.install_command || "";
-      $("#openwrt-warning").textContent = result.warning || "Для Podkop Plus нужен WDTT-клиент на роутере, который поднимает интерфейс wdtt0.";
+      const server = result.server || {};
+      const status = server.xray_active ? "Xray активен" : (server.xray_installed ? "Xray настроен, но сейчас не активен" : "Xray ещё не установлен на сервере");
+      $("#openwrt-warning").textContent = `${result.warning || "Импортируйте VLESS-подписку в Podkop Plus."} ${status}.`;
       $("#openwrt-dialog").showModal();
     } catch (error) { toast(error.message, true); }
   }
@@ -1381,7 +1383,7 @@
     $("#copy-bulk-links").addEventListener("click", copyBulkLinks);
     $("#copy-openwrt-subscription").addEventListener("click", () => copyOpenWrtField("#openwrt-subscription-url", "OpenWrt subscription скопирована"));
     $("#copy-openwrt-command").addEventListener("click", () => copyOpenWrtField("#openwrt-install-command", "Команда установки скопирована"));
-    $("#copy-openwrt-wdtt").addEventListener("click", () => copyOpenWrtField("#openwrt-wdtt-url", "WDTT-ссылка скопирована"));
+    $("#copy-openwrt-vless").addEventListener("click", () => copyOpenWrtField("#openwrt-vless-url", "VLESS-ссылка скопирована"));
     $("#download-openwrt-script").addEventListener("click", downloadOpenWrtScript);
     $("#user-search").addEventListener("input", renderUsers);
     $("#user-auto-refresh-interval").addEventListener("change", () => setUserAutoRefresh());

@@ -553,6 +553,30 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual(config["log"]["access"], str(self.xray_access_log))
         self.assertEqual(config["log"]["error"], str(self.xray_error_log))
 
+    def test_podkop_plus_native_vless_inbound_uses_active_users(self):
+        active = admin.create_user({"password": "PodkopUser123", "days": 30, "vk_hash": "hash_one", "ports": "56000,56001,9000"})
+        disabled = admin.create_user({"password": "DisabledPodkop123", "days": 30, "vk_hash": "hash_two", "ports": "56000,56001,9000", "is_deactivated": True})
+        settings = admin.normalize_xray_settings(
+            {
+                "enabled": True,
+                "mode": "managed",
+                "log_level": "warning",
+                "podkop_native_enabled": True,
+                "inbounds": [],
+                "outbounds": [],
+                "routing_rules": [],
+                "geofiles": admin.default_xray_settings()["geofiles"],
+            }
+        )
+        config = admin.build_xray_config(settings)
+        inbound = next(item for item in config["inbounds"] if item["tag"] == admin.PODKOP_VLESS_TAG)
+        self.assertEqual(inbound["listen"], "127.0.0.1")
+        self.assertEqual(inbound["port"], admin.PODKOP_VLESS_PORT)
+        self.assertEqual(inbound["streamSettings"]["network"], "ws")
+        client_ids = [item["id"] for item in inbound["settings"]["clients"]]
+        self.assertIn(admin.podkop_vless_uuid(active["password"]), client_ids)
+        self.assertNotIn(admin.podkop_vless_uuid(disabled["password"]), client_ids)
+
     def test_xray_access_logging_also_applies_to_raw_config(self):
         settings = admin.normalize_xray_settings(
             {
