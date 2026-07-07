@@ -144,7 +144,7 @@ tbody tr:hover { background: rgba(255,255,255,.018); }
 .row-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .row-actions button, .icon-button { min-height: 32px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: #121b28; color: var(--muted); }
 .user-actions-trigger { width: 100%; min-height: 38px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); color: var(--text); background: #111a27; font-weight: 700; }
-.user-actions-popover { position: fixed; z-index: 1000; display: grid; gap: 5px; width: 146px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: #0f1825; box-shadow: 0 18px 36px rgba(0,0,0,.34); }
+.user-actions-popover { position: fixed; z-index: 1000; display: grid; gap: 5px; width: 124px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: #0f1825; box-shadow: 0 18px 36px rgba(0,0,0,.34); }
 .user-actions-popover[hidden] { display: none; }
 .user-actions-popover button { width: 100%; min-height: 32px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); color: #d7e4f5; background: #151f2e; text-align: left; font-size: 12px; font-weight: 700; }
 .user-actions-popover button:hover, .user-actions-trigger:hover { border-color: rgba(89,225,194,.45); color: var(--text); }

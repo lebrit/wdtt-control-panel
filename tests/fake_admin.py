@@ -134,10 +134,6 @@ elif action == "telegram.test":
     result = {"sent": True, "admin_id": "123456789"}
 elif action == "xray.status":
     result = {"settings": {"enabled": False, "mode": "managed", "log_level": "warning", "inbounds": [], "outbounds": [], "routing_rules": [], "geofiles": []}, "active": False, "installed": False, "version": "", "config_exists": False, "logs": [], "geofiles": []}
-elif action == "xray.podkop.enable":
-    result = {"settings": {"enabled": True, "mode": "managed", "podkop_native_enabled": True}, "active": True, "installed": True, "version": "Xray test", "config_exists": True, "logs": [], "geofiles": []}
-elif action == "xray.podkop.refresh":
-    result = {"enabled": True, "clients": 1}
 elif action == "warp.status":
     result = {"installed": False, "account_exists": False, "profile_exists": False, "configured": False, "active": False}
 elif action == "cascade.status":

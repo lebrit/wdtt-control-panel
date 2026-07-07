@@ -4,7 +4,6 @@ import ipaddress
 import re
 import secrets
 import time
-import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -149,11 +148,6 @@ def quick_link(host: str, password: str, entry: dict[str, Any]) -> str:
     ports = validate_ports(str(entry.get("ports") or "56000,56001,9000")).split(",")
     hashes = str(entry.get("vk_hash") or "")
     return f"wdtt://{host}:{ports[0]}:{ports[1]}:{ports[2]}:{password}:{hashes}"
-
-
-def podkop_vless_uuid(password: str) -> str:
-    """Stable VLESS client UUID for Podkop Plus native subscriptions."""
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"wdtt-podkop-plus-vless:{validate_password(password)}"))
 
 
 @dataclass(frozen=True)

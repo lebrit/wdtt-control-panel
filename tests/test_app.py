@@ -4,7 +4,6 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from urllib.parse import urlparse
 from unittest import mock
 from wsgiref.util import setup_testing_defaults
 
@@ -120,55 +119,6 @@ class AppSmokeTests(unittest.TestCase):
         )
         self.assertTrue(headers["status"].startswith("200"))
         self.assertEqual(json.loads(body)["result"]["estimated_freed_bytes"], 1024)
-
-    def test_openwrt_podkop_plus_subscription_links(self):
-        payload = json.dumps({"password": "Panel-password-12345"}).encode()
-        headers, body = self.request("/private-panel-path/api/v1/auth/login", "POST", payload)
-        self.assertTrue(headers["status"].startswith("200"))
-        token = json.loads(body)["result"]["token"]
-
-        payload = json.dumps({"password": "DemoUserA123"}).encode()
-        headers, body = self.request(
-            "/private-panel-path/api/v1/openwrt/podkop-plus",
-            "POST",
-            payload,
-            auth=f"Bearer {token}",
-        )
-        self.assertTrue(headers["status"].startswith("200"))
-        result = json.loads(body)["result"]
-        self.assertIn("/sub/openwrt/", result["subscription_url"])
-        self.assertIn("Podkop Plus", result["warning"])
-        self.assertIn("/vless.txt", result["vless_url"])
-        self.assertTrue(result["server"]["xray_installed"])
-
-        subscription_path = urlparse(result["subscription_url"]).path
-        headers, body = self.request(subscription_path)
-        self.assertTrue(headers["status"].startswith("200"))
-        subscription = json.loads(body)
-        self.assertIn("outbounds", subscription)
-        self.assertEqual(subscription["metadata"]["type"], "wdtt-podkop-plus-vless")
-        self.assertEqual(subscription["outbounds"][0]["type"], "vless")
-        self.assertEqual(subscription["outbounds"][0]["transport"]["type"], "ws")
-
-        headers, body = self.request(urlparse(result["vless_url"]).path)
-        self.assertTrue(headers["status"].startswith("200"))
-        self.assertTrue(body.decode().strip().startswith("vless://"))
-
-        headers, body = self.request(urlparse(result["install_script_url"]).path)
-        self.assertTrue(headers["status"].startswith("200"))
-        script = body.decode()
-        self.assertIn("podkop-plus", script)
-        self.assertIn("podkop-plus.$PODKOP_PLUS_SECTION.action=proxy", script)
-        self.assertIn("podkop-plus.$PODKOP_PLUS_SECTION.subscription_urls=$SUB_URL", script)
-
-        payload = json.dumps({"password": "WaitingUser123"}).encode()
-        headers, body = self.request(
-            "/private-panel-path/api/v1/openwrt/podkop-plus",
-            "POST",
-            payload,
-            auth=f"Bearer {token}",
-        )
-        self.assertTrue(headers["status"].startswith("400"))
 
     def test_user_statistics_accumulate_daily_and_total_traffic(self):
         first = {
