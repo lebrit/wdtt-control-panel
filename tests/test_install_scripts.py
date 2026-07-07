@@ -13,9 +13,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.11.19"', installer)
-        self.assertIn('__version__ = "0.11.19"', package)
-        self.assertIn("Текущая версия: 0.11.19", readme)
+        self.assertIn('PANEL_VERSION="0.11.20"', installer)
+        self.assertIn('__version__ = "0.11.20"', package)
+        self.assertIn("Текущая версия: 0.11.20", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -238,6 +238,13 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("wdtt-fleet-agent.service", script)
         self.assertIn('$STATE_DIR/fleet-agent.json', script)
         self.assertNotIn("write_fleet_agent_service()", script)
+
+    def test_installer_removes_obsolete_openwrt_podkop_xray_config(self):
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("remove_obsolete_openwrt_podkop()", script)
+        self.assertIn('"podkop_native_enabled"', script)
+        self.assertIn('"podkop-plus-in"', script)
+        self.assertIn('systemctl restart "$XRAY_SERVICE"', script)
 
     def test_dialog_cancel_buttons_skip_required_field_validation(self):
         html = (ROOT / "wdtt_panel" / "templates" / "index.html").read_text(encoding="utf-8")

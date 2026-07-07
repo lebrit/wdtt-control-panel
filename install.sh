@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.11.19"
+PANEL_VERSION="0.11.20"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -1014,6 +1014,58 @@ remove_obsolete_fleet_agent() {
   systemctl daemon-reload
 }
 
+remove_obsolete_openwrt_podkop() {
+  local changed
+  changed="$(python3 - "$XRAY_CONFIG" "$XRAY_SETTINGS" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+settings_path = Path(sys.argv[2])
+changed = False
+
+def load_json(path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+def save_json(path, value):
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+settings = load_json(settings_path) if settings_path.is_file() else None
+if isinstance(settings, dict):
+    for key in ("podkop_native_enabled", "podkop_inbound_port", "podkop_ws_path"):
+        if key in settings:
+            settings.pop(key, None)
+            changed = True
+    if changed:
+        save_json(settings_path, settings)
+
+config_changed = False
+config = load_json(config_path) if config_path.is_file() else None
+if isinstance(config, dict) and isinstance(config.get("inbounds"), list):
+    inbounds = config["inbounds"]
+    filtered = [item for item in inbounds if not (isinstance(item, dict) and item.get("tag") == "podkop-plus-in")]
+    if len(filtered) != len(inbounds):
+        config["inbounds"] = filtered
+        config_changed = True
+        changed = True
+if config_changed:
+    save_json(config_path, config)
+
+print("changed" if changed else "unchanged")
+PY
+)"
+  if [ "$changed" = "changed" ]; then
+    log "Удалена устаревшая OpenWrt/Podkop Plus настройка Xray"
+    if systemctl is-active --quiet "$XRAY_SERVICE"; then
+      systemctl restart "$XRAY_SERVICE" >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
 port_80_available_for_nginx() {
   local listeners
   listeners="$(ss -ltnp '( sport = :80 )' 2>/dev/null || true)"
@@ -1439,6 +1491,7 @@ update_panel() {
   write_renew_timer
   write_wdtt_extensions_timer
   write_xray_services
+  remove_obsolete_openwrt_podkop
   schedule_wdtt_extensions
   systemctl restart "$PANEL_SERVICE"
   log "Панель обновлена; адрес, пароль, сертификаты и данные сохранены"
