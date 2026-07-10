@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.11.22"
+PANEL_VERSION="0.11.23"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,12 +44,13 @@ INSTALL_WDTT="${INSTALL_WDTT:-auto}"
 WDTT_MAIN_PASSWORD="${WDTT_MAIN_PASSWORD:-}"
 WDTT_TELEGRAM_BOT_TOKEN="${WDTT_TELEGRAM_BOT_TOKEN:-}"
 WDTT_TELEGRAM_ADMIN_ID="${WDTT_TELEGRAM_ADMIN_ID:-}"
-WDTT_REF="${WDTT_REF:-v1.2.4}"
+WDTT_REPOSITORY="${WDTT_REPOSITORY:-SpaceNeuroX/proxy-turn-vk-android}"
+WDTT_REF="${WDTT_REF:-v1.3.1}"
 GO_VERSION="${GO_VERSION:-1.25.0}"
 WDTT_SERVICE="wdtt.service"
 WDTT_EXTENSIONS_SERVICE="wdtt-panel-wdtt-extensions.service"
 WDTT_EXTENSIONS_TIMER="wdtt-panel-wdtt-extensions.timer"
-WDTT_EXTENSION_MARKER="wdtt-panel-extension-v5"
+WDTT_EXTENSION_MARKER="wdtt-panel-extension-v6"
 
 log() { printf '[wdtt-panel] %s\n' "$*" | tee -a "$LOG_FILE"; }
 die() { log "ERROR: $*"; exit 1; }
@@ -126,6 +127,7 @@ validate_inputs() {
   [[ "$PANEL_LISTEN_PORT" =~ ^[0-9]+$ ]] && [ "$PANEL_LISTEN_PORT" -ge 1024 ] && [ "$PANEL_LISTEN_PORT" -le 65535 ] || die "Некорректный PANEL_LISTEN_PORT"
   [ "$PANEL_HTTPS_PORT" != "$PANEL_LISTEN_PORT" ] || die "Внешний и внутренний порты панели должны отличаться"
   [[ "$PANEL_USER" =~ ^[A-Za-z0-9_.-]{3,32}$ ]] || die "Некорректный PANEL_USER"
+  [[ "$WDTT_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "Некорректный WDTT_REPOSITORY"
   [[ "$WDTT_REF" =~ ^[A-Za-z0-9._-]+$ ]] || die "Некорректный WDTT_REF"
   [[ "$GO_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Некорректный GO_VERSION"
 }
@@ -229,8 +231,8 @@ download_wdtt_archive() {
     second="heads"
   fi
   for kind in "$first" "$second"; do
-    if curl -fsSL --retry 3 "https://github.com/amurcanov/proxy-turn-vk-android/archive/refs/${kind}/${WDTT_REF}.zip" -o "$dest"; then
-      log "WDTT source: amurcanov/proxy-turn-vk-android ${kind}/${WDTT_REF}"
+    if curl -fsSL --retry 3 "https://github.com/${WDTT_REPOSITORY}/archive/refs/${kind}/${WDTT_REF}.zip" -o "$dest"; then
+      log "WDTT source: ${WDTT_REPOSITORY} ${kind}/${WDTT_REF}"
       return 0
     fi
   done
@@ -254,6 +256,42 @@ try:
 except (OSError, ValueError, AttributeError):
     raise SystemExit(1)
 PY
+}
+
+wdtt_database_preserved() {
+  python3 - "$1" "$2" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+before = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+after = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+if not isinstance(before, dict) or not isinstance(after, dict):
+    raise SystemExit(1)
+before_main = str(before.get("main_password") or "")
+after_main = str(after.get("main_password") or "")
+if before_main and before_main != after_main:
+    raise SystemExit(1)
+for field in ("passwords", "devices"):
+    before_items = before.get(field) or {}
+    after_items = after.get(field) or {}
+    if not isinstance(before_items, dict) or not isinstance(after_items, dict):
+        raise SystemExit(1)
+    if not set(before_items).issubset(after_items):
+        raise SystemExit(1)
+PY
+}
+
+restore_wdtt_extension_backup() {
+  local binary_backup="$1" database_backup="${2:-}" restart_service="${3:-0}"
+  systemctl stop "$WDTT_SERVICE" >>"$LOG_FILE" 2>&1 || true
+  install -m 0755 "$binary_backup" /usr/local/bin/wdtt-server
+  if [ -n "$database_backup" ]; then
+    install -m 0600 "$database_backup" /etc/wdtt/passwords.json
+  fi
+  if [ "$restart_service" = "1" ]; then
+    systemctl start "$WDTT_SERVICE" >>"$LOG_FILE" 2>&1 || true
+  fi
 }
 
 build_wdtt_args() {
@@ -428,6 +466,9 @@ install_wdtt_extensions() {
   source="$(find "$work/source" -mindepth 1 -maxdepth 1 -type d | head -1)"
   [ -f "$source/server.go" ] || die "В архиве WDTT не найден server.go"
 
+  if [ "$WDTT_REPOSITORY" = "SpaceNeuroX/proxy-turn-vk-android" ]; then
+    python3 "$SCRIPT_DIR/wdtt_panel/wdtt_server_patch.py" "$source/server.go" || die "Не удалось адаптировать сервер SpaceNeuroX для панели"
+  else
   python3 - "$source/server.go" <<'PY'
 import re
 import sys
@@ -444,7 +485,7 @@ def replace_once(old, new, title):
 
 replace_once(
     'func main() {\n',
-    'const wdttPanelExtensionMarker = "wdtt-panel-extension-v5"\n\nfunc main() {\n\tlog.Printf("[WDTT Panel] extension %s enabled", wdttPanelExtensionMarker)\n',
+    'const wdttPanelExtensionMarker = "wdtt-panel-extension-v6"\n\nfunc main() {\n\tlog.Printf("[WDTT Panel] extension %s enabled", wdttPanelExtensionMarker)\n',
     "extension marker",
 )
 
@@ -571,6 +612,7 @@ func telegramLabel(value string) string {
 source = source.replace(marker, helpers + marker, 1)
 path.write_text(source, encoding="utf-8")
 PY
+  fi
 
   (
     cd "$source"
@@ -669,19 +711,26 @@ PY
   install -m 0755 "$work/wdtt-server" "$target.new"
   mv -f "$target.new" "$target"
   if [ "$was_active" = "1" ] && ! systemctl start "$WDTT_SERVICE" >>"$LOG_FILE" 2>&1; then
-    install -m 0755 "$backup" "$target"
-    if [ -n "$database_backup" ]; then install -m 0600 "$database_backup" /etc/wdtt/passwords.json; fi
-    systemctl start "$WDTT_SERVICE" >>"$LOG_FILE" 2>&1 || true
+    restore_wdtt_extension_backup "$backup" "$database_backup" "$was_active"
     die "Обновлённый WDTT не запустился; прежний бинарный файл восстановлен"
   fi
+  if [ "$was_active" = "1" ]; then
+    sleep 2
+    if ! systemctl is-active --quiet "$WDTT_SERVICE"; then
+      restore_wdtt_extension_backup "$backup" "$database_backup" "$was_active"
+      die "Обновлённый WDTT завершился после запуска; прежний бинарный файл и база пользователей восстановлены"
+    fi
+  fi
   if ! wdtt_extensions_binary_is_current; then
-    install -m 0755 "$backup" "$target"
-    if [ -n "$database_backup" ]; then install -m 0600 "$database_backup" /etc/wdtt/passwords.json; fi
-    if [ "$was_active" = "1" ]; then systemctl restart "$WDTT_SERVICE" >>"$LOG_FILE" 2>&1 || true; fi
+    restore_wdtt_extension_backup "$backup" "$database_backup" "$was_active"
     die "Собранный WDTT не прошёл проверку расширений; прежний бинарный файл восстановлен"
   fi
+  if [ -n "$database_backup" ] && ! wdtt_database_preserved "$database_backup" /etc/wdtt/passwords.json; then
+    restore_wdtt_extension_backup "$backup" "$database_backup" "$was_active"
+    die "После обновления WDTT обнаружена потеря пользователей или устройств; прежний бинарный файл и база восстановлены"
+  fi
   rm -f "$PRIVATE_STATE_DIR/user-labels.json"
-  printf '{"enabled_at": %s, "marker": "%s", "wdtt_ref": "%s", "features": ["labels", "main_traffic", "activity", "upstream_v1_2_4"]}\n' "$(date +%s)" "$WDTT_EXTENSION_MARKER" "$WDTT_REF" > "$PRIVATE_STATE_DIR/wdtt-extensions.json"
+  printf '{"enabled_at": %s, "marker": "%s", "wdtt_repository": "%s", "wdtt_ref": "%s", "features": ["labels", "main_traffic", "activity", "spaceneurox_v1_3_1"]}\n' "$(date +%s)" "$WDTT_EXTENSION_MARKER" "$WDTT_REPOSITORY" "$WDTT_REF" > "$PRIVATE_STATE_DIR/wdtt-extensions.json"
   chmod 0600 "$PRIVATE_STATE_DIR/wdtt-extensions.json"
   log "Расширение WDTT включено: метки общие с Telegram-ботом, трафик и последняя активность пользователей учитываются"
 }

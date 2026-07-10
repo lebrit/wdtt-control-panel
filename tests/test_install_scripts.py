@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -13,9 +14,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.11.22"', installer)
-        self.assertIn('__version__ = "0.11.22"', package)
-        self.assertIn("Текущая версия: 0.11.22", readme)
+        self.assertIn('PANEL_VERSION="0.11.23"', installer)
+        self.assertIn('__version__ = "0.11.23"', package)
+        self.assertIn("Текущая версия: 0.11.23", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -53,9 +54,11 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("Restart=on-failure", script)
         self.assertIn('systemctl restart --no-block "$WDTT_EXTENSIONS_SERVICE"', script)
         self.assertIn("WDTT_EXTENSION_MARKER", script)
-        self.assertIn('WDTT_REF="${WDTT_REF:-v1.2.4}"', script)
-        self.assertIn('WDTT_EXTENSION_MARKER="wdtt-panel-extension-v5"', script)
+        self.assertIn('WDTT_REPOSITORY="${WDTT_REPOSITORY:-SpaceNeuroX/proxy-turn-vk-android}"', script)
+        self.assertIn('WDTT_REF="${WDTT_REF:-v1.3.1}"', script)
+        self.assertIn('WDTT_EXTENSION_MARKER="wdtt-panel-extension-v6"', script)
         self.assertIn("download_wdtt_archive", script)
+        self.assertIn("https://github.com/${WDTT_REPOSITORY}/archive", script)
         self.assertIn("refs/${kind}/${WDTT_REF}.zip", script)
         self.assertIn("wdtt_extensions_binary_is_current", script)
         self.assertIn("backup_wdtt_database_before_update", script)
@@ -72,7 +75,10 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('json:"main_down_bytes,omitempty"', script)
         self.assertIn('json:"last_upload_at,omitempty"', script)
         self.assertIn('"activity"', script)
-        self.assertIn('"upstream_v1_2_4"', script)
+        self.assertIn('"spaceneurox_v1_3_1"', script)
+        self.assertIn("wdtt_server_patch.py", script)
+        self.assertIn("wdtt_database_preserved", script)
+        self.assertIn("restore_wdtt_extension_backup", script)
         self.assertIn('"command":"settings"', script)
         self.assertIn("label prompt on Telegram creation", script)
         self.assertIn("label before password in Telegram list", script)
@@ -86,6 +92,41 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("validate_telegram_settings()", script)
         self.assertIn("apply_telegram_settings()", script)
         self.assertIn("-bot-token $WDTT_TELEGRAM_BOT_TOKEN", script)
+
+        patcher = (ROOT / "wdtt_panel" / "wdtt_server_patch.py").read_text(encoding="utf-8")
+        self.assertIn('EXTENSION_MARKER = "wdtt-panel-extension-v6"', patcher)
+        self.assertIn('json:"main_down_bytes,omitempty"', patcher)
+        self.assertIn('json:"last_upload_at,omitempty"', patcher)
+        self.assertIn('cmd == "/settings"', patcher)
+        self.assertIn('Отправьте метку нового пользователя', patcher)
+        self.assertIn('telegramLabel(label), p, expiry', patcher)
+
+    def test_wdtt_update_guard_rejects_lost_users_or_devices(self):
+        installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+        start_marker = 'wdtt_database_preserved() {\n  python3 - "$1" "$2" <<\'PY\'\n'
+        start = installer.index(start_marker) + len(start_marker)
+        guard = installer[start:installer.index("\nPY\n}", start)]
+        before = {
+            "main_password": "MainPassword123",
+            "passwords": {"UserPassword123": {"label": "Пользователь"}},
+            "devices": {"device-1": {"ip": "10.66.0.2"}},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before_path = root / "before.json"
+            after_path = root / "after.json"
+            before_path.write_text(json.dumps(before), encoding="utf-8")
+            after_path.write_text(json.dumps(before), encoding="utf-8")
+            with mock.patch.object(sys, "argv", ["guard", str(before_path), str(after_path)]):
+                exec(guard, {"__name__": "__main__"})
+
+            after_path.write_text(
+                json.dumps({"main_password": "MainPassword123", "passwords": {}, "devices": {}}),
+                encoding="utf-8",
+            )
+            with mock.patch.object(sys, "argv", ["guard", str(before_path), str(after_path)]):
+                with self.assertRaises(SystemExit):
+                    exec(guard, {"__name__": "__main__"})
 
     def test_installer_recovers_legacy_labels_from_private_backups(self):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
