@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.11.20"
+PANEL_VERSION="0.11.21"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,12 +44,12 @@ INSTALL_WDTT="${INSTALL_WDTT:-auto}"
 WDTT_MAIN_PASSWORD="${WDTT_MAIN_PASSWORD:-}"
 WDTT_TELEGRAM_BOT_TOKEN="${WDTT_TELEGRAM_BOT_TOKEN:-}"
 WDTT_TELEGRAM_ADMIN_ID="${WDTT_TELEGRAM_ADMIN_ID:-}"
-WDTT_REF="${WDTT_REF:-main}"
+WDTT_REF="${WDTT_REF:-v1.2.4}"
 GO_VERSION="${GO_VERSION:-1.25.0}"
 WDTT_SERVICE="wdtt.service"
 WDTT_EXTENSIONS_SERVICE="wdtt-panel-wdtt-extensions.service"
 WDTT_EXTENSIONS_TIMER="wdtt-panel-wdtt-extensions.timer"
-WDTT_EXTENSION_MARKER="wdtt-panel-extension-v4"
+WDTT_EXTENSION_MARKER="wdtt-panel-extension-v5"
 
 log() { printf '[wdtt-panel] %s\n' "$*" | tee -a "$LOG_FILE"; }
 die() { log "ERROR: $*"; exit 1; }
@@ -221,6 +221,22 @@ wdtt_installed() {
   systemctl cat wdtt.service >/dev/null 2>&1 || [ -x /usr/local/bin/wdtt-server ]
 }
 
+download_wdtt_archive() {
+  local dest="$1"
+  local first="heads" second="tags"
+  if [[ "$WDTT_REF" == v[0-9]* ]]; then
+    first="tags"
+    second="heads"
+  fi
+  for kind in "$first" "$second"; do
+    if curl -fsSL --retry 3 "https://github.com/amurcanov/proxy-turn-vk-android/archive/refs/${kind}/${WDTT_REF}.zip" -o "$dest"; then
+      log "WDTT source: amurcanov/proxy-turn-vk-android ${kind}/${WDTT_REF}"
+      return 0
+    fi
+  done
+  die "Не удалось скачать WDTT source для WDTT_REF=$WDTT_REF"
+}
+
 wdtt_extensions_binary_is_current() {
   [ -x /usr/local/bin/wdtt-server ] || return 1
   LC_ALL=C grep -aFq "$WDTT_EXTENSION_MARKER" /usr/local/bin/wdtt-server
@@ -365,7 +381,7 @@ install_clean_wdtt() {
   tar -xzf "$BUILD_DIR/$GO_TARBALL" -C "$BUILD_DIR"
   install -d "$BUILD_DIR/gopath/pkg/mod" "$BUILD_DIR/go-cache"
 
-  curl -fsSL "https://github.com/amurcanov/proxy-turn-vk-android/archive/refs/heads/${WDTT_REF}.zip" -o "$BUILD_DIR/wdtt.zip"
+  download_wdtt_archive "$BUILD_DIR/wdtt.zip"
   unzip -q "$BUILD_DIR/wdtt.zip" -d "$BUILD_DIR/source"
   WDTT_SOURCE="$(find "$BUILD_DIR/source" -mindepth 1 -maxdepth 1 -type d | head -1)"
   [ -f "$WDTT_SOURCE/server.go" ] || die "В архиве WDTT не найден server.go"
@@ -407,7 +423,7 @@ install_wdtt_extensions() {
   printf '%s  %s\n' "$go_checksum" "$work/$go_tarball" | sha256sum -c - >>"$LOG_FILE"
   tar -xzf "$work/$go_tarball" -C "$work"
   install -d "$work/gopath/pkg/mod" "$work/go-cache"
-  curl -fsSL --retry 3 "https://github.com/amurcanov/proxy-turn-vk-android/archive/refs/heads/${WDTT_REF}.zip" -o "$work/wdtt.zip"
+  download_wdtt_archive "$work/wdtt.zip"
   unzip -q "$work/wdtt.zip" -d "$work/source"
   source="$(find "$work/source" -mindepth 1 -maxdepth 1 -type d | head -1)"
   [ -f "$source/server.go" ] || die "В архиве WDTT не найден server.go"
@@ -428,7 +444,7 @@ def replace_once(old, new, title):
 
 replace_once(
     'func main() {\n',
-    'const wdttPanelExtensionMarker = "wdtt-panel-extension-v4"\n\nfunc main() {\n\tlog.Printf("[WDTT Panel] extension %s enabled", wdttPanelExtensionMarker)\n',
+    'const wdttPanelExtensionMarker = "wdtt-panel-extension-v5"\n\nfunc main() {\n\tlog.Printf("[WDTT Panel] extension %s enabled", wdttPanelExtensionMarker)\n',
     "extension marker",
 )
 
@@ -665,7 +681,7 @@ PY
     die "Собранный WDTT не прошёл проверку расширений; прежний бинарный файл восстановлен"
   fi
   rm -f "$PRIVATE_STATE_DIR/user-labels.json"
-  printf '{"enabled_at": %s, "marker": "%s", "features": ["labels", "main_traffic", "activity"]}\n' "$(date +%s)" "$WDTT_EXTENSION_MARKER" > "$PRIVATE_STATE_DIR/wdtt-extensions.json"
+  printf '{"enabled_at": %s, "marker": "%s", "wdtt_ref": "%s", "features": ["labels", "main_traffic", "activity", "upstream_v1_2_4"]}\n' "$(date +%s)" "$WDTT_EXTENSION_MARKER" "$WDTT_REF" > "$PRIVATE_STATE_DIR/wdtt-extensions.json"
   chmod 0600 "$PRIVATE_STATE_DIR/wdtt-extensions.json"
   log "Расширение WDTT включено: метки общие с Telegram-ботом, трафик и последняя активность пользователей учитываются"
 }
