@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>{{LABEL}} — WDTT</title>
+  <link rel="stylesheet" href="/client/client.css">
+</head>
+<body>
+  <main class="portal">
+    <section class="card">
+      <p class="eyebrow">WDTT</p>
+      <h1>{{LABEL}}</h1>
+      <p class="status">{{STATUS}}</p>
+      <dl>
+        <div><dt>Действует до</dt><dd>{{EXPIRES}}</dd></div>
+        <div><dt>Использовано</dt><dd>{{USED}}</dd></div>
+        <div><dt>Осталось</dt><dd>{{REMAINING}}</dd></div>
+        <div><dt>Общий лимит</dt><dd>{{LIMIT}}</dd></div>
+      </dl>
+      <progress class="meter" aria-label="Использованный трафик" max="100" value="{{PERCENT}}">{{PERCENT}}%</progress>
+      <p class="percent">Использовано {{PERCENT}}%</p>
+      <a class="button" href="{{SUBSCRIPTION_URL}}">Открыть подписку qWDTT</a>
+      <p class="hint">Страница обновляется при каждом открытии. Не передавайте эту ссылку посторонним.</p>
+    </section>
+  </main>
+</body>
+</html>

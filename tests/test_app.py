@@ -120,6 +120,23 @@ class AppSmokeTests(unittest.TestCase):
         self.assertTrue(headers["status"].startswith("200"))
         self.assertEqual(json.loads(body)["result"]["estimated_freed_bytes"], 1024)
 
+    def test_personal_page_and_subscription_do_not_expose_admin_path(self):
+        token = self.panel.personal_token("DemoUserA123")
+        headers, body = self.request(f"/client/{token}/")
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertEqual(headers["headers"]["X-Robots-Tag"], "noindex, nofollow, noarchive")
+        self.assertIn("Действует до".encode(), body)
+        self.assertNotIn(b"private-panel-path", body)
+
+        headers, body = self.request(f"/client/{token}/subscription.json")
+        self.assertTrue(headers["status"].startswith("200"))
+        subscription = json.loads(body)
+        self.assertEqual(subscription["profiles"][0]["password"], "DemoUserA123")
+        self.assertGreater(subscription["trafficLimitMb"], subscription["trafficUsedMb"])
+
+        headers, _ = self.request("/client/" + "0" * 64 + "/")
+        self.assertTrue(headers["status"].startswith("404"))
+
     def test_user_statistics_accumulate_daily_and_total_traffic(self):
         first = {
             "users": [{"password": "TrafficUser123", "down_bytes": 100, "up_bytes": 50, "connected": False}],

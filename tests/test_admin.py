@@ -109,6 +109,50 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual(admin.load_database()["passwords"], {})
         self.assertTrue(list(self.backups.glob("passwords-*.json")))
 
+    def test_default_quota_renewal_and_extra_traffic_are_idempotent(self):
+        created = admin.create_user(
+            {"password": "QuotaUser123", "months": 1, "vk_hash": "hash_123", "ports": "56000,56001,9000"}
+        )
+        self.assertTrue(created["traffic_managed"])
+        self.assertEqual(created["traffic_primary_bytes"], 35 * admin.GIB)
+
+        data = admin.load_database()
+        entry = data["passwords"]["QuotaUser123"]
+        entry["down_bytes"] = 5 * admin.GIB
+        admin.save_database(data)
+
+        payload = {"password": "QuotaUser123", "months": 1, "operation_id": "renew-test-0001"}
+        renewed = admin.renew_user(payload)
+        self.assertEqual(renewed["traffic_primary_bytes"], 65 * admin.GIB)
+        duplicate = admin.renew_user(payload)
+        self.assertTrue(duplicate["duplicate"])
+        self.assertEqual(duplicate["traffic_primary_bytes"], 65 * admin.GIB)
+
+        extra = admin.add_user_traffic(
+            {"password": "QuotaUser123", "gib": 10, "operation_id": "extra-test-0001"}
+        )
+        self.assertEqual(extra["traffic_extra_bytes"], 10 * admin.GIB)
+        duplicate_extra = admin.add_user_traffic(
+            {"password": "QuotaUser123", "gib": 10, "operation_id": "extra-test-0001"}
+        )
+        self.assertTrue(duplicate_extra["duplicate"])
+        self.assertEqual(duplicate_extra["traffic_extra_bytes"], 10 * admin.GIB)
+
+    def test_reactivation_burns_primary_and_keeps_extra(self):
+        admin.create_user(
+            {"password": "ExpiredUser123", "months": 1, "vk_hash": "hash_123", "ports": "56000,56001,9000"}
+        )
+        data = admin.load_database()
+        entry = data["passwords"]["ExpiredUser123"]
+        entry.update({"expires_at": 1, "traffic_primary_bytes": 20 * admin.GIB, "traffic_extra_bytes": 7 * admin.GIB})
+        admin.save_database(data)
+        renewed = admin.renew_user(
+            {"password": "ExpiredUser123", "months": 1, "operation_id": "reactivate-0001"}
+        )
+        self.assertEqual(renewed["traffic_primary_bytes"], 35 * admin.GIB)
+        self.assertEqual(renewed["traffic_extra_bytes"], 7 * admin.GIB)
+        self.assertFalse(renewed["is_deactivated"])
+
     def test_restore_backup(self):
         admin.create_user(
             {"password": "BackupUser123", "days": 7, "vk_hash": "hash_123", "ports": "56000,56001,9000"}

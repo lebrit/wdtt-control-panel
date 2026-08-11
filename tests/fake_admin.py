@@ -30,6 +30,11 @@ elif action == "users.list":
                 "ports": "56000,56001,9000",
                 "is_deactivated": False,
                 "expired": False,
+                "traffic_managed": True,
+                "traffic_unlimited": False,
+                "traffic_baseline_bytes": 0,
+                "traffic_primary_bytes": 37580963840,
+                "traffic_extra_bytes": 0,
                 "device": {"device_id": "pixel-8-demo", "ip": "10.66.66.2"},
             },
             {

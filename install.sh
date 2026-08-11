@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.11.25"
+PANEL_VERSION="0.12.0"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -50,7 +50,7 @@ GO_VERSION="${GO_VERSION:-1.25.0}"
 WDTT_SERVICE="wdtt.service"
 WDTT_EXTENSIONS_SERVICE="wdtt-panel-wdtt-extensions.service"
 WDTT_EXTENSIONS_TIMER="wdtt-panel-wdtt-extensions.timer"
-WDTT_EXTENSION_MARKER="wdtt-panel-extension-v6"
+WDTT_EXTENSION_MARKER="wdtt-panel-extension-v7"
 
 log() { printf '[wdtt-panel] %s\n' "$*" | tee -a "$LOG_FILE"; }
 die() { log "ERROR: $*"; exit 1; }
@@ -253,7 +253,7 @@ try:
     state = json.load(open(sys.argv[1], encoding="utf-8"))
     features = state.get("features", [])
     raise SystemExit(0 if (
-        {"labels", "main_traffic", "activity"}.issubset(features)
+        {"labels", "main_traffic", "activity", "traffic_quota", "retained_expired"}.issubset(features)
         and state.get("marker") == sys.argv[2]
         and state.get("wdtt_repository") == sys.argv[3]
         and state.get("wdtt_ref") == sys.argv[4]
@@ -490,7 +490,7 @@ def replace_once(old, new, title):
 
 replace_once(
     'func main() {\n',
-    'const wdttPanelExtensionMarker = "wdtt-panel-extension-v6"\n\nfunc main() {\n\tlog.Printf("[WDTT Panel] extension %s enabled", wdttPanelExtensionMarker)\n',
+    'const wdttPanelExtensionMarker = "wdtt-panel-extension-v7"\n\nfunc main() {\n\tlog.Printf("[WDTT Panel] extension %s enabled", wdttPanelExtensionMarker)\n',
     "extension marker",
 )
 
@@ -735,7 +735,7 @@ PY
     die "После обновления WDTT обнаружена потеря пользователей или устройств; прежний бинарный файл и база восстановлены"
   fi
   rm -f "$PRIVATE_STATE_DIR/user-labels.json"
-  printf '{"enabled_at": %s, "marker": "%s", "wdtt_repository": "%s", "wdtt_ref": "%s", "features": ["labels", "main_traffic", "activity", "spaceneurox_v1_4_0"]}\n' "$(date +%s)" "$WDTT_EXTENSION_MARKER" "$WDTT_REPOSITORY" "$WDTT_REF" > "$PRIVATE_STATE_DIR/wdtt-extensions.json"
+  printf '{"enabled_at": %s, "marker": "%s", "wdtt_repository": "%s", "wdtt_ref": "%s", "features": ["labels", "main_traffic", "activity", "traffic_quota", "retained_expired", "spaceneurox_v1_4_0"]}\n' "$(date +%s)" "$WDTT_EXTENSION_MARKER" "$WDTT_REPOSITORY" "$WDTT_REF" > "$PRIVATE_STATE_DIR/wdtt-extensions.json"
   chmod 0600 "$PRIVATE_STATE_DIR/wdtt-extensions.json"
   log "Расширение WDTT включено: метки общие с Telegram-ботом, трафик и последняя активность пользователей учитываются"
 }
@@ -1269,6 +1269,7 @@ write_final_nginx() {
     listen [::]:80;
     server_name $PANEL_HOST;
     location ^~ /.well-known/acme-challenge/ { root $STATE_DIR/acme; }
+    location ^~ /client/ { return 302 https://$PANEL_HOST:$PANEL_HTTPS_PORT\$request_uri; }
     location / { return 302 https://$PANEL_HOST:$PANEL_HTTPS_PORT$PANEL_PATH; }
 }"
   fi
@@ -1296,6 +1297,15 @@ $HSTS_HEADER
         proxy_set_header X-Forwarded-Proto https;
         proxy_read_timeout 75s;
         client_max_body_size 90m;
+    }
+    location ^~ /client/ {
+        proxy_pass http://127.0.0.1:$PANEL_LISTEN_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 30s;
     }
     location / { return 404; }
 }

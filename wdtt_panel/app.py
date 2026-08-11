@@ -15,10 +15,10 @@ from http import cookies
 from pathlib import Path
 from socketserver import ThreadingMixIn
 from typing import Any, Iterable
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 from wsgiref.simple_server import WSGIServer, make_server
 
-from .core import ValidationError, normalize_hash, normalize_user_label
+from .core import ValidationError, normalize_hash, normalize_user_label, traffic_quota
 from .security import create_session, read_session, verify_csrf, verify_password
 
 
@@ -133,6 +133,8 @@ class Panel:
 
     def __call__(self, environ: dict[str, Any], start_response: Any) -> Iterable[bytes]:
         path = str(environ.get("PATH_INFO") or "/")
+        if path.startswith("/client/"):
+            return self.client_route(environ, start_response, path[8:])
         if path == self.base.rstrip("/"):
             return self.redirect(start_response, self.base)
         if not path.startswith(self.base):
@@ -353,6 +355,8 @@ class Panel:
             "users/delete": "users.delete",
             "users/unbind": "users.unbind",
             "users/reset-traffic": "users.reset_traffic",
+            "users/renew": "users.renew",
+            "users/add-traffic": "users.add_traffic",
             "users/bulk-action": "users.bulk_action",
             "service": "service.action",
             "logs": "logs",
@@ -422,6 +426,7 @@ class Panel:
             self.record_metrics(result.get("result") or {})
         if result.get("ok") and action == "users.list":
             result["result"] = self.enrich_user_statistics(result.get("result") or {})
+            self.add_personal_urls(result["result"])
         if result.get("ok") and action in {"users.create", "users.create_bulk", "users.update"}:
             raw_hashes = str(payload.get("vk_hash") or "").strip()
             if raw_hashes:
@@ -611,6 +616,114 @@ class Panel:
             db.commit()
         return root
 
+    def personal_token(self, password: str) -> str:
+        secret = str(self.config["session_secret"]).encode()
+        message = b"wdtt-client-v1\0" + password.encode()
+        return hmac.new(secret, message, "sha256").hexdigest()
+
+    def personal_url(self, password: str) -> str:
+        host = str(self.config.get("public_host") or "")
+        port = int(self.config.get("https_port") or 443)
+        authority = host if port == 443 else f"{host}:{port}"
+        return f"https://{authority}/client/{self.personal_token(password)}/"
+
+    def add_personal_urls(self, root: dict[str, Any]) -> None:
+        if not isinstance(root, dict):
+            return
+        for user in root.get("users") or []:
+            if isinstance(user, dict) and user.get("password"):
+                user["personal_url"] = self.personal_url(str(user["password"]))
+
+    def personal_user(self, token: str) -> dict[str, Any] | None:
+        if len(token) != 64 or any(char not in "0123456789abcdef" for char in token):
+            return None
+        result = self.admin("users.list", {})
+        root = result.get("result") if result.get("ok") else {}
+        if not isinstance(root, dict):
+            return None
+        self.enrich_user_statistics(root)
+        for user in root.get("users") or []:
+            if not isinstance(user, dict) or not user.get("password"):
+                continue
+            expected = self.personal_token(str(user["password"]))
+            if hmac.compare_digest(token, expected):
+                return user
+        return None
+
+    def client_route(self, environ: dict[str, Any], start_response: Any, relative: str) -> Iterable[bytes]:
+        if environ.get("REQUEST_METHOD") != "GET":
+            return self.response(start_response, "405 Method Not Allowed", b"Method not allowed", "text/plain")
+        if relative == "client.css":
+            return self.response(
+                start_response,
+                "200 OK",
+                (PACKAGE_DIR / "static" / "client.css").read_bytes(),
+                "text/css; charset=utf-8",
+                cache=True,
+            )
+        parts = [part for part in relative.split("/") if part]
+        if len(parts) not in {1, 2} or (len(parts) == 2 and parts[1] != "subscription.json"):
+            return self.response(start_response, "404 Not Found", b"Not found", "text/plain")
+        remote = self.remote_addr(environ)
+        if not self.rate_limiter.allowed(f"client:{remote}"):
+            return self.response(start_response, "429 Too Many Requests", b"Too many requests", "text/plain")
+        user = self.personal_user(parts[0])
+        if user is None:
+            self.rate_limiter.fail(f"client:{remote}")
+            return self.response(start_response, "404 Not Found", b"Not found", "text/plain")
+        self.rate_limiter.clear(f"client:{remote}")
+        if len(parts) == 2:
+            return self.json_response(start_response, 200, self.personal_subscription(user))
+        return self.personal_page(start_response, user, parts[0])
+
+    def personal_page(self, start_response: Any, user: dict[str, Any], token: str) -> Iterable[bytes]:
+        html = (PACKAGE_DIR / "templates" / "client.html").read_text(encoding="utf-8")
+        quota = traffic_quota(user)
+        expires_at = int(user.get("expires_at") or 0)
+        expires = datetime.fromtimestamp(expires_at).strftime("%d.%m.%Y") if expires_at else "Без срока"
+        total = int(quota["traffic_limit_bytes"] or 0)
+        remaining = int(quota["traffic_remaining_bytes"] or 0)
+        percent = 0 if not total else min(100, round((total - remaining) * 100 / total))
+        subscription_url = f"/client/{quote(token)}/subscription.json"
+        replacements = {
+            "{{LABEL}}": escape_html(str(user.get("label") or "Пользователь WDTT")),
+            "{{EXPIRES}}": escape_html(expires),
+            "{{STATUS}}": "Лимит исчерпан" if quota["quota_exhausted"] else "Доступ активен",
+            "{{USED}}": escape_html(self.format_gib(int(quota["traffic_quota_used_bytes"]))),
+            "{{REMAINING}}": "Без лимита" if quota["traffic_unlimited"] else escape_html(self.format_gib(remaining)),
+            "{{LIMIT}}": "Без лимита" if quota["traffic_unlimited"] else escape_html(self.format_gib(total)),
+            "{{PERCENT}}": str(percent),
+            "{{SUBSCRIPTION_URL}}": escape_html(subscription_url),
+        }
+        for source, target in replacements.items():
+            html = html.replace(source, target)
+        return self.response(
+            start_response,
+            "200 OK",
+            html.encode(),
+            "text/html; charset=utf-8",
+            extra_headers=[("X-Robots-Tag", "noindex, nofollow, noarchive")],
+        )
+
+    @staticmethod
+    def format_gib(value: int) -> str:
+        return f"{value / 1024 / 1024 / 1024:.2f} ГиБ"
+
+    def personal_subscription(self, user: dict[str, Any]) -> dict[str, Any]:
+        quota = traffic_quota(user)
+        used = int(quota["traffic_quota_used_bytes"])
+        limit = int(quota["traffic_limit_bytes"])
+        host = str(self.config.get("public_host") or "WDTT")
+        return {
+            "subscriptionName": str(user.get("label") or f"WDTT {host}"),
+            "description": "Персональная подписка WDTT",
+            "trafficUsedMb": round(used / 1024 / 1024, 2),
+            "trafficLimitMb": round(limit / 1024 / 1024, 2) if not quota["traffic_unlimited"] else 0,
+            "updatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "version": 1,
+            "profiles": [self.qwdtt_profile(user)],
+        }
+
     @staticmethod
     def list_vk_hashes() -> dict[str, Any]:
         with closing(sqlite3.connect(STATE_DB)) as db:
@@ -727,7 +840,7 @@ class Panel:
             {
                 "label": label,
                 "vk_hash": secrets.choice(hashes),
-                "days": 30,
+                "months": 1,
                 "ports": "56000,56001,9000",
             },
         )
@@ -754,6 +867,7 @@ class Panel:
         local_port = ports[2] if len(ports) > 2 and ports[2] else "9000"
         host = str(self.config.get("public_host") or "")
         peer = f"{host}:{dtls_port}" if host else f":{dtls_port}"
+        quota = traffic_quota(user)
         return {
             "name": str(user.get("label") or user.get("password") or "WDTT"),
             "peer": peer,
@@ -762,7 +876,10 @@ class Panel:
             "port": int(local_port) if local_port.isdigit() else 9000,
             "password": str(user.get("password") or ""),
             "expiresAt": int(user.get("expires_at") or 0),
-            "trafficUsedMb": round((int(user.get("down_bytes") or 0) + int(user.get("up_bytes") or 0)) / 1024 / 1024, 2),
+            "trafficUsedMb": round(int(quota["traffic_quota_used_bytes"]) / 1024 / 1024, 2),
+            "trafficLimitMb": round(int(quota["traffic_limit_bytes"]) / 1024 / 1024, 2) if not quota["traffic_unlimited"] else 0,
+            "trafficRemainingMb": round(int(quota["traffic_remaining_bytes"]) / 1024 / 1024, 2) if not quota["traffic_unlimited"] else 0,
+            "quotaExhausted": bool(quota["quota_exhausted"]),
         }
 
     @staticmethod

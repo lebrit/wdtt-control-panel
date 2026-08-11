@@ -194,7 +194,12 @@
         <label class="wide">Метка пользователя<input id="edit-label" maxlength="64" placeholder="Например: Иван — Pixel 8"></label>
         <label class="wide">VK-хеши<input id="edit-hashes" required placeholder="До 4 хешей через запятую"></label>
         <label class="wide">Добавить сохранённый VK-хеш<select id="edit-saved-hash"><option value="">Выберите хеш из библиотеки</option></select></label>
-        <label>Срок, дней<input id="edit-days" type="number" min="1" max="3650" value="30"></label>
+        <div id="edit-access-plan" class="wide access-plan">
+          <label>Дата окончания<input id="edit-expires" type="date" required></label>
+          <div class="preset-row" aria-label="Быстрый выбор срока"><button type="button" data-expiry-preset="edit:1">1 месяц</button><button type="button" data-expiry-preset="edit:2">2 месяца</button><button type="button" data-expiry-preset="edit:3">3 месяца</button><button type="button" data-expiry-preset="edit:6">6 месяцев</button><button type="button" data-expiry-preset="edit:12">12 месяцев</button></div>
+          <label>Основной трафик, ГиБ<input id="edit-traffic" type="number" min="0" max="10240" value="35" required></label>
+          <label class="checkbox"><input id="edit-traffic-unlimited" type="checkbox"> Без ограничения трафика</label>
+        </div>
         <label>Порты<input id="edit-ports" value="56000,56001,9000" required></label>
         <label class="checkbox wide"><input id="edit-unlimited" type="checkbox"> Бессрочный доступ</label>
         <label class="checkbox wide"><input id="edit-disabled" type="checkbox"> Деактивировать</label>
@@ -212,13 +217,37 @@
         <label class="wide">VK-хеши<input id="bulk-hashes" required placeholder="Один или до 4 хешей через запятую"></label>
         <label class="wide">Добавить сохранённый VK-хеш<select id="bulk-saved-hash"><option value="">Выберите хеш из библиотеки</option></select></label>
         <label class="wide">Префикс меток<input id="bulk-label-prefix" maxlength="61" placeholder="Например: Семья — будут «Семья 1», «Семья 2»"></label>
-        <label>Срок, дней<input id="bulk-days" type="number" min="1" max="3650" value="30"></label>
+        <div class="wide access-plan">
+          <label>Дата окончания<input id="bulk-expires" type="date" required></label>
+          <div class="preset-row" aria-label="Быстрый выбор срока"><button type="button" data-expiry-preset="bulk:1">1 месяц</button><button type="button" data-expiry-preset="bulk:2">2 месяца</button><button type="button" data-expiry-preset="bulk:3">3 месяца</button><button type="button" data-expiry-preset="bulk:6">6 месяцев</button><button type="button" data-expiry-preset="bulk:12">12 месяцев</button></div>
+          <label>Основной трафик каждому, ГиБ<input id="bulk-traffic" type="number" min="0" max="10240" value="35" required></label>
+          <label class="checkbox"><input id="bulk-traffic-unlimited" type="checkbox"> Без ограничения трафика</label>
+        </div>
         <label>Порты<input id="bulk-ports" value="56000,56001,9000" required></label>
         <label class="checkbox wide"><input id="bulk-unlimited" type="checkbox"> Бессрочный доступ</label>
         <label class="checkbox wide"><input id="bulk-disabled" type="checkbox"> Создать деактивированными</label>
       </div>
       <p class="muted">Пароли генерируются автоматически. Все пользователи создаются одной операцией и одним перезапуском WDTT.</p>
       <div class="dialog-actions"><button value="cancel" formnovalidate class="secondary">Отмена</button><button id="save-bulk-users" value="default" class="primary">Создать</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="quota-dialog">
+    <form method="dialog" id="quota-form">
+      <div class="dialog-head"><div><p class="eyebrow">ACCESS PLAN</p><h2 id="quota-title">Продлить пользователя</h2></div><button value="cancel" formnovalidate class="icon-button">×</button></div>
+      <input id="quota-password" type="hidden">
+      <input id="quota-mode" type="hidden">
+      <div id="quota-renew-fields" class="form-grid">
+        <label class="wide">Дата окончания<input id="quota-expires" type="date"></label>
+        <div class="preset-row wide" aria-label="Быстрый выбор срока"><button type="button" data-expiry-preset="quota:1">1 месяц</button><button type="button" data-expiry-preset="quota:2">2 месяца</button><button type="button" data-expiry-preset="quota:3">3 месяца</button><button type="button" data-expiry-preset="quota:6">6 месяцев</button><button type="button" data-expiry-preset="quota:12">12 месяцев</button></div>
+        <label class="wide">Новый основной трафик, ГиБ<input id="quota-primary" type="number" min="0" max="10240" value="35"></label>
+      </div>
+      <div id="quota-extra-fields" class="form-grid" hidden>
+        <label class="wide">Дополнительный трафик, ГиБ<input id="quota-extra" type="number" min="1" max="10240" value="10"></label>
+      </div>
+      <label>Комментарий<input id="quota-comment" maxlength="200" placeholder="Например: оплата за август"></label>
+      <p class="muted">При активном продлении остаток основного пакета сохраняется. После истечения старый основной остаток сгорает, дополнительный сохраняется.</p>
+      <div class="dialog-actions"><button value="cancel" formnovalidate class="secondary">Отмена</button><button id="save-quota" value="default" class="primary">Сохранить</button></div>
     </form>
   </dialog>
 

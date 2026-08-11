@@ -24,13 +24,17 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from .core import (
+    DEFAULT_TRAFFIC_GIB_PER_MONTH,
+    GIB,
     MAX_USERS,
     ValidationError,
+    add_calendar_months,
     generate_password,
     is_expired,
     normalize_hashes,
     normalize_user_label,
     parse_expiration,
+    traffic_quota,
     user_label_from_entry,
     user_view,
     validate_password,
@@ -41,7 +45,7 @@ from .core import (
 DB_FILE = Path(os.environ.get("WDTT_DB_FILE", "/etc/wdtt/passwords.json"))
 PANEL_LABELS_FILE = Path(os.environ.get("WDTT_PANEL_LABELS_FILE", "/var/lib/wdtt-panel-private/user-labels.json"))
 WDTT_EXTENSION_STATE = Path(os.environ.get("WDTT_EXTENSION_STATE", "/var/lib/wdtt-panel-private/wdtt-extensions.json"))
-WDTT_EXTENSION_MARKER = "wdtt-panel-extension-v6"
+WDTT_EXTENSION_MARKER = "wdtt-panel-extension-v7"
 STATS_FILE = Path(os.environ.get("WDTT_STATS_FILE", "/etc/wdtt/server.log"))
 BACKUP_DIR = Path(os.environ.get("WDTT_BACKUP_DIR", "/var/lib/wdtt-panel-private/backups"))
 BACKUP_FORMAT = "wdtt-panel-backup-v1"
@@ -499,16 +503,86 @@ def mutate_database(label: str, mutator: Callable[[dict[str, Any]], Any], backup
 
 
 def purge_expired(data: dict[str, Any]) -> int:
-    removed = 0
-    for password, entry in list(data["passwords"].items()):
-        if not isinstance(entry, dict) or not is_expired(entry):
-            continue
-        device_id = str(entry.get("device_id") or "")
-        if device_id:
-            data["devices"].pop(device_id, None)
-        del data["passwords"][password]
-        removed += 1
-    return removed
+    # Expired users stay available for renewal, history and their personal page.
+    return 0
+
+
+def parse_traffic_gib(value: Any, *, default: int | None = None, maximum: int = 10240) -> int:
+    if value in (None, ""):
+        if default is None:
+            raise ValidationError("Укажите объём трафика")
+        return default
+    try:
+        gib = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Объём трафика должен быть целым числом гигабайт") from exc
+    if not 0 <= gib <= maximum:
+        raise ValidationError(f"Объём трафика должен быть от 0 до {maximum} ГиБ")
+    return gib
+
+
+def initial_traffic_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("traffic_unlimited"):
+        return {
+            "traffic_managed": True,
+            "traffic_unlimited": True,
+            "traffic_baseline_bytes": 0,
+            "traffic_primary_bytes": 0,
+            "traffic_extra_bytes": 0,
+            "traffic_operations": [],
+        }
+    try:
+        months = int(payload.get("months") or 1)
+    except (TypeError, ValueError):
+        months = 1
+    default_gib = DEFAULT_TRAFFIC_GIB_PER_MONTH * months if 1 <= months <= 36 else DEFAULT_TRAFFIC_GIB_PER_MONTH
+    primary_gib = parse_traffic_gib(payload.get("traffic_primary_gib"), default=default_gib)
+    return {
+        "traffic_managed": True,
+        "traffic_unlimited": False,
+        "traffic_baseline_bytes": 0,
+        "traffic_primary_bytes": primary_gib * GIB,
+        "traffic_extra_bytes": 0,
+        "traffic_operations": [
+            {
+                "id": f"create:{uuid.uuid4()}",
+                "kind": "initial_grant",
+                "created_at": int(time.time()),
+                "primary_delta_bytes": primary_gib * GIB,
+                "extra_delta_bytes": 0,
+            }
+        ],
+    }
+
+
+def quota_operation_id(payload: dict[str, Any]) -> str:
+    value = str(payload.get("operation_id") or uuid.uuid4()).strip()
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", value):
+        raise ValidationError("Некорректный идентификатор операции")
+    return value
+
+
+def quota_operation_exists(entry: dict[str, Any], operation_id: str) -> bool:
+    return any(isinstance(item, dict) and item.get("id") == operation_id for item in entry.get("traffic_operations", []))
+
+
+def record_quota_operation(entry: dict[str, Any], operation: dict[str, Any]) -> None:
+    operations = [item for item in entry.get("traffic_operations", []) if isinstance(item, dict)]
+    operations.append(operation)
+    entry["traffic_operations"] = operations[-50:]
+
+
+def set_quota_balance(entry: dict[str, Any], primary_bytes: int, extra_bytes: int) -> None:
+    current = max(0, int(entry.get("down_bytes") or 0) + int(entry.get("up_bytes") or 0))
+    entry.update(
+        {
+            "traffic_managed": True,
+            "traffic_unlimited": False,
+            "traffic_baseline_bytes": current,
+            "traffic_primary_bytes": max(0, int(primary_bytes)),
+            "traffic_extra_bytes": max(0, int(extra_bytes)),
+        }
+    )
 
 
 def entry_with_legacy_label(data: dict[str, Any], password: str, entry: dict[str, Any], panel_labels: dict[str, str] | None = None) -> dict[str, Any]:
@@ -701,6 +775,7 @@ def create_user(payload: dict[str, Any]) -> dict[str, Any]:
             "vk_hash": vk_hash,
             "ports": ports,
             "is_deactivated": bool(payload.get("is_deactivated", False)),
+            **initial_traffic_fields(payload),
         }
         data["passwords"][password] = entry
         return user_view(password, entry, data["devices"]).as_dict()
@@ -755,6 +830,7 @@ def create_users_bulk(payload: dict[str, Any]) -> dict[str, Any]:
                 "vk_hash": ",".join(assigned_hashes),
                 "ports": ports,
                 "is_deactivated": is_deactivated,
+                **initial_traffic_fields(payload),
             }
             data["passwords"][password] = entry
             created.append(user_view(password, entry, data["devices"]).as_dict())
@@ -790,6 +866,21 @@ def update_user(payload: dict[str, Any]) -> dict[str, Any]:
             entry["expires_at"] = parse_expiration(payload)
         if "is_deactivated" in payload:
             entry["is_deactivated"] = bool(payload["is_deactivated"])
+        if "traffic_unlimited" in payload:
+            if payload.get("traffic_unlimited"):
+                entry.update(
+                    {
+                        "traffic_managed": True,
+                        "traffic_unlimited": True,
+                        "traffic_baseline_bytes": 0,
+                        "traffic_primary_bytes": 0,
+                        "traffic_extra_bytes": 0,
+                    }
+                )
+            else:
+                quota = traffic_quota(entry)
+                primary_gib = parse_traffic_gib(payload.get("traffic_primary_gib"), default=DEFAULT_TRAFFIC_GIB_PER_MONTH)
+                set_quota_balance(entry, primary_gib * GIB, int(quota["traffic_extra_remaining_bytes"]))
         return user_view(replacement, entry, data["devices"]).as_dict()
 
     result = mutate_database("update", apply)
@@ -843,11 +934,110 @@ def reset_traffic(payload: dict[str, Any]) -> dict[str, Any]:
         entry = data["passwords"].get(password)
         if not isinstance(entry, dict):
             raise ValidationError("Пользователь не найден")
+        quota = traffic_quota(entry)
         entry["down_bytes"] = 0
         entry["up_bytes"] = 0
+        if quota["traffic_managed"] and not quota["traffic_unlimited"]:
+            entry["traffic_baseline_bytes"] = 0
+            entry["traffic_primary_bytes"] = int(quota["traffic_primary_remaining_bytes"])
+            entry["traffic_extra_bytes"] = int(quota["traffic_extra_remaining_bytes"])
         return user_view(password, entry, data["devices"]).as_dict()
 
     return mutate_database("traffic-reset", apply)
+
+
+def renew_user(payload: dict[str, Any]) -> dict[str, Any]:
+    password = validate_password(str(payload.get("password") or ""))
+    operation_id = quota_operation_id(payload)
+    try:
+        months = int(payload.get("months") or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Срок в месяцах должен быть числом") from exc
+    if months and not 1 <= months <= 36:
+        raise ValidationError("Срок должен быть от 1 до 36 месяцев")
+    if not months and payload.get("expires_at") in (None, ""):
+        raise ValidationError("Укажите срок продления или дату окончания")
+    if not months and payload.get("traffic_primary_gib") in (None, ""):
+        raise ValidationError("Для произвольной даты укажите новый основной трафик")
+    primary_gib = parse_traffic_gib(
+        payload.get("traffic_primary_gib"),
+        default=DEFAULT_TRAFFIC_GIB_PER_MONTH * months if months else 0,
+    )
+    comment = str(payload.get("comment") or "").strip()[:200]
+
+    def apply(data: dict[str, Any]) -> dict[str, Any]:
+        entry = data["passwords"].get(password)
+        if not isinstance(entry, dict):
+            raise ValidationError("Пользователь не найден")
+        if quota_operation_exists(entry, operation_id):
+            return {**user_view(password, entry, data["devices"]).as_dict(), "duplicate": True}
+        now = int(time.time())
+        old_expiry = int(entry.get("expires_at") or 0)
+        active = old_expiry > now
+        if months:
+            entry["expires_at"] = add_calendar_months(old_expiry if active else now, months)
+        else:
+            entry["expires_at"] = parse_expiration({"expires_at": payload.get("expires_at")}, now)
+        quota = traffic_quota(entry)
+        carry_primary = int(quota["traffic_primary_remaining_bytes"]) if active and not quota["traffic_unlimited"] else 0
+        carry_extra = int(quota["traffic_extra_remaining_bytes"]) if not quota["traffic_unlimited"] else 0
+        grant_bytes = primary_gib * GIB
+        set_quota_balance(entry, carry_primary + grant_bytes, carry_extra)
+        entry["is_deactivated"] = False
+        record_quota_operation(
+            entry,
+            {
+                "id": operation_id,
+                "kind": "renewal" if active else "reactivation",
+                "created_at": now,
+                "months": months,
+                "primary_delta_bytes": grant_bytes,
+                "extra_delta_bytes": 0,
+                "comment": comment,
+            },
+        )
+        return user_view(password, entry, data["devices"]).as_dict()
+
+    return mutate_database("traffic-renew", apply)
+
+
+def add_user_traffic(payload: dict[str, Any]) -> dict[str, Any]:
+    password = validate_password(str(payload.get("password") or ""))
+    operation_id = quota_operation_id(payload)
+    gib = parse_traffic_gib(payload.get("gib"))
+    if gib <= 0:
+        raise ValidationError("Дополнительный трафик должен быть больше нуля")
+    comment = str(payload.get("comment") or "").strip()[:200]
+
+    def apply(data: dict[str, Any]) -> dict[str, Any]:
+        entry = data["passwords"].get(password)
+        if not isinstance(entry, dict):
+            raise ValidationError("Пользователь не найден")
+        if quota_operation_exists(entry, operation_id):
+            return {**user_view(password, entry, data["devices"]).as_dict(), "duplicate": True}
+        quota = traffic_quota(entry)
+        if quota["traffic_unlimited"]:
+            raise ValidationError("Для безлимитного пользователя дополнительный пакет не требуется")
+        grant_bytes = gib * GIB
+        set_quota_balance(
+            entry,
+            int(quota["traffic_primary_remaining_bytes"]),
+            int(quota["traffic_extra_remaining_bytes"]) + grant_bytes,
+        )
+        record_quota_operation(
+            entry,
+            {
+                "id": operation_id,
+                "kind": "extra_add",
+                "created_at": int(time.time()),
+                "primary_delta_bytes": 0,
+                "extra_delta_bytes": grant_bytes,
+                "comment": comment,
+            },
+        )
+        return user_view(password, entry, data["devices"]).as_dict()
+
+    return mutate_database("traffic-extra", apply)
 
 
 def bulk_user_action(payload: dict[str, Any]) -> dict[str, Any]:
@@ -883,8 +1073,13 @@ def bulk_user_action(payload: dict[str, Any]) -> dict[str, Any]:
             elif action == "set_expiration":
                 entry["expires_at"] = expires_at
             elif action == "reset_traffic":
+                quota = traffic_quota(entry)
                 entry["down_bytes"] = 0
                 entry["up_bytes"] = 0
+                if quota["traffic_managed"] and not quota["traffic_unlimited"]:
+                    entry["traffic_baseline_bytes"] = 0
+                    entry["traffic_primary_bytes"] = int(quota["traffic_primary_remaining_bytes"])
+                    entry["traffic_extra_bytes"] = int(quota["traffic_extra_remaining_bytes"])
             elif action == "unbind":
                 device_id = str(entry.get("device_id") or "")
                 if device_id:
@@ -3516,6 +3711,8 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "users.delete": delete_user,
     "users.unbind": unbind_user,
     "users.reset_traffic": reset_traffic,
+    "users.renew": renew_user,
+    "users.add_traffic": add_user_traffic,
     "users.bulk_action": bulk_user_action,
     "service.action": lambda payload: service_action(str(payload.get("service_action") or "")),
     "logs": journal_logs,

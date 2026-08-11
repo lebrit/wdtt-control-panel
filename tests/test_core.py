@@ -1,11 +1,15 @@
 import time
 import unittest
+from datetime import datetime, timezone
 
 from wdtt_panel.core import (
     ValidationError,
+    GIB,
+    add_calendar_months,
     normalize_hashes,
     parse_expiration,
     quick_link,
+    traffic_quota,
     validate_password,
     validate_ports,
 )
@@ -34,6 +38,24 @@ class CoreTests(unittest.TestCase):
         now = int(time.time())
         self.assertEqual(parse_expiration({"unlimited": True}, now), 0)
         self.assertEqual(parse_expiration({"days": 2}, now), now + 172800)
+
+    def test_calendar_month_expiration_keeps_end_of_month(self):
+        january_31 = int(datetime(2025, 1, 31, 12, tzinfo=timezone.utc).timestamp())
+        result = datetime.fromtimestamp(add_calendar_months(january_31, 1), timezone.utc)
+        self.assertEqual((result.year, result.month, result.day), (2025, 2, 28))
+
+    def test_traffic_quota_spends_primary_before_extra(self):
+        quota = traffic_quota(
+            {
+                "traffic_managed": True,
+                "traffic_primary_bytes": 35 * GIB,
+                "traffic_extra_bytes": 10 * GIB,
+                "down_bytes": 38 * GIB,
+            }
+        )
+        self.assertEqual(quota["traffic_primary_remaining_bytes"], 0)
+        self.assertEqual(quota["traffic_extra_remaining_bytes"], 7 * GIB)
+        self.assertFalse(quota["quota_exhausted"])
 
     def test_quick_link_matches_android_parser_order(self):
         link = quick_link(

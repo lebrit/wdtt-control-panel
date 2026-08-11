@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import calendar
 import ipaddress
 import re
 import secrets
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -12,6 +14,8 @@ MAX_USERS = 10
 PASSWORD_RE = re.compile(r"^[A-Za-z0-9._~-]{8,64}$")
 HASH_RE = re.compile(r"^[A-Za-z0-9_-]{3,256}$")
 MAX_USER_LABEL_LENGTH = 64
+GIB = 1024**3
+DEFAULT_TRAFFIC_GIB_PER_MONTH = 35
 
 
 class ValidationError(ValueError):
@@ -100,10 +104,27 @@ def validate_ports(value: str) -> str:
     return ",".join(ports)
 
 
+def add_calendar_months(timestamp: int, months: int) -> int:
+    if not 1 <= months <= 36:
+        raise ValidationError("Срок должен быть от 1 до 36 месяцев")
+    value = datetime.fromtimestamp(timestamp, timezone.utc)
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return int(value.replace(year=year, month=month, day=day).timestamp())
+
+
 def parse_expiration(payload: dict[str, Any], now: int | None = None) -> int:
     if payload.get("unlimited"):
         return 0
     now = int(now or time.time())
+    if payload.get("months") not in (None, ""):
+        try:
+            months = int(payload["months"])
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("Срок в месяцах должен быть числом") from exc
+        return add_calendar_months(now, months)
     if payload.get("expires_at") not in (None, ""):
         try:
             expires_at = int(payload["expires_at"])
@@ -124,6 +145,34 @@ def parse_expiration(payload: dict[str, Any], now: int | None = None) -> int:
 def is_expired(entry: dict[str, Any], now: int | None = None) -> bool:
     expires_at = int(entry.get("expires_at") or 0)
     return expires_at > 0 and expires_at < int(now or time.time())
+
+
+def traffic_quota(entry: dict[str, Any]) -> dict[str, Any]:
+    current = max(0, int(entry.get("down_bytes") or 0) + int(entry.get("up_bytes") or 0))
+    managed = bool(entry.get("traffic_managed", False))
+    unlimited = not managed or bool(entry.get("traffic_unlimited", False))
+    baseline = max(0, int(entry.get("traffic_baseline_bytes") or 0))
+    primary = max(0, int(entry.get("traffic_primary_bytes") or 0))
+    extra = max(0, int(entry.get("traffic_extra_bytes") or 0))
+    used = max(0, current - baseline) if managed and not unlimited else current
+    primary_remaining = max(0, primary - used) if not unlimited else 0
+    extra_used = max(0, used - primary)
+    extra_remaining = max(0, extra - extra_used) if not unlimited else 0
+    remaining = primary_remaining + extra_remaining
+    limit = primary + extra
+    return {
+        "traffic_managed": managed,
+        "traffic_unlimited": unlimited,
+        "traffic_baseline_bytes": baseline,
+        "traffic_primary_bytes": primary,
+        "traffic_extra_bytes": extra,
+        "traffic_quota_used_bytes": used,
+        "traffic_primary_remaining_bytes": primary_remaining,
+        "traffic_extra_remaining_bytes": extra_remaining,
+        "traffic_remaining_bytes": remaining,
+        "traffic_limit_bytes": limit,
+        "quota_exhausted": managed and not unlimited and remaining <= 0,
+    }
 
 
 def validate_public_host(value: str) -> str:
@@ -165,6 +214,18 @@ class UserView:
     is_deactivated: bool
     expired: bool
     device: dict[str, Any] | None
+    traffic_managed: bool
+    traffic_unlimited: bool
+    traffic_baseline_bytes: int
+    traffic_primary_bytes: int
+    traffic_extra_bytes: int
+    traffic_quota_used_bytes: int
+    traffic_primary_remaining_bytes: int
+    traffic_extra_remaining_bytes: int
+    traffic_remaining_bytes: int
+    traffic_limit_bytes: int
+    quota_exhausted: bool
+    traffic_operations: list[dict[str, Any]]
 
     def as_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -172,6 +233,7 @@ class UserView:
 
 def user_view(password: str, entry: dict[str, Any], devices: dict[str, Any]) -> UserView:
     device_id = str(entry.get("device_id") or "")
+    quota = traffic_quota(entry)
     return UserView(
         password=password,
         label=user_label_from_entry(entry),
@@ -186,4 +248,6 @@ def user_view(password: str, entry: dict[str, Any], devices: dict[str, Any]) -> 
         is_deactivated=bool(entry.get("is_deactivated", False)),
         expired=is_expired(entry),
         device=devices.get(device_id) if device_id else None,
+        **quota,
+        traffic_operations=[item for item in entry.get("traffic_operations", []) if isinstance(item, dict)][-50:],
     )

@@ -209,6 +209,12 @@ dialog::backdrop { background: rgba(1,4,8,.78); backdrop-filter: blur(4px); }
 .form-grid label { color: var(--muted); font-size: 12px; }
 .form-grid input, .form-grid select { margin-top: 7px; }
 .form-grid .wide { grid-column: 1 / -1; }
+.access-plan { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 14px; }
+.preset-row { display: flex; flex-wrap: wrap; gap: 7px; align-items: end; }
+.preset-row button { padding: 7px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel-2); color: var(--text); cursor: pointer; }
+.preset-row button.active { border-color: var(--accent); background: rgba(54, 167, 255, .16); }
+.quota-warning { display: block; margin-top: 5px; color: var(--warning); font-size: 12px; font-weight: 700; }
+.quota-danger { color: var(--danger); }
 .checkbox { display: flex; align-items: center; gap: 8px; }
 .checkbox input { width: 18px; min-height: 18px; margin: 0; }
 .dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
@@ -291,6 +297,7 @@ dialog::backdrop { background: rgba(1,4,8,.78); backdrop-filter: blur(4px); }
   #tab-users td:nth-child(9) { display: block; padding-top: 12px; }
   #tab-users td:nth-child(9)::before { content: ""; }
   .form-grid, .xray-easy-grid, .route-rule, .geofile-form, .xray-json-row { grid-template-columns: 1fr; }
+  .access-plan { grid-template-columns: 1fr; }
   .form-grid .wide { grid-column: auto; }
   .route-order { grid-template-columns: 1fr 1fr; }
   .preset-grid { grid-template-columns: 1fr; }

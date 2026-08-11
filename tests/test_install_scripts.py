@@ -14,9 +14,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.11.25"', installer)
-        self.assertIn('__version__ = "0.11.25"', package)
-        self.assertIn("Текущая версия: 0.11.25", readme)
+        self.assertIn('PANEL_VERSION="0.12.0"', installer)
+        self.assertIn('__version__ = "0.12.0"', package)
+        self.assertIn("Текущая версия: 0.12.0", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -56,7 +56,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("WDTT_EXTENSION_MARKER", script)
         self.assertIn('WDTT_REPOSITORY="${WDTT_REPOSITORY:-SpaceNeuroX/proxy-turn-vk-android}"', script)
         self.assertIn('WDTT_REF="${WDTT_REF:-v1.4.0}"', script)
-        self.assertIn('WDTT_EXTENSION_MARKER="wdtt-panel-extension-v6"', script)
+        self.assertIn('WDTT_EXTENSION_MARKER="wdtt-panel-extension-v7"', script)
         self.assertIn("download_wdtt_archive", script)
         self.assertIn("https://github.com/${WDTT_REPOSITORY}/archive", script)
         self.assertIn("refs/${kind}/${WDTT_REF}.zip", script)
@@ -96,7 +96,9 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("-bot-token $WDTT_TELEGRAM_BOT_TOKEN", script)
 
         patcher = (ROOT / "wdtt_panel" / "wdtt_server_patch.py").read_text(encoding="utf-8")
-        self.assertIn('EXTENSION_MARKER = "wdtt-panel-extension-v6"', patcher)
+        self.assertIn('EXTENSION_MARKER = "wdtt-panel-extension-v7"', patcher)
+        self.assertIn('json:"traffic_primary_bytes,omitempty"', patcher)
+        self.assertIn("trafficQuotaExhausted", patcher)
         self.assertIn('json:"main_down_bytes,omitempty"', patcher)
         self.assertIn('json:"last_upload_at,omitempty"', patcher)
         self.assertIn('cmd == "/settings"', patcher)
@@ -296,7 +298,7 @@ class InstallScriptTests(unittest.TestCase):
 
     def test_dialog_cancel_buttons_skip_required_field_validation(self):
         html = (ROOT / "wdtt_panel" / "templates" / "index.html").read_text(encoding="utf-8")
-        self.assertEqual(html.count('value="cancel" formnovalidate'), 6)
+        self.assertEqual(html.count('value="cancel" formnovalidate'), 8)
 
 
 if __name__ == "__main__":

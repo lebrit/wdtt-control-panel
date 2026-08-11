@@ -93,6 +93,43 @@
   const formatActivityDate = (stamp) => stamp ? new Date(stamp * 1000).toLocaleString("ru-RU") : "ещё не было";
   const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char]));
 
+  function dateInputValue(date) {
+    const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    return local.toISOString().slice(0, 10);
+  }
+
+  function addCalendarMonths(date, months) {
+    const result = new Date(date);
+    const day = result.getDate();
+    result.setDate(1);
+    result.setMonth(result.getMonth() + months);
+    result.setDate(Math.min(day, new Date(result.getFullYear(), result.getMonth() + 1, 0).getDate()));
+    return result;
+  }
+
+  function setExpiryPreset(prefix, months, base = null) {
+    const input = $(`#${prefix}-expires`);
+    const start = base || (input.dataset.baseStamp ? new Date(Number(input.dataset.baseStamp) * 1000) : new Date());
+    input.value = dateInputValue(addCalendarMonths(start, months));
+    input.dataset.months = String(months);
+    $$(`[data-expiry-preset^="${prefix}:"]`).forEach((button) => button.classList.toggle("active", button.dataset.expiryPreset === `${prefix}:${months}`));
+    const traffic = $(`#${prefix}-traffic`) || $(`#${prefix}-primary`);
+    if (traffic) traffic.value = String(35 * months);
+  }
+
+  function expirationPayload(prefix) {
+    const input = $(`#${prefix}-expires`);
+    if (input.dataset.months) return { months: Number(input.dataset.months) };
+    const stamp = Math.floor(new Date(`${input.value}T23:59:59`).getTime() / 1000);
+    return { expires_at: stamp };
+  }
+
+  function clearExpiryPreset(prefix) {
+    const input = $(`#${prefix}-expires`);
+    input.dataset.months = "";
+    $$(`[data-expiry-preset^="${prefix}:"]`).forEach((button) => button.classList.remove("active"));
+  }
+
   async function api(route, options = {}) {
     const init = { method: options.method || "GET", headers: { "Accept": "application/json" } };
     if (init.method === "POST") {
@@ -418,7 +455,14 @@
     const users = sortedUsers(state.users.filter((user) => JSON.stringify(user).toLowerCase().includes(query)));
     $("#users-body").innerHTML = users.map((user) => {
       const [statusClass, status] = userStatus(user);
-      const traffic = user.traffic_supported === false ? "Появится после включения" : `${formatBytes(user.down_bytes)} ↓ / ${formatBytes(user.up_bytes)} ↑`;
+      const quotaManaged = user.role !== "admin" && user.traffic_managed;
+      const quotaUsed = Number(user.traffic_quota_used_bytes || 0);
+      const quotaLimit = Number(user.traffic_limit_bytes || 0);
+      const quotaPercent = quotaLimit ? Math.min(100, Math.round(quotaUsed * 100 / quotaLimit)) : 0;
+      const warning = quotaManaged && !user.traffic_unlimited && quotaPercent >= 80
+        ? `<small class="quota-warning ${quotaPercent >= 100 ? "quota-danger" : ""}">${quotaPercent >= 100 ? "Лимит исчерпан" : `Использовано ${quotaPercent}%`}</small>` : "";
+      const quotaText = quotaManaged ? (user.traffic_unlimited ? "Без лимита" : `${formatBytes(user.traffic_remaining_bytes)} из ${formatBytes(quotaLimit)} осталось`) : "";
+      const traffic = user.traffic_supported === false ? "Появится после включения" : `${formatBytes(user.down_bytes)} ↓ / ${formatBytes(user.up_bytes)} ↑${quotaText ? `<br><small>${escapeHtml(quotaText)}</small>${warning}` : ""}`;
       const device = user.device ? `${escapeHtml(user.device.device_id || user.device_id)}<br><small>${escapeHtml(user.device.ip || "")}</small>` : "Не привязан";
       const title = user.label || user.password;
       const selectable = user.role !== "admin";
@@ -429,7 +473,7 @@
         <td><strong class="mono">${escapeHtml(user.password)}</strong><br><small>${escapeHtml(user.vk_hash)}</small></td>
         <td><span class="badge ${statusClass}">${status}</span></td>
         <td>${escapeHtml(formatDate(user.expires_at))}</td>
-        <td class="mono">${device}</td><td>${escapeHtml(traffic)}</td>
+        <td class="mono">${device}</td><td>${traffic}</td>
         <td><strong>${escapeHtml(formatActivityDate(lastActivity))}</strong><br><small>${escapeHtml(lastUserActivityKind(user))}</small></td>
         <td><button class="user-actions-trigger" data-actions-toggle="${escapeHtml(user.password)}">Действия</button></td></tr>`;
     }).join("") || `<tr><td colspan="9" class="muted">Пользователи не найдены.</td></tr>`;
@@ -465,6 +509,9 @@
       <button data-activity="${escapeHtml(user.password)}">Активность</button>
       ${user.role === "admin" ? "" : `<button data-copy="${escapeHtml(user.password)}" title="Скопировать wdtt:// ссылку">Ссылка</button>`}
       ${user.role === "admin" ? "" : `
+      <button data-personal="${escapeHtml(user.password)}">Личная страница</button>
+      <button data-renew="${escapeHtml(user.password)}">Продлить</button>
+      ${user.traffic_unlimited ? "" : `<button data-extra="${escapeHtml(user.password)}">Добавить трафик</button>`}
       <button data-edit="${escapeHtml(user.password)}">Изменить</button>
       ${user.device_id ? `<button data-unbind="${escapeHtml(user.password)}">Отвязать</button>` : ""}
       <button data-reset="${escapeHtml(user.password)}">Сброс трафика</button>
@@ -487,6 +534,8 @@
     const find = (password) => state.users.find((item) => item.password === password);
     if (button.dataset.activity) openUserActivity(find(button.dataset.activity));
     if (button.dataset.edit) openUserDialog(find(button.dataset.edit));
+    if (button.dataset.renew) openQuotaDialog(find(button.dataset.renew), "renew");
+    if (button.dataset.extra) openQuotaDialog(find(button.dataset.extra), "extra");
     if (button.dataset.unbind) userAction("users/unbind", button.dataset.unbind, "Отвязать устройство? Следующее подключение создаст новую привязку.");
     if (button.dataset.reset) userAction("users/reset-traffic", button.dataset.reset, "Сбросить счетчики трафика пользователя?");
     if (button.dataset.delete) userAction("users/delete", button.dataset.delete, "Удалить пользователя и его устройство без возможности отмены?");
@@ -494,6 +543,11 @@
       const user = find(button.dataset.copy);
       await navigator.clipboard.writeText(quickLink(user));
       toast("Ссылка wdtt:// скопирована");
+    }
+    if (button.dataset.personal) {
+      const user = find(button.dataset.personal);
+      await navigator.clipboard.writeText(user.personal_url);
+      toast("Ссылка на личную страницу скопирована");
     }
   }
 
@@ -520,10 +574,52 @@
     $("#edit-label").value = user?.role === "admin" ? "" : (user?.label || "");
     $("#edit-ports").value = user?.ports || "56000,56001,9000";
     $("#edit-unlimited").checked = Boolean(user && !user.expires_at);
+    $("#edit-unlimited").disabled = Boolean(user);
     $("#edit-disabled").checked = Boolean(user?.is_deactivated);
-    const days = user?.expires_at ? Math.max(1, Math.ceil((user.expires_at - Date.now() / 1000) / 86400)) : 30;
-    $("#edit-days").value = days;
+    const accessPlan = $("#edit-access-plan");
+    accessPlan.hidden = Boolean(user);
+    accessPlan.querySelectorAll("input,button").forEach((item) => { item.disabled = Boolean(user); });
+    $("#edit-traffic-unlimited").checked = false;
+    $("#edit-traffic").disabled = false;
+    setExpiryPreset("edit", 1, new Date());
     $("#user-dialog").showModal();
+  }
+
+  function openQuotaDialog(user, mode) {
+    if (!user) return;
+    $("#quota-password").value = user.password;
+    $("#quota-mode").value = mode;
+    $("#quota-title").textContent = mode === "renew" ? `Продлить: ${user.label || user.password}` : `Добавить трафик: ${user.label || user.password}`;
+    $("#quota-renew-fields").hidden = mode !== "renew";
+    $("#quota-extra-fields").hidden = mode !== "extra";
+    $("#quota-comment").value = "";
+    $("#quota-extra").value = "10";
+    const baseStamp = user.expires_at > Date.now() / 1000 ? user.expires_at : Math.floor(Date.now() / 1000);
+    $("#quota-expires").dataset.baseStamp = String(baseStamp);
+    setExpiryPreset("quota", 1);
+    $("#quota-dialog").showModal();
+  }
+
+  async function saveQuota(event) {
+    event.preventDefault();
+    if (event.submitter?.value === "cancel") { $("#quota-dialog").close(); return; }
+    const button = $("#save-quota");
+    const mode = $("#quota-mode").value;
+    const payload = {
+      password: $("#quota-password").value,
+      operation_id: (crypto.randomUUID ? crypto.randomUUID() : `quota-${Date.now()}-${Math.random().toString(16).slice(2)}`),
+      comment: $("#quota-comment").value,
+    };
+    if (mode === "renew") Object.assign(payload, expirationPayload("quota"), { traffic_primary_gib: Number($("#quota-primary").value) });
+    else payload.gib = Number($("#quota-extra").value);
+    setBusy(button, true);
+    try {
+      await api(mode === "renew" ? "users/renew" : "users/add-traffic", { method: "POST", body: payload });
+      $("#quota-dialog").close();
+      toast(mode === "renew" ? "Срок и основной трафик обновлены" : "Дополнительный трафик добавлен");
+      await Promise.all([loadUsers(), loadOverview()]);
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
   }
 
   function openUserActivity(user) {
@@ -557,11 +653,13 @@
       label: $("#edit-label").value,
       vk_hash: $("#edit-hashes").value,
       ports: $("#edit-ports").value,
-      days: Number($("#edit-days").value),
-      unlimited: $("#edit-unlimited").checked,
       is_deactivated: $("#edit-disabled").checked,
     };
     if (state.editing) payload.current_password = state.editing.password;
+    else Object.assign(payload, $("#edit-unlimited").checked ? { unlimited: true } : expirationPayload("edit"), {
+      traffic_primary_gib: Number($("#edit-traffic").value),
+      traffic_unlimited: $("#edit-traffic-unlimited").checked,
+    });
     try {
       await api(state.editing ? "users/update" : "users/create", { method: "POST", body: payload });
       $("#user-dialog").close();
@@ -602,6 +700,10 @@
     if (!remaining) { toast("Достигнут лимит 10 пользователей", true); return; }
     $("#bulk-count").max = remaining;
     $("#bulk-count").value = Math.min(2, remaining);
+    $("#bulk-traffic-unlimited").checked = false;
+    $("#bulk-traffic").disabled = false;
+    $("#bulk-expires").disabled = false;
+    setExpiryPreset("bulk", 1, new Date());
     $("#bulk-user-dialog").showModal();
   }
 
@@ -616,8 +718,9 @@
       hash_mode: $("#bulk-hash-mode").value,
       label_prefix: $("#bulk-label-prefix").value,
       ports: $("#bulk-ports").value,
-      days: Number($("#bulk-days").value),
-      unlimited: $("#bulk-unlimited").checked,
+      ...($("#bulk-unlimited").checked ? { unlimited: true } : expirationPayload("bulk")),
+      traffic_primary_gib: Number($("#bulk-traffic").value),
+      traffic_unlimited: $("#bulk-traffic-unlimited").checked,
       is_deactivated: $("#bulk-disabled").checked,
     };
     try {
@@ -1333,6 +1436,16 @@
     $("#user-form").addEventListener("submit", saveUser);
     $("#auto-user-form").addEventListener("submit", saveAutoUser);
     $("#bulk-user-form").addEventListener("submit", saveBulkUsers);
+    $("#quota-form").addEventListener("submit", saveQuota);
+    $$('[data-expiry-preset]').forEach((button) => button.addEventListener("click", () => {
+      const [prefix, rawMonths] = button.dataset.expiryPreset.split(":");
+      setExpiryPreset(prefix, Number(rawMonths));
+    }));
+    ["edit", "bulk", "quota"].forEach((prefix) => $(`#${prefix}-expires`).addEventListener("change", () => clearExpiryPreset(prefix)));
+    $("#edit-traffic-unlimited").addEventListener("change", (event) => { $("#edit-traffic").disabled = event.target.checked; });
+    $("#bulk-traffic-unlimited").addEventListener("change", (event) => { $("#bulk-traffic").disabled = event.target.checked; });
+    $("#edit-unlimited").addEventListener("change", (event) => { $("#edit-expires").disabled = event.target.checked || Boolean(state.editing); });
+    $("#bulk-unlimited").addEventListener("change", (event) => { $("#bulk-expires").disabled = event.target.checked; });
     $("#vk-hashes-form").addEventListener("submit", saveVkHashes);
     $("#export-vk-hashes").addEventListener("click", exportVkHashes);
     $("#import-vk-hashes").addEventListener("click", () => $("#vk-hashes-upload").click());

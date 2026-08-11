@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 
-EXTENSION_MARKER = "wdtt-panel-extension-v6"
+EXTENSION_MARKER = "wdtt-panel-extension-v7"
 
 
 def _replace_once(source: str, old: str, new: str, title: str) -> str:
@@ -39,8 +39,14 @@ def patch_spaceneurox_source(source: str) -> str:
         '\tIsDeactivated bool     `json:"is_deactivated,omitempty"`\n}',
         '\tIsDeactivated  bool  `json:"is_deactivated,omitempty"`\n'
         '\tLastUploadAt   int64 `json:"last_upload_at,omitempty"`\n'
-        '\tLastDownloadAt int64 `json:"last_download_at,omitempty"`\n}',
-        "activity fields",
+        '\tLastDownloadAt int64 `json:"last_download_at,omitempty"`\n'
+        '\tTrafficManaged       bool                     `json:"traffic_managed,omitempty"`\n'
+        '\tTrafficUnlimited     bool                     `json:"traffic_unlimited,omitempty"`\n'
+        '\tTrafficBaselineBytes int64                    `json:"traffic_baseline_bytes,omitempty"`\n'
+        '\tTrafficPrimaryBytes  int64                    `json:"traffic_primary_bytes,omitempty"`\n'
+        '\tTrafficExtraBytes    int64                    `json:"traffic_extra_bytes,omitempty"`\n'
+        '\tTrafficOperations    []map[string]interface{} `json:"traffic_operations,omitempty"`\n}',
+        "activity and quota fields",
     )
     source = _replace_once(
         source,
@@ -142,7 +148,8 @@ def patch_spaceneurox_source(source: str) -> str:
         '\t\t\t\tdb.Passwords[newPass] = &PasswordEntry{\n',
         '\t\t\t\tnewLabel := tempLabel\n'
         '\t\t\t\ttempLabel = ""\n'
-        '\t\t\t\tdb.Passwords[newPass] = &PasswordEntry{\n',
+        '\t\t\t\tdb.Passwords[newPass] = &PasswordEntry{\n'
+        '\t\t\t\t\tTrafficManaged: true, TrafficPrimaryBytes: 35 * 1024 * 1024 * 1024,\n',
         "Telegram creation label",
     )
     source = _replace_between(
@@ -202,6 +209,82 @@ def patch_spaceneurox_source(source: str) -> str:
     )
     source = _replace_once(
         source,
+        'func isPasswordExpired(entry *PasswordEntry) bool {\n',
+        'func trafficQuota(entry *PasswordEntry) (int64, int64, int64, int64, bool) {\n'
+        '\tif entry == nil || !entry.TrafficManaged || entry.TrafficUnlimited { return 0, 0, 0, 0, false }\n'
+        '\tused := entry.DownBytes + entry.UpBytes - entry.TrafficBaselineBytes\n'
+        '\tif used < 0 { used = 0 }\n'
+        '\tprimary := entry.TrafficPrimaryBytes - used\n'
+        '\tif primary < 0 { primary = 0 }\n'
+        '\textraUsed := used - entry.TrafficPrimaryBytes\n'
+        '\tif extraUsed < 0 { extraUsed = 0 }\n'
+        '\textra := entry.TrafficExtraBytes - extraUsed\n'
+        '\tif extra < 0 { extra = 0 }\n'
+        '\tremaining := primary + extra\n'
+        '\treturn used, primary, extra, remaining, remaining <= 0\n'
+        '}\n\n'
+        'func trafficQuotaExhausted(entry *PasswordEntry) bool {\n'
+        '\t_, _, _, _, exhausted := trafficQuota(entry)\n'
+        '\treturn exhausted\n'
+        '}\n\n'
+        'func isPasswordExpired(entry *PasswordEntry) bool {\n',
+        "quota helpers",
+    )
+    source = _replace_once(
+        source,
+        'func cleanupExpiredPasswordsLocked(wgDev *device.Device) int {\n'
+        '\tremoved := 0\n'
+        '\tfor p, entry := range db.Passwords {\n'
+        '\t\tif isPasswordExpired(entry) {\n'
+        '\t\t\tif entry != nil && entry.DeviceID != "" {\n'
+        '\t\t\t\tremovePeerFromWG(wgDev, db.Devices[entry.DeviceID])\n'
+        '\t\t\t\tdelete(db.Devices, entry.DeviceID)\n'
+        '\t\t\t}\n'
+        '\t\t\tdelete(db.Passwords, p)\n'
+        '\t\t\tserverWrapKeys.RemovePassword(p)\n'
+        '\t\t\tremoved++\n'
+        '\t\t}\n'
+        '\t}\n'
+        '\treturn removed\n'
+        '}\n',
+        'func cleanupExpiredPasswordsLocked(wgDev *device.Device) int {\n'
+        '\trestricted := 0\n'
+        '\tfor _, entry := range db.Passwords {\n'
+        '\t\tif entry == nil || (!isPasswordExpired(entry) && !entry.IsDeactivated && !trafficQuotaExhausted(entry)) { continue }\n'
+        '\t\tseen := make(map[string]bool)\n'
+        '\t\tids := append([]string{}, entry.DeviceIDs...)\n'
+        '\t\tif entry.DeviceID != "" && entry.DeviceID != "multi" { ids = append(ids, entry.DeviceID) }\n'
+        '\t\tfor _, id := range ids {\n'
+        '\t\t\tif !seen[id] { removePeerFromWG(wgDev, db.Devices[id]); seen[id] = true }\n'
+        '\t\t}\n'
+        '\t\trestricted++\n'
+        '\t}\n'
+        '\treturn restricted\n'
+        '}\n',
+        "retain restricted users",
+    )
+    source = _replace_once(
+        source,
+        '\tfor _, dev := range db.Devices {\n\t\tupsertPeerInWG(wgDev, dev)\n\t}\n\n\t// ',
+        '\tfor _, dev := range db.Devices {\n\t\tupsertPeerInWG(wgDev, dev)\n\t}\n'
+        '\tcleanupExpiredPasswordsLocked(wgDev)\n\n\t// ',
+        "reload access restrictions",
+    )
+    source = _replace_once(
+        source,
+        '\tfor _, dev := range db.Devices {\n\t\tupsertPeerInWG(wgDev, dev)\n\t\tcount++\n\t}\n',
+        '\tfor _, dev := range db.Devices {\n\t\tupsertPeerInWG(wgDev, dev)\n\t\tcount++\n\t}\n'
+        '\tcleanupExpiredPasswordsLocked(wgDev)\n',
+        "startup access restrictions",
+    )
+    source = _replace_once(
+        source,
+        '\t\t\tif entry.DeviceID == targetDevID {\n',
+        '\t\t\tif !foundEntry && entry.DeviceID == targetDevID {\n',
+        "avoid double traffic accounting",
+    )
+    source = _replace_once(
+        source,
         '\t\tif deltaRx == 0 && deltaTx == 0 {\n\t\t\treturn\n\t\t}\n\n\t\tvar targetDevID string\n',
         '\t\tif deltaRx == 0 && deltaTx == 0 {\n\t\t\treturn\n\t\t}\n\n'
         '\t\tnow := time.Now().Unix()\n'
@@ -214,6 +297,7 @@ def patch_spaceneurox_source(source: str) -> str:
         '\t\t\t\t\tentry.UpBytes += deltaRx\n\t\t\t\t\tentry.DownBytes += deltaTx\n'
         '\t\t\t\t\tif deltaRx > 0 { entry.LastUploadAt = now }\n'
         '\t\t\t\t\tif deltaTx > 0 { entry.LastDownloadAt = now }\n'
+        '\t\t\t\t\tif trafficQuotaExhausted(entry) { removePeerFromWG(globalWgDev, db.Devices[targetDevID]) }\n'
         '\t\t\t\t\tfoundEntry = true\n',
         "array device activity",
     )
@@ -223,6 +307,7 @@ def patch_spaceneurox_source(source: str) -> str:
         '\t\t\t\tentry.UpBytes += deltaRx\n\t\t\t\tentry.DownBytes += deltaTx\n'
         '\t\t\t\tif deltaRx > 0 { entry.LastUploadAt = now }\n'
         '\t\t\t\tif deltaTx > 0 { entry.LastDownloadAt = now }\n'
+        '\t\t\t\tif trafficQuotaExhausted(entry) { removePeerFromWG(globalWgDev, db.Devices[targetDevID]) }\n'
         '\t\t\t\tfoundEntry = true\n',
         "legacy device activity",
     )
@@ -238,6 +323,25 @@ def patch_spaceneurox_source(source: str) -> str:
         '\t\t\tif deltaTx > 0 { db.MainLastDownloadAt = now }\n'
         '\t\t}\n',
         "main traffic persistence",
+    )
+    source = _replace_once(
+        source,
+        '\t\t} else if valid && isGenPass && !entry.canConnectAndBind(deviceID) {\n',
+        '\t\t} else if valid && isGenPass && trafficQuotaExhausted(entry) {\n'
+        '\t\t\tclientConn.Write([]byte("DENIED:traffic_limit"))\n'
+        '\t\t\tlog.Printf("[WG] Refused: traffic limit reached for %s", maskPassword(password))\n'
+        '\t\t\tdbMutex.Unlock()\n'
+        '\t\t} else if valid && isGenPass && !entry.canConnectAndBind(deviceID) {\n',
+        "quota authentication check",
+    )
+    source = _replace_once(
+        source,
+        '\t\t"expires_at":       entry.ExpiresAt,\n',
+        '\t\t"expires_at":        entry.ExpiresAt,\n'
+        '\t\t"traffic_managed":   entry.TrafficManaged,\n'
+        '\t\t"traffic_unlimited": entry.TrafficUnlimited || !entry.TrafficManaged,\n'
+        '\t\t"quota_exhausted":   trafficQuotaExhausted(entry),\n',
+        "profile quota status",
     )
     return source
 
