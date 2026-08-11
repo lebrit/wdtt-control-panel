@@ -357,6 +357,7 @@ class Panel:
             "users/reset-traffic": "users.reset_traffic",
             "users/renew": "users.renew",
             "users/add-traffic": "users.add_traffic",
+            "users/adjust-plan": "users.adjust_plan",
             "users/bulk-action": "users.bulk_action",
             "service": "service.action",
             "logs": "logs",

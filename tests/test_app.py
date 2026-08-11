@@ -110,6 +110,25 @@ class AppSmokeTests(unittest.TestCase):
         self.assertTrue(headers["status"].startswith("200"))
         self.assertEqual(json.loads(body)["result"]["label"], "Mobile client")
 
+        payload = json.dumps(
+            {
+                "password": "DemoUserA123",
+                "operation_id": "app-adjust-test-0001",
+                "expiration_mode": "adjust_days",
+                "days_delta": 7,
+                "traffic_mode": "subtract",
+                "traffic_gib": 5,
+            }
+        ).encode()
+        headers, body = self.request(
+            "/private-panel-path/api/v1/users/adjust-plan",
+            "POST",
+            payload,
+            auth=f"Bearer {token}",
+        )
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertTrue(json.loads(body)["ok"])
+
         payload = json.dumps({"keep_days": 14, "targets": ["service_logs", "package_cache"]}).encode()
         headers, body = self.request(
             "/private-panel-path/api/v1/cleanup/preview",

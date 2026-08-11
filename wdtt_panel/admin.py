@@ -1040,6 +1040,107 @@ def add_user_traffic(payload: dict[str, Any]) -> dict[str, Any]:
     return mutate_database("traffic-extra", apply)
 
 
+def adjust_user_plan(payload: dict[str, Any]) -> dict[str, Any]:
+    password = validate_password(str(payload.get("password") or ""))
+    operation_id = quota_operation_id(payload)
+    expiration_mode = str(payload.get("expiration_mode") or "keep")
+    traffic_mode = str(payload.get("traffic_mode") or "keep")
+    if expiration_mode not in {"keep", "adjust_days", "set_date", "unlimited"}:
+        raise ValidationError("Неизвестный способ изменения срока")
+    if traffic_mode not in {"keep", "add", "subtract", "set", "unlimited"}:
+        raise ValidationError("Неизвестный способ изменения трафика")
+    if expiration_mode == "keep" and traffic_mode == "keep":
+        raise ValidationError("Выберите изменение срока или трафика")
+
+    days_delta = 0
+    if expiration_mode == "adjust_days":
+        try:
+            days_delta = int(payload.get("days_delta") or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("Изменение срока должно быть числом дней") from exc
+        if days_delta == 0 or not -3650 <= days_delta <= 3650:
+            raise ValidationError("Изменение срока должно быть от -3650 до 3650 дней и не равно нулю")
+
+    traffic_gib = 0
+    if traffic_mode in {"add", "subtract", "set"}:
+        traffic_gib = parse_traffic_gib(payload.get("traffic_gib"))
+        if traffic_mode in {"add", "subtract"} and traffic_gib <= 0:
+            raise ValidationError("Для добавления или уменьшения укажите объём больше нуля")
+    comment = str(payload.get("comment") or "").strip()[:200]
+
+    def apply(data: dict[str, Any]) -> dict[str, Any]:
+        entry = data["passwords"].get(password)
+        if not isinstance(entry, dict):
+            raise ValidationError("Пользователь не найден")
+        if quota_operation_exists(entry, operation_id):
+            return {**user_view(password, entry, data["devices"]).as_dict(), "duplicate": True}
+
+        now = int(time.time())
+        old_expiry = int(entry.get("expires_at") or 0)
+        new_expiry = old_expiry
+        if expiration_mode == "unlimited":
+            new_expiry = 0
+        elif expiration_mode == "set_date":
+            new_expiry = parse_expiration({"expires_at": payload.get("expires_at")}, now)
+        elif expiration_mode == "adjust_days":
+            if old_expiry <= 0:
+                raise ValidationError("Для бессрочного пользователя сначала задайте дату окончания")
+            new_expiry = old_expiry + days_delta * 86400
+            if new_expiry <= now:
+                raise ValidationError("После уменьшения дата окончания должна оставаться в будущем")
+        entry["expires_at"] = new_expiry
+
+        quota = traffic_quota(entry)
+        old_primary = int(quota["traffic_primary_remaining_bytes"])
+        old_extra = int(quota["traffic_extra_remaining_bytes"])
+        new_primary, new_extra = old_primary, old_extra
+        if traffic_mode == "unlimited":
+            entry.update(
+                {
+                    "traffic_managed": True,
+                    "traffic_unlimited": True,
+                    "traffic_baseline_bytes": 0,
+                    "traffic_primary_bytes": 0,
+                    "traffic_extra_bytes": 0,
+                }
+            )
+            new_primary, new_extra = 0, 0
+        elif traffic_mode != "keep":
+            amount = traffic_gib * GIB
+            if quota["traffic_unlimited"]:
+                old_primary, old_extra = 0, 0
+            if traffic_mode == "add":
+                new_extra = old_extra + amount
+            elif traffic_mode == "subtract":
+                if amount > old_primary + old_extra:
+                    raise ValidationError("Нельзя убрать больше оставшегося трафика")
+                from_extra = min(old_extra, amount)
+                new_extra = old_extra - from_extra
+                new_primary = old_primary - (amount - from_extra)
+            else:
+                new_primary, new_extra = amount, 0
+            set_quota_balance(entry, new_primary, new_extra)
+
+        record_quota_operation(
+            entry,
+            {
+                "id": operation_id,
+                "kind": "manual_adjustment",
+                "created_at": now,
+                "expiration_mode": expiration_mode,
+                "old_expires_at": old_expiry,
+                "new_expires_at": new_expiry,
+                "traffic_mode": traffic_mode,
+                "primary_delta_bytes": new_primary - old_primary,
+                "extra_delta_bytes": new_extra - old_extra,
+                "comment": comment,
+            },
+        )
+        return user_view(password, entry, data["devices"]).as_dict()
+
+    return mutate_database("plan-adjust", apply)
+
+
 def bulk_user_action(payload: dict[str, Any]) -> dict[str, Any]:
     action = str(payload.get("action") or "")
     actions = {
@@ -3713,6 +3814,7 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "users.reset_traffic": reset_traffic,
     "users.renew": renew_user,
     "users.add_traffic": add_user_traffic,
+    "users.adjust_plan": adjust_user_plan,
     "users.bulk_action": bulk_user_action,
     "service.action": lambda payload: service_action(str(payload.get("service_action") or "")),
     "logs": journal_logs,

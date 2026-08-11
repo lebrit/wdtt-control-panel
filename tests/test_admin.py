@@ -153,6 +153,59 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual(renewed["traffic_extra_bytes"], 7 * admin.GIB)
         self.assertFalse(renewed["is_deactivated"])
 
+    def test_manual_plan_adjustment_changes_days_and_traffic_safely(self):
+        created = admin.create_user(
+            {"password": "AdjustUser123", "months": 1, "traffic_primary_gib": 35, "vk_hash": "hash_123", "ports": "56000,56001,9000"}
+        )
+        old_expiry = created["expires_at"]
+        adjusted = admin.adjust_user_plan(
+            {
+                "password": "AdjustUser123",
+                "operation_id": "adjust-test-0001",
+                "expiration_mode": "adjust_days",
+                "days_delta": 7,
+                "traffic_mode": "subtract",
+                "traffic_gib": 5,
+            }
+        )
+        self.assertEqual(adjusted["expires_at"], old_expiry + 7 * 86400)
+        self.assertEqual(adjusted["traffic_remaining_bytes"], 30 * admin.GIB)
+
+        duplicate = admin.adjust_user_plan(
+            {
+                "password": "AdjustUser123",
+                "operation_id": "adjust-test-0001",
+                "expiration_mode": "adjust_days",
+                "days_delta": 7,
+                "traffic_mode": "subtract",
+                "traffic_gib": 5,
+            }
+        )
+        self.assertTrue(duplicate["duplicate"])
+        self.assertEqual(duplicate["expires_at"], old_expiry + 7 * 86400)
+        self.assertEqual(duplicate["traffic_remaining_bytes"], 30 * admin.GIB)
+
+        exact = admin.adjust_user_plan(
+            {
+                "password": "AdjustUser123",
+                "operation_id": "adjust-test-0002",
+                "expiration_mode": "keep",
+                "traffic_mode": "set",
+                "traffic_gib": 12,
+            }
+        )
+        self.assertEqual(exact["traffic_remaining_bytes"], 12 * admin.GIB)
+        with self.assertRaisesRegex(admin.ValidationError, "больше оставшегося"):
+            admin.adjust_user_plan(
+                {
+                    "password": "AdjustUser123",
+                    "operation_id": "adjust-test-0003",
+                    "expiration_mode": "keep",
+                    "traffic_mode": "subtract",
+                    "traffic_gib": 13,
+                }
+            )
+
     def test_restore_backup(self):
         admin.create_user(
             {"password": "BackupUser123", "days": 7, "vk_hash": "hash_123", "ports": "56000,56001,9000"}
