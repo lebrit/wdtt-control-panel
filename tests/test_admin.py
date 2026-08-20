@@ -55,6 +55,7 @@ class AdminDatabaseTests(unittest.TestCase):
             mock.patch.object(admin, "NGINX_ACCESS_LOG", self.nginx_access_log),
             mock.patch.object(admin, "NGINX_ERROR_LOG", self.nginx_error_log),
             mock.patch.object(admin, "WDTT_UNIT_FILE", root / "wdtt.service"),
+            mock.patch.object(admin, "WDTT_BOT_TOKEN_FILE", root / "etc" / "bot.token"),
             mock.patch.object(admin, "SKIP_SYSTEMD", True),
         ]
         for patcher in self.patchers:
@@ -424,12 +425,15 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual(data["bot_token"], "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_test")
         unit = admin.WDTT_UNIT_FILE.read_text(encoding="utf-8")
         self.assertIn("-admin 123456789", unit)
-        self.assertIn("-bot-token 123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_test", unit)
+        self.assertIn("-bot-token-file", unit)
+        self.assertNotIn("ABCDEFGHIJKLMNOPQRSTUVWXYZ_test", unit)
+        self.assertEqual(admin.WDTT_BOT_TOKEN_FILE.read_text(encoding="utf-8").strip(), "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_test")
 
         with mock.patch.object(admin, "SKIP_SYSTEMD", False), mock.patch.object(admin, "run", side_effect=fake_run):
             disabled = admin.configure_telegram({"enabled": False})
         self.assertFalse(disabled["enabled"])
         self.assertNotIn("-bot-token", admin.WDTT_UNIT_FILE.read_text(encoding="utf-8"))
+        self.assertFalse(admin.WDTT_BOT_TOKEN_FILE.exists())
 
     def test_bulk_user_actions_apply_in_one_database_update(self):
         for password in ("FirstUser123", "SecondUser12"):

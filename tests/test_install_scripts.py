@@ -14,9 +14,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.12.1"', installer)
-        self.assertIn('__version__ = "0.12.1"', package)
-        self.assertIn("Текущая версия: 0.12.1", readme)
+        self.assertIn('PANEL_VERSION="0.12.2"', installer)
+        self.assertIn('__version__ = "0.12.2"', package)
+        self.assertIn("Текущая версия: 0.12.2", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -55,8 +55,8 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('systemctl restart --no-block "$WDTT_EXTENSIONS_SERVICE"', script)
         self.assertIn("WDTT_EXTENSION_MARKER", script)
         self.assertIn('WDTT_REPOSITORY="${WDTT_REPOSITORY:-SpaceNeuroX/proxy-turn-vk-android}"', script)
-        self.assertIn('WDTT_REF="${WDTT_REF:-v1.4.0}"', script)
-        self.assertIn('WDTT_EXTENSION_MARKER="wdtt-panel-extension-v7"', script)
+        self.assertIn('WDTT_REF="${WDTT_REF:-v1.4.2}"', script)
+        self.assertIn('WDTT_EXTENSION_MARKER="wdtt-panel-extension-v8"', script)
         self.assertIn("download_wdtt_archive", script)
         self.assertIn("https://github.com/${WDTT_REPOSITORY}/archive", script)
         self.assertIn("refs/${kind}/${WDTT_REF}.zip", script)
@@ -75,7 +75,10 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('json:"main_down_bytes,omitempty"', script)
         self.assertIn('json:"last_upload_at,omitempty"', script)
         self.assertIn('"activity"', script)
-        self.assertIn('"spaceneurox_v1_4_0"', script)
+        self.assertIn('"spaceneurox_v1_4_2"', script)
+        self.assertIn('[ -f "$source/server/main.go" ]', script)
+        self.assertIn('-o "$work/wdtt-server" ./server', script)
+        self.assertIn('/tmp/wdtt-admin.token', script)
         self.assertIn('"$WDTT_REPOSITORY" "$WDTT_REF" <<\'PY\'', script)
         self.assertIn('state.get("wdtt_ref") == sys.argv[4]', script)
         self.assertIn("wdtt_server_patch.py", script)
@@ -93,10 +96,11 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("normalize_wdtt_main_password", script)
         self.assertIn("validate_telegram_settings()", script)
         self.assertIn("apply_telegram_settings()", script)
-        self.assertIn("-bot-token $WDTT_TELEGRAM_BOT_TOKEN", script)
+        self.assertIn("-bot-token-file", script)
+        self.assertIn("/etc/wdtt/bot.token", script)
 
         patcher = (ROOT / "wdtt_panel" / "wdtt_server_patch.py").read_text(encoding="utf-8")
-        self.assertIn('EXTENSION_MARKER = "wdtt-panel-extension-v7"', patcher)
+        self.assertIn('EXTENSION_MARKER = "wdtt-panel-extension-v8"', patcher)
         self.assertIn('json:"traffic_primary_bytes,omitempty"', patcher)
         self.assertIn("trafficQuotaExhausted", patcher)
         self.assertIn('json:"main_down_bytes,omitempty"', patcher)
@@ -105,15 +109,25 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('Отправьте метку нового пользователя', patcher)
         self.assertIn('telegramLabel(label), p, expiry', patcher)
 
-    def test_wdtt_update_guard_rejects_lost_users_or_devices(self):
+    def test_wdtt_update_guard_rejects_lost_users_devices_or_quota_data(self):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         start_marker = 'wdtt_database_preserved() {\n  python3 - "$1" "$2" <<\'PY\'\n'
         start = installer.index(start_marker) + len(start_marker)
         guard = installer[start:installer.index("\nPY\n}", start)]
         before = {
             "main_password": "MainPassword123",
-            "passwords": {"UserPassword123": {"label": "Пользователь"}},
+            "passwords": {
+                "UserPassword123": {
+                    "label": "Пользователь",
+                    "expires_at": 1800000000,
+                    "traffic_managed": True,
+                    "traffic_primary_bytes": 35 * 1024**3,
+                    "traffic_extra_bytes": 5 * 1024**3,
+                    "traffic_operations": [{"kind": "extra", "bytes": 5 * 1024**3}],
+                }
+            },
             "devices": {"device-1": {"ip": "10.66.0.2"}},
+            "main_down_bytes": 123456,
         }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -131,6 +145,41 @@ class InstallScriptTests(unittest.TestCase):
             with mock.patch.object(sys, "argv", ["guard", str(before_path), str(after_path)]):
                 with self.assertRaises(SystemExit):
                     exec(guard, {"__name__": "__main__"})
+
+            changed_quota = json.loads(json.dumps(before))
+            changed_quota["passwords"]["UserPassword123"]["traffic_extra_bytes"] = 0
+            after_path.write_text(json.dumps(changed_quota), encoding="utf-8")
+            with mock.patch.object(sys, "argv", ["guard", str(before_path), str(after_path)]):
+                with self.assertRaises(SystemExit):
+                    exec(guard, {"__name__": "__main__"})
+
+    def test_installer_keeps_telegram_token_out_of_systemd_unit(self):
+        installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+        start_marker = (
+            'python3 - /etc/wdtt/passwords.json "/etc/systemd/system/$WDTT_SERVICE" '
+            '/etc/wdtt/bot.token "$WDTT_TELEGRAM_ADMIN_ID" "$WDTT_TELEGRAM_BOT_TOKEN" <<\'PY\'\n'
+        )
+        start = installer.index(start_marker) + len(start_marker)
+        script = installer[start:installer.index("\nPY\n  systemctl daemon-reload", start)]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db_path = root / "passwords.json"
+            unit_path = root / "wdtt.service"
+            token_path = root / "bot.token"
+            token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_test"
+            db_path.write_text('{"passwords": {}, "devices": {}}', encoding="utf-8")
+            unit_path.write_text(
+                "[Service]\nExecStart=/usr/local/bin/wdtt-server -bot-token OldSecret -bot-token-file /old/token\n",
+                encoding="utf-8",
+            )
+            argv = ["telegram.py", str(db_path), str(unit_path), str(token_path), "123456789", token]
+            with mock.patch.object(sys, "argv", argv):
+                exec(script, {"__name__": "__main__"})
+            unit = unit_path.read_text(encoding="utf-8")
+            self.assertIn("-bot-token-file", unit)
+            self.assertNotIn(token, unit)
+            self.assertNotIn("OldSecret", unit)
+            self.assertEqual(token_path.read_text(encoding="utf-8").strip(), token)
 
     def test_installer_recovers_legacy_labels_from_private_backups(self):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")

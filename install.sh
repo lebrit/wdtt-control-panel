@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.12.1"
+PANEL_VERSION="0.12.2"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,12 +45,12 @@ WDTT_MAIN_PASSWORD="${WDTT_MAIN_PASSWORD:-}"
 WDTT_TELEGRAM_BOT_TOKEN="${WDTT_TELEGRAM_BOT_TOKEN:-}"
 WDTT_TELEGRAM_ADMIN_ID="${WDTT_TELEGRAM_ADMIN_ID:-}"
 WDTT_REPOSITORY="${WDTT_REPOSITORY:-SpaceNeuroX/proxy-turn-vk-android}"
-WDTT_REF="${WDTT_REF:-v1.4.0}"
+WDTT_REF="${WDTT_REF:-v1.4.2}"
 GO_VERSION="${GO_VERSION:-1.25.0}"
 WDTT_SERVICE="wdtt.service"
 WDTT_EXTENSIONS_SERVICE="wdtt-panel-wdtt-extensions.service"
 WDTT_EXTENSIONS_TIMER="wdtt-panel-wdtt-extensions.timer"
-WDTT_EXTENSION_MARKER="wdtt-panel-extension-v7"
+WDTT_EXTENSION_MARKER="wdtt-panel-extension-v8"
 
 log() { printf '[wdtt-panel] %s\n' "$*" | tee -a "$LOG_FILE"; }
 die() { log "ERROR: $*"; exit 1; }
@@ -284,6 +284,25 @@ for field in ("passwords", "devices"):
         raise SystemExit(1)
     if not set(before_items).issubset(after_items):
         raise SystemExit(1)
+
+protected_user_fields = (
+    "label", "expires_at", "last_upload_at", "last_download_at",
+    "traffic_managed", "traffic_unlimited", "traffic_baseline_bytes",
+    "traffic_primary_bytes", "traffic_extra_bytes", "traffic_operations",
+)
+before_passwords = before.get("passwords") or {}
+after_passwords = after.get("passwords") or {}
+for password, before_entry in before_passwords.items():
+    after_entry = after_passwords.get(password)
+    if not isinstance(before_entry, dict) or not isinstance(after_entry, dict):
+        raise SystemExit(1)
+    for field in protected_user_fields:
+        if field in before_entry and before_entry[field] != after_entry.get(field):
+            raise SystemExit(1)
+
+for field in ("main_down_bytes", "main_up_bytes", "main_last_upload_at", "main_last_download_at"):
+    if field in before and before[field] != after.get(field):
+        raise SystemExit(1)
 PY
 }
 
@@ -299,20 +318,12 @@ restore_wdtt_extension_backup() {
   fi
 }
 
-build_wdtt_args() {
-  local args="-password $WDTT_MAIN_PASSWORD"
-  if [ -n "$WDTT_TELEGRAM_BOT_TOKEN" ]; then
-    args="$args -admin $WDTT_TELEGRAM_ADMIN_ID -bot-token $WDTT_TELEGRAM_BOT_TOKEN"
-  fi
-  printf '%s' "$args"
-}
-
 apply_telegram_settings() {
   [ -n "$WDTT_TELEGRAM_BOT_TOKEN$WDTT_TELEGRAM_ADMIN_ID" ] || return 0
   validate_telegram_settings
   [ -f /etc/wdtt/passwords.json ] || die "Не найдена база WDTT /etc/wdtt/passwords.json для настройки Telegram"
   [ -f "/etc/systemd/system/$WDTT_SERVICE" ] || die "Не найден /etc/systemd/system/$WDTT_SERVICE для сохранения Telegram-настроек"
-  python3 - /etc/wdtt/passwords.json "/etc/systemd/system/$WDTT_SERVICE" "$WDTT_TELEGRAM_ADMIN_ID" "$WDTT_TELEGRAM_BOT_TOKEN" <<'PY'
+  python3 - /etc/wdtt/passwords.json "/etc/systemd/system/$WDTT_SERVICE" /etc/wdtt/bot.token "$WDTT_TELEGRAM_ADMIN_ID" "$WDTT_TELEGRAM_BOT_TOKEN" <<'PY'
 import json
 import os
 import re
@@ -323,8 +334,9 @@ from pathlib import Path
 
 db_path = Path(sys.argv[1])
 unit_path = Path(sys.argv[2])
-admin_id = sys.argv[3]
-bot_token = sys.argv[4]
+bot_token_path = Path(sys.argv[3])
+admin_id = sys.argv[4]
+bot_token = sys.argv[5]
 
 data = json.loads(db_path.read_text(encoding="utf-8")) if db_path.exists() else {}
 if not isinstance(data, dict):
@@ -346,6 +358,21 @@ finally:
     if os.path.exists(tmp):
         os.unlink(tmp)
 
+if bot_token:
+    fd, tmp = tempfile.mkstemp(prefix="bot-token.", suffix=".tmp", dir=bot_token_path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(bot_token + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, bot_token_path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+else:
+    bot_token_path.unlink(missing_ok=True)
+
 def quote(token: str) -> str:
     if re.fullmatch(r"[^\s\"'\\]+", token):
         return token
@@ -366,13 +393,13 @@ for line in lines:
         if skip:
             skip = False
             continue
-        if token in {"-admin", "--admin", "-bot-token", "--bot-token"}:
+        if token in {"-admin", "--admin", "-bot-token", "--bot-token", "-bot-token-file", "--bot-token-file"}:
             skip = True
             continue
-        if token.startswith(("-admin=", "--admin=", "-bot-token=", "--bot-token=")):
+        if token.startswith(("-admin=", "--admin=", "-bot-token=", "--bot-token=", "-bot-token-file=", "--bot-token-file=")):
             continue
         clean.append(token)
-    clean.extend(["-admin", admin_id, "-bot-token", bot_token])
+    clean.extend(["-admin", admin_id, "-bot-token-file", str(bot_token_path)])
     next_lines.append("ExecStart=" + " ".join(quote(token) for token in clean))
 if not found:
     raise SystemExit("ExecStart not found")
@@ -427,13 +454,23 @@ install_clean_wdtt() {
   download_wdtt_archive "$BUILD_DIR/wdtt.zip"
   unzip -q "$BUILD_DIR/wdtt.zip" -d "$BUILD_DIR/source"
   WDTT_SOURCE="$(find "$BUILD_DIR/source" -mindepth 1 -maxdepth 1 -type d | head -1)"
-  [ -f "$WDTT_SOURCE/server.go" ] || die "В архиве WDTT не найден server.go"
+  [ -f "$WDTT_SOURCE/server/main.go" ] || die "В архиве qWDTT $WDTT_REF не найден модульный сервер"
   (
     cd "$WDTT_SOURCE"
-    PATH="$BUILD_DIR/go/bin:$PATH" GOPATH="$BUILD_DIR/gopath" GOMODCACHE="$BUILD_DIR/gopath/pkg/mod" GOCACHE="$BUILD_DIR/go-cache" CGO_ENABLED=0 "$BUILD_DIR/go/bin/go" build -mod=mod -trimpath -ldflags='-s -w' -o /tmp/wdtt-server ./server.go
+    PATH="$BUILD_DIR/go/bin:$PATH" GOPATH="$BUILD_DIR/gopath" GOMODCACHE="$BUILD_DIR/gopath/pkg/mod" GOCACHE="$BUILD_DIR/go-cache" CGO_ENABLED=0 "$BUILD_DIR/go/bin/go" build -mod=mod -trimpath -ldflags='-s -w' -o /tmp/wdtt-server ./server
   ) >>"$LOG_FILE" 2>&1
   chmod 0755 /tmp/wdtt-server
-  WDTT_ARGS="$(build_wdtt_args)" bash "$WDTT_SOURCE/app/src/main/assets/deploy.sh" install >>"$LOG_FILE" 2>&1
+  (
+    umask 077
+    printf '%s' "$WDTT_MAIN_PASSWORD" > /tmp/wdtt-main.password
+    random_token > /tmp/wdtt-admin.token
+    if [ -n "$WDTT_TELEGRAM_BOT_TOKEN" ]; then
+      printf '%s' "$WDTT_TELEGRAM_BOT_TOKEN" > /tmp/wdtt-bot.token
+    else
+      rm -f /tmp/wdtt-bot.token
+    fi
+  )
+  WDTT_ADMIN_ID="$WDTT_TELEGRAM_ADMIN_ID" bash "$WDTT_SOURCE/app/src/main/assets/deploy.sh" install >>"$LOG_FILE" 2>&1
   log "WDTT установлен официальным deploy.sh"
 }
 
@@ -469,11 +506,12 @@ install_wdtt_extensions() {
   download_wdtt_archive "$work/wdtt.zip"
   unzip -q "$work/wdtt.zip" -d "$work/source"
   source="$(find "$work/source" -mindepth 1 -maxdepth 1 -type d | head -1)"
-  [ -f "$source/server.go" ] || die "В архиве WDTT не найден server.go"
+  [ -f "$source/server/main.go" ] || die "В архиве qWDTT $WDTT_REF не найден модульный сервер"
 
   if [ "$WDTT_REPOSITORY" = "SpaceNeuroX/proxy-turn-vk-android" ]; then
-    python3 "$SCRIPT_DIR/wdtt_panel/wdtt_server_patch.py" "$source/server.go" || die "Не удалось адаптировать сервер SpaceNeuroX для панели"
+    python3 "$SCRIPT_DIR/wdtt_panel/wdtt_server_patch.py" "$source" || die "Не удалось адаптировать qWDTT $WDTT_REF для панели"
   else
+  die "Расширение панели 0.12.2 поддерживает только SpaceNeuroX/proxy-turn-vk-android v1.4.2"
   python3 - "$source/server.go" <<'PY'
 import re
 import sys
@@ -490,7 +528,7 @@ def replace_once(old, new, title):
 
 replace_once(
     'func main() {\n',
-    'const wdttPanelExtensionMarker = "wdtt-panel-extension-v7"\n\nfunc main() {\n\tlog.Printf("[WDTT Panel] extension %s enabled", wdttPanelExtensionMarker)\n',
+    'const wdttPanelExtensionMarker = "wdtt-panel-extension-v8"\n\nfunc main() {\n\tlog.Printf("[WDTT Panel] extension %s enabled", wdttPanelExtensionMarker)\n',
     "extension marker",
 )
 
@@ -621,7 +659,7 @@ PY
 
   (
     cd "$source"
-    PATH="$work/go/bin:$PATH" GOPATH="$work/gopath" GOMODCACHE="$work/gopath/pkg/mod" GOCACHE="$work/go-cache" CGO_ENABLED=0 "$work/go/bin/go" build -mod=mod -trimpath -ldflags='-s -w' -o "$work/wdtt-server" ./server.go
+    PATH="$work/go/bin:$PATH" GOPATH="$work/gopath" GOMODCACHE="$work/gopath/pkg/mod" GOCACHE="$work/go-cache" CGO_ENABLED=0 "$work/go/bin/go" build -mod=mod -trimpath -ldflags='-s -w' -o "$work/wdtt-server" ./server
   ) >>"$LOG_FILE" 2>&1 || die "Не удалось собрать расширенный WDTT; действующий сервер не изменён"
 
   install -d -m 0700 "$PRIVATE_STATE_DIR"
@@ -732,10 +770,10 @@ PY
   fi
   if [ -n "$database_backup" ] && ! wdtt_database_preserved "$database_backup" /etc/wdtt/passwords.json; then
     restore_wdtt_extension_backup "$backup" "$database_backup" "$was_active"
-    die "После обновления WDTT обнаружена потеря пользователей или устройств; прежний бинарный файл и база восстановлены"
+    die "После обновления WDTT обнаружена потеря пользователей, устройств или данных квот; прежний бинарный файл и база восстановлены"
   fi
   rm -f "$PRIVATE_STATE_DIR/user-labels.json"
-  printf '{"enabled_at": %s, "marker": "%s", "wdtt_repository": "%s", "wdtt_ref": "%s", "features": ["labels", "main_traffic", "activity", "traffic_quota", "retained_expired", "spaceneurox_v1_4_0"]}\n' "$(date +%s)" "$WDTT_EXTENSION_MARKER" "$WDTT_REPOSITORY" "$WDTT_REF" > "$PRIVATE_STATE_DIR/wdtt-extensions.json"
+  printf '{"enabled_at": %s, "marker": "%s", "wdtt_repository": "%s", "wdtt_ref": "%s", "features": ["labels", "main_traffic", "activity", "traffic_quota", "retained_expired", "spaceneurox_v1_4_2"]}\n' "$(date +%s)" "$WDTT_EXTENSION_MARKER" "$WDTT_REPOSITORY" "$WDTT_REF" > "$PRIVATE_STATE_DIR/wdtt-extensions.json"
   chmod 0600 "$PRIVATE_STATE_DIR/wdtt-extensions.json"
   log "Расширение WDTT включено: метки общие с Telegram-ботом, трафик и последняя активность пользователей учитываются"
 }

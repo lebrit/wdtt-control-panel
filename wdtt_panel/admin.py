@@ -45,7 +45,7 @@ from .core import (
 DB_FILE = Path(os.environ.get("WDTT_DB_FILE", "/etc/wdtt/passwords.json"))
 PANEL_LABELS_FILE = Path(os.environ.get("WDTT_PANEL_LABELS_FILE", "/var/lib/wdtt-panel-private/user-labels.json"))
 WDTT_EXTENSION_STATE = Path(os.environ.get("WDTT_EXTENSION_STATE", "/var/lib/wdtt-panel-private/wdtt-extensions.json"))
-WDTT_EXTENSION_MARKER = "wdtt-panel-extension-v7"
+WDTT_EXTENSION_MARKER = "wdtt-panel-extension-v8"
 STATS_FILE = Path(os.environ.get("WDTT_STATS_FILE", "/etc/wdtt/server.log"))
 BACKUP_DIR = Path(os.environ.get("WDTT_BACKUP_DIR", "/var/lib/wdtt-panel-private/backups"))
 BACKUP_FORMAT = "wdtt-panel-backup-v1"
@@ -57,6 +57,7 @@ BACKUP_TIMER_FILE = Path(os.environ.get("WDTT_BACKUP_TIMER_FILE", f"/etc/systemd
 BACKUP_SERVICE_FILE = Path(os.environ.get("WDTT_BACKUP_SERVICE_FILE", f"/etc/systemd/system/{BACKUP_SERVICE_NAME}"))
 BACKUP_RUNNER = Path(os.environ.get("WDTT_BACKUP_RUNNER", "/usr/local/sbin/wdtt-panel-backup"))
 WDTT_UNIT_FILE = Path(os.environ.get("WDTT_UNIT_FILE", "/etc/systemd/system/wdtt.service"))
+WDTT_BOT_TOKEN_FILE = Path(os.environ.get("WDTT_BOT_TOKEN_FILE", "/etc/wdtt/bot.token"))
 LOCK_FILE = Path(os.environ.get("WDTT_LOCK_FILE", "/var/lib/wdtt-panel-private/admin.lock"))
 SERVICE = os.environ.get("WDTT_SERVICE", "wdtt.service")
 SKIP_SYSTEMD = os.environ.get("WDTT_SKIP_SYSTEMD") == "1"
@@ -270,19 +271,23 @@ def set_wdtt_service_telegram(admin_id: str, bot_token: str) -> None:
             if skip_next:
                 skip_next = False
                 continue
-            if token in {"-admin", "--admin", "-bot-token", "--bot-token"}:
+            if token in {"-admin", "--admin", "-bot-token", "--bot-token", "-bot-token-file", "--bot-token-file"}:
                 skip_next = True
                 continue
-            if token.startswith(("-admin=", "--admin=", "-bot-token=", "--bot-token=")):
+            if token.startswith(("-admin=", "--admin=", "-bot-token=", "--bot-token=", "-bot-token-file=", "--bot-token-file=")):
                 continue
             clean.append(token)
         if admin_id and bot_token:
-            clean.extend(["-admin", admin_id, "-bot-token", bot_token])
+            clean.extend(["-admin", admin_id, "-bot-token-file", str(WDTT_BOT_TOKEN_FILE)])
         next_line = "ExecStart=" + " ".join(systemd_exec_token(token) for token in clean)
         changed = changed or next_line != line
         next_lines.append(next_line)
     if not found:
         raise AdminError(f"В {WDTT_UNIT_FILE} не найден ExecStart")
+    if admin_id and bot_token:
+        write_private_text(WDTT_BOT_TOKEN_FILE, bot_token + "\n")
+    else:
+        WDTT_BOT_TOKEN_FILE.unlink(missing_ok=True)
     if changed:
         write_systemd_unit(WDTT_UNIT_FILE, "\n".join(next_lines) + "\n")
         reloaded = run(["systemctl", "daemon-reload"], timeout=45)
