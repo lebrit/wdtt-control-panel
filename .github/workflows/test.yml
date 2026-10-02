@@ -30,6 +30,7 @@ jobs:
       - name: Real systemd socket and readonly namespace regression
         run: sudo env WDTT_SYSTEMD_TEST=1 python3 -m unittest discover -s tests -p test_systemd_transport.py -v
       - name: Compile and test the patched WDTT server
+        if: ${{ !cancelled() }}
         run: |
           python3 wdtt_panel/wdtt_server_patch.py /tmp/qwdtt
           cd /tmp/qwdtt

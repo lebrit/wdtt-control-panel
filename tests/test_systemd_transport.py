@@ -20,7 +20,11 @@ class SystemdTransportTests(unittest.TestCase):
         files = []
 
         def run(*args):
-            return subprocess.run(args, text=True, capture_output=True, timeout=60, check=True)
+            result = subprocess.run(args, text=True, capture_output=True, timeout=60)
+            if result.returncode:
+                journal = subprocess.run(["journalctl", "--no-pager", "-n", "30", "-u", name + "@*.service"], text=True, capture_output=True)
+                self.fail(f"{args[0]} failed: {result.stdout}\n{result.stderr}\n{journal.stdout}")
+            return result
 
         try:
             log.write_text("test log to truncate\n")
