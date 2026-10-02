@@ -834,6 +834,7 @@ class AdminDatabaseTests(unittest.TestCase):
         with (
             mock.patch.object(admin, "SKIP_SYSTEMD", False),
             mock.patch.object(admin, "run", fake_run),
+            mock.patch.object(admin, "wdtt_source_network", return_value="10.66.0.0/16"),
             mock.patch.object(admin, "persist_xray_configuration"),
             mock.patch.object(admin, "load_xray_cascade_settings", return_value={"enabled": False}),
             mock.patch.object(admin, "xray_gateway_apply_rules") as apply_rules,
