@@ -1,8 +1,10 @@
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 import uuid
 
@@ -14,6 +16,11 @@ class SystemdTransportTests(unittest.TestCase):
         repo = Path(__file__).resolve().parents[1]
         script = (repo / "install.sh").read_text()
         name = "wdtt-ci-" + uuid.uuid4().hex[:8]
+        temporary = tempfile.TemporaryDirectory(prefix=name + "-")
+        self.addCleanup(temporary.cleanup)
+        fixture = Path(temporary.name)
+        fixture.chmod(0o755)
+        shutil.copytree(repo / "wdtt_panel", fixture / "wdtt_panel", ignore=shutil.ignore_patterns("__pycache__"))
         log = Path("/var/log") / (name + ".log")
         lock = Path("/run") / (name + ".lock")
         units = Path("/etc/systemd/system")
@@ -32,7 +39,7 @@ class SystemdTransportTests(unittest.TestCase):
             for suffix in (".socket", "@.service"):
                 pattern = r"cat > /etc/systemd/system/wdtt-panel-admin" + re.escape(suffix) + r" <<'?EOF'?\n(.*?)\nEOF"
                 body = re.search(pattern, script, re.DOTALL).group(1)
-                body = body.replace("wdtt-panel-admin", name).replace("SocketGroup=wdtt-panel", "SocketGroup=nogroup").replace("$INSTALL_DIR", str(repo))
+                body = body.replace("wdtt-panel-admin", name).replace("SocketGroup=wdtt-panel", "SocketGroup=nogroup").replace("$INSTALL_DIR", str(fixture))
                 if suffix == "@.service":
                     body += f"\nEnvironment=WDTT_SKIP_SYSTEMD=1 WDTT_LOCK_FILE={lock} WDTT_INSTALL_LOG_FILE={log}\n"
                     for variable in ("WDTT_XRAY_ACCESS_LOG", "WDTT_XRAY_ERROR_LOG", "WDTT_NGINX_ACCESS_LOG", "WDTT_NGINX_ERROR_LOG"):
@@ -57,7 +64,7 @@ assert result['ok'], result
 assert Path({str(log)!r}).stat().st_size == 0
 print('socket sandbox regression passed')
 """
-            result = run("systemd-run", "--quiet", "--wait", "--pipe", "--unit=" + name + "-web", "--property=User=nobody", "--property=Group=nogroup", "--property=ProtectSystem=strict", "--property=NoNewPrivileges=yes", "--setenv=PYTHONPATH=" + str(repo), "--setenv=WDTT_PANEL_ADMIN=", "--setenv=WDTT_PANEL_ADMIN_SOCKET=/run/" + name + ".sock", "/usr/bin/python3", "-c", code)
+            result = run("systemd-run", "--quiet", "--wait", "--pipe", "--unit=" + name + "-web", "--property=User=nobody", "--property=Group=nogroup", "--property=ProtectSystem=strict", "--property=NoNewPrivileges=yes", "--setenv=PYTHONPATH=" + str(fixture), "--setenv=WDTT_PANEL_ADMIN=", "--setenv=WDTT_PANEL_ADMIN_SOCKET=/run/" + name + ".sock", "/usr/bin/python3", "-c", code)
             self.assertIn("socket sandbox regression passed", result.stdout)
         finally:
             subprocess.run(["systemctl", "stop", name + ".socket", name + "@*.service", name + "-web.service"], capture_output=True)
