@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.12.3"
+PANEL_VERSION="0.13.0"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -50,7 +50,7 @@ GO_VERSION="${GO_VERSION:-1.25.0}"
 WDTT_SERVICE="wdtt.service"
 WDTT_EXTENSIONS_SERVICE="wdtt-panel-wdtt-extensions.service"
 WDTT_EXTENSIONS_TIMER="wdtt-panel-wdtt-extensions.timer"
-WDTT_EXTENSION_MARKER="wdtt-panel-extension-v9"
+WDTT_EXTENSION_MARKER="wdtt-panel-extension-v10"
 
 log() { printf '[wdtt-panel] %s\n' "$*" | tee -a "$LOG_FILE"; }
 die() { log "ERROR: $*"; exit 1; }
@@ -102,6 +102,21 @@ detect_os() {
   esac
   log "ОС: ${PRETTY_NAME:-$OS_ID}"
   if command_exists nginx; then NGINX_WAS_INSTALLED=1; else NGINX_WAS_INSTALLED=0; fi
+}
+
+check_disk_space() {
+  local required_kb="${1:-524288}" required_inodes="${2:-10000}" path probe available inodes
+  for path in /opt /usr/local /var/cache /tmp; do
+    probe="$path"
+    while [ ! -d "$probe" ]; do probe="$(dirname "$probe")"; done
+    available="$(df -Pk "$probe" | awk 'NR == 2 {print $4}')"
+    inodes="$(df -Pi "$probe" | awk 'NR == 2 {print $4}')"
+    [[ "$available" =~ ^[0-9]+$ ]] || die "Не удалось проверить свободное место: $path"
+    [ "$available" -ge "$required_kb" ] || die "Недостаточно места на $path: свободно $((available / 1024)) МиБ, требуется $((required_kb / 1024)) МиБ. Освободите место и повторите установку/обновление"
+    if [[ "$inodes" =~ ^[0-9]+$ ]] && [ "$inodes" -lt "$required_inodes" ]; then
+      die "Недостаточно свободных inode на $path: $inodes, требуется $required_inodes"
+    fi
+  done
 }
 
 install_packages() {
@@ -482,6 +497,7 @@ install_wdtt_extensions() {
   fi
   wdtt_installed || die "WDTT не найден: сначала установите или разверните WDTT"
   [ -x /usr/local/bin/wdtt-server ] || die "Не найден /usr/local/bin/wdtt-server"
+  check_disk_space 2097152 20000
 
   local work source go_arch go_tarball go_checksum backup database_backup target was_active=0
   work="$(mktemp -d)"
@@ -511,7 +527,7 @@ install_wdtt_extensions() {
   if [ "$WDTT_REPOSITORY" = "SpaceNeuroX/proxy-turn-vk-android" ]; then
     python3 "$SCRIPT_DIR/wdtt_panel/wdtt_server_patch.py" "$source" || die "Не удалось адаптировать qWDTT $WDTT_REF для панели"
   else
-  die "Расширение панели 0.12.3 поддерживает только SpaceNeuroX/proxy-turn-vk-android v1.4.3"
+  die "Расширение панели 0.13.0 поддерживает только SpaceNeuroX/proxy-turn-vk-android v1.4.3"
   python3 - "$source/server.go" <<'PY'
 import re
 import sys
@@ -876,12 +892,24 @@ write_xray_services() {
   systemctl disable --now "$LEGACY_CASCADE_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service 2>/dev/null || true
   rm -f "/etc/systemd/system/$LEGACY_CASCADE_SERVICE"
   install -d -m 0700 "$XRAY_ASSETS"
+  cat > /etc/systemd/system/wdtt-xray-vless-firewall.service <<EOF
+[Unit]
+Description=Restore WDTT Panel VLESS firewall rule
+Before=$XRAY_SERVICE
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=$INSTALL_DIR
+ExecStart=/usr/bin/python3 -m wdtt_panel.admin --vless-firewall
+EOF
 
   cat > "/etc/systemd/system/$XRAY_SERVICE" <<EOF
 [Unit]
 Description=WDTT Xray Routing Runtime
 After=network-online.target wdtt.service
-Wants=network-online.target
+Wants=network-online.target wdtt-xray-vless-firewall.service
+After=wdtt-xray-vless-firewall.service
 ConditionPathExists=$XRAY_CONFIG
 
 [Service]
@@ -1089,11 +1117,55 @@ PY
 }
 
 write_panel_service() {
+  cat > /etc/systemd/system/wdtt-panel-admin.socket <<'EOF'
+[Unit]
+Description=WDTT panel local administrative socket
+
+[Socket]
+ListenStream=/run/wdtt-panel-admin.sock
+Accept=yes
+SocketUser=root
+SocketGroup=wdtt-panel
+SocketMode=0660
+MaxConnections=16
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target
+EOF
+  cat > /etc/systemd/system/wdtt-panel-admin@.service <<EOF
+[Unit]
+Description=WDTT panel administrative request
+
+[Service]
+Type=exec
+User=root
+WorkingDirectory=$INSTALL_DIR
+ExecStart=/usr/bin/python3 -m wdtt_panel.admin
+StandardInput=socket
+StandardOutput=inherit
+StandardError=journal
+UMask=0077
+RuntimeMaxSec=5min
+EOF
+  # Remove restrictions left by older service overrides; only the web process
+  # remains sandboxed. The root helper accepts the existing action allowlist.
+  install -d -m 0755 "/etc/systemd/system/$PANEL_SERVICE.d"
+  cat > "/etc/systemd/system/$PANEL_SERVICE.d/99-wdtt-panel.conf" <<EOF
+[Service]
+NoNewPrivileges=true
+ReadWritePaths=
+ReadWritePaths=$STATE_DIR
+Environment=WDTT_PANEL_ADMIN=
+Environment=WDTT_PANEL_ADMIN_SOCKET=/run/wdtt-panel-admin.sock
+EOF
   cat > "/etc/systemd/system/$PANEL_SERVICE" <<EOF
 [Unit]
 Description=WDTT Web Control Panel
 After=network.target wdtt.service
 Wants=network-online.target
+Requires=wdtt-panel-admin.socket
+After=wdtt-panel-admin.socket
 
 [Service]
 Type=simple
@@ -1107,7 +1179,8 @@ UMask=0027
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=$STATE_DIR $PRIVATE_STATE_DIR -/etc/wdtt
+NoNewPrivileges=true
+ReadWritePaths=$STATE_DIR
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 LockPersonality=true
 
@@ -1115,6 +1188,7 @@ LockPersonality=true
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
+  systemctl enable --now wdtt-panel-admin.socket >>"$LOG_FILE" 2>&1
   systemctl enable --now "$PANEL_SERVICE" >>"$LOG_FILE" 2>&1
 }
 
@@ -1310,7 +1384,9 @@ write_final_nginx() {
     server_name $PANEL_HOST;
     location ^~ /.well-known/acme-challenge/ { root $STATE_DIR/acme; }
     location ^~ /client/ { return 302 https://$PANEL_HOST:$PANEL_HTTPS_PORT\$request_uri; }
-    location / { return 302 https://$PANEL_HOST:$PANEL_HTTPS_PORT$PANEL_PATH; }
+    location = ${PANEL_PATH%/} { return 302 https://$PANEL_HOST:$PANEL_HTTPS_PORT$PANEL_PATH; }
+    location ^~ $PANEL_PATH { return 302 https://$PANEL_HOST:$PANEL_HTTPS_PORT\$request_uri; }
+    location / { return 404; }
 }"
   fi
   cat > "$NGINX_FILE" <<EOF
@@ -1335,8 +1411,8 @@ $HSTS_HEADER
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
-        proxy_read_timeout 75s;
-        client_max_body_size 90m;
+        proxy_read_timeout 300s;
+        client_max_body_size 180m;
     }
     location ^~ /client/ {
         proxy_pass http://127.0.0.1:$PANEL_LISTEN_PORT;
@@ -1585,9 +1661,17 @@ uninstall_panel() {
     panel_port="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("https_port", ""))' "$CONFIG_FILE" 2>/dev/null || true)"
   fi
   log "Удаление только web-панели; WDTT не затрагивается"
+  if [ -f "$INSTALL_DIR/wdtt_panel/admin.py" ]; then
+    (cd "$INSTALL_DIR" && python3 -m wdtt_panel.admin --clear-vless-firewall) >>"$LOG_FILE" 2>&1 || log "Не удалось удалить правило firewall VLESS"
+  fi
+  systemctl disable --now wdtt-panel-admin.socket 2>/dev/null || true
+  systemctl stop 'wdtt-panel-admin@*.service' 2>/dev/null || true
+  rm -f /etc/systemd/system/wdtt-panel-admin.socket /etc/systemd/system/wdtt-panel-admin@.service "/etc/systemd/system/$PANEL_SERVICE.d/99-wdtt-panel.conf"
   systemctl disable --now "$PANEL_SERVICE" wdtt-fleet-agent.service wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service "$WDTT_EXTENSIONS_TIMER" "$WDTT_EXTENSIONS_SERVICE" wdtt-panel-backup.timer wdtt-panel-backup.service 2>/dev/null || true
   rm -f "/etc/systemd/system/$PANEL_SERVICE" /etc/systemd/system/wdtt-fleet-agent.service /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer "/etc/systemd/system/$WDTT_EXTENSIONS_SERVICE" "/etc/systemd/system/$WDTT_EXTENSIONS_TIMER" /etc/systemd/system/wdtt-panel-backup.service /etc/systemd/system/wdtt-panel-backup.timer "$STATE_DIR/fleet-agent.json"
   systemctl disable --now "$LEGACY_CASCADE_SERVICE" "$XRAY_SERVICE" "$XRAY_CASCADE_SERVICE" "$XRAY_GATEWAY_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service 2>/dev/null || true
+  systemctl stop wdtt-xray-vless-firewall.service 2>/dev/null || true
+  rm -f /etc/systemd/system/wdtt-xray-vless-firewall.service
   rm -f "/etc/systemd/system/$LEGACY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_SERVICE" "/etc/systemd/system/$XRAY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_GATEWAY_SERVICE" /etc/systemd/system/wdtt-panel-geofiles-update.service /etc/systemd/system/wdtt-panel-geofiles-update.timer
   rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$GEOFILES_UPDATE_WRAPPER" "$BACKUP_RUNNER" "$CASCADE_RULES_WRAPPER" "$GATEWAY_RULES_WRAPPER"
   rm -rf "$INSTALL_DIR" "$CONFIG_DIR"
@@ -1600,6 +1684,7 @@ uninstall_panel() {
 update_panel() {
   require_root
   load_panel_config
+  check_disk_space
   log "Обновление панели до версии $PANEL_VERSION"
   remove_obsolete_fleet_agent
   backup_wdtt_database_before_update
@@ -1621,6 +1706,7 @@ update_panel() {
 install_panel() {
   require_root
   detect_os
+  check_disk_space 2097152 20000
   install_packages
   if [ "$NGINX_WAS_INSTALLED" = "0" ] && ! port_80_available_for_nginx; then
     rm -f /etc/nginx/sites-enabled/default

@@ -1,9 +1,14 @@
 import json
+import os
+from pathlib import Path
 import sys
+from urllib.parse import quote
 
 
 request = json.load(sys.stdin)
 action = request.get("action")
+fake_state_path = Path(os.environ["FAKE_ADMIN_STATE"]) if os.environ.get("FAKE_ADMIN_STATE") else None
+fake_state = json.loads(fake_state_path.read_text()) if fake_state_path and fake_state_path.is_file() else {}
 if action == "overview":
     result = {
         "service": {"exists": True, "active": True, "ip_forward": "1", "binary": True},
@@ -116,6 +121,23 @@ elif action in {"cleanup.preview", "cleanup.apply"}:
         "estimated_freed_bytes": 1024,
         "items": [{"target": "service_logs", "freed_bytes": 1024, "files": [{"name": "installer", "path": "/var/log/wdtt-panel-install.log", "bytes": 1024, "exists": True}]}],
     }
+elif action == "cleanup.settings":
+    payload = request.get("payload") or {}
+    if payload:
+        fake_state["cleanup"] = {"keep_days": int(payload.get("keep_days", 14)), "saved": True, "scope": "system"}
+    result = fake_state.get("cleanup", {"keep_days": 14, "saved": False, "scope": "system"})
+elif action.startswith("xray.vless."):
+    payload = request.get("payload") or {}
+    profiles = fake_state.get("profiles", [])
+    if action == "xray.vless.create":
+        label = payload.get("label", "Test phone")
+        profile_id = "00000000-0000-4000-8000-000000000001"
+        port = int(payload.get("port", 8444))
+        profiles.append({"id": profile_id, "label": label, "port": port, "uri": f"vless://{profile_id}@panel.example.com:{port}?security=tls&type=tcp&sni=panel.example.com#{quote(label)}"})
+    elif action == "xray.vless.delete":
+        profiles = [profile for profile in profiles if profile["id"] != payload.get("id")]
+    fake_state["profiles"] = profiles
+    result = {"profiles": profiles}
 elif action == "backups.list":
     result = {"backups": [{"name": "panel-20260615-080000-manual.json", "size": 2048, "created_at": 1781510400, "type": "full"}]}
 elif action == "backups.create":
@@ -155,4 +177,6 @@ elif action == "backups.import":
     result = {"name": "passwords-uploaded.json", "size": 32, "created_at": 1781514000}
 else:
     result = {}
+if fake_state_path:
+    fake_state_path.write_text(json.dumps(fake_state), encoding="utf-8")
 print(json.dumps({"ok": True, "result": result}))

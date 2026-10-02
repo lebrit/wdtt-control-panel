@@ -30,6 +30,7 @@ class WdttServerPatchTests(unittest.TestCase):
             self.assertIn(EXTENSION_MARKER, extension)
             self.assertIn('json:"traffic_operations,omitempty"', database)
             self.assertIn('json:"main_down_bytes,omitempty"', database)
+            self.assertIn("maxGeneratedPasswords = 65023", database)
             self.assertIn("applyPasswordRestrictionsLocked", database)
             self.assertIn("DENIED:traffic_limit", connections)
             self.assertIn("createBasicTUNFile", raw)

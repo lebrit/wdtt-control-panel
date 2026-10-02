@@ -21,7 +21,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 
 from .core import (
     DEFAULT_TRAFFIC_GIB_PER_MONTH,
@@ -45,7 +45,7 @@ from .core import (
 DB_FILE = Path(os.environ.get("WDTT_DB_FILE", "/etc/wdtt/passwords.json"))
 PANEL_LABELS_FILE = Path(os.environ.get("WDTT_PANEL_LABELS_FILE", "/var/lib/wdtt-panel-private/user-labels.json"))
 WDTT_EXTENSION_STATE = Path(os.environ.get("WDTT_EXTENSION_STATE", "/var/lib/wdtt-panel-private/wdtt-extensions.json"))
-WDTT_EXTENSION_MARKER = "wdtt-panel-extension-v9"
+WDTT_EXTENSION_MARKER = "wdtt-panel-extension-v10"
 STATS_FILE = Path(os.environ.get("WDTT_STATS_FILE", "/etc/wdtt/server.log"))
 BACKUP_DIR = Path(os.environ.get("WDTT_BACKUP_DIR", "/var/lib/wdtt-panel-private/backups"))
 BACKUP_FORMAT = "wdtt-panel-backup-v1"
@@ -61,7 +61,11 @@ WDTT_BOT_TOKEN_FILE = Path(os.environ.get("WDTT_BOT_TOKEN_FILE", "/etc/wdtt/bot.
 LOCK_FILE = Path(os.environ.get("WDTT_LOCK_FILE", "/var/lib/wdtt-panel-private/admin.lock"))
 SERVICE = os.environ.get("WDTT_SERVICE", "wdtt.service")
 SKIP_SYSTEMD = os.environ.get("WDTT_SKIP_SYSTEMD") == "1"
-MAX_INPUT = 90 * 1024 * 1024
+MAX_INPUT = 180 * 1024 * 1024
+GEOFILE_MAX_BYTES = 128 * 1024 * 1024
+JOURNAL_RETENTION_FILE = Path("/etc/systemd/journald.conf.d/wdtt-panel.conf")
+VLESS_FIREWALL_STATE = Path("/var/lib/wdtt-panel-private/vless-firewall.json")
+VLESS_UFW_PROFILE = Path("/etc/ufw/applications.d/wdtt-panel-vless")
 PANEL_UPDATE_COMMAND = Path(os.environ.get("WDTT_PANEL_UPDATE_COMMAND", "/usr/local/sbin/wdtt-panel-update"))
 PANEL_RENEW_COMMAND = Path(os.environ.get("WDTT_PANEL_RENEW_COMMAND", "/opt/wdtt-panel/install.sh"))
 PANEL_VERSION_URL = os.environ.get(
@@ -424,7 +428,12 @@ def wdtt_extensions_are_verified() -> bool:
         state = json.loads(WDTT_EXTENSION_STATE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    return isinstance(state, dict) and state.get("marker") == WDTT_EXTENSION_MARKER
+    return isinstance(state, dict) and state.get("marker") in {WDTT_EXTENSION_MARKER, "wdtt-panel-extension-v9"}
+
+
+def user_limit() -> int:
+    state = read_private_json(WDTT_EXTENSION_STATE) or {}
+    return MAX_USERS if state.get("marker") == WDTT_EXTENSION_MARKER else 10
 
 
 def save_panel_labels(labels: dict[str, str]) -> None:
@@ -661,7 +670,8 @@ def list_users() -> dict[str, Any]:
         "users": users,
         "admins": admins,
         "main_password_present": bool(data.get("main_password")),
-        "limit": MAX_USERS,
+        "limit": user_limit(),
+        "extended_limit": user_limit() > 10,
     }
 
 
@@ -769,8 +779,8 @@ def create_user(payload: dict[str, Any]) -> dict[str, Any]:
         purge_expired(data)
         if password in data["passwords"] or password == data.get("main_password"):
             raise ValidationError("Такой пароль уже существует")
-        if len(data["passwords"]) >= MAX_USERS:
-            raise ValidationError(f"Лимит WDTT: не более {MAX_USERS} пользователей")
+        if len(data["passwords"]) >= user_limit():
+            raise ValidationError(f"Лимит WDTT: {user_limit()}. Для расширенного лимита дождитесь обновления расширения WDTT")
         entry = {
             "device_id": "",
             "expires_at": expires_at,
@@ -795,8 +805,8 @@ def create_users_bulk(payload: dict[str, Any]) -> dict[str, Any]:
         count = int(payload.get("count", 1))
     except (TypeError, ValueError) as exc:
         raise ValidationError("Количество пользователей должно быть числом") from exc
-    if not 1 <= count <= MAX_USERS:
-        raise ValidationError(f"Можно создать от 1 до {MAX_USERS} пользователей")
+    if not 1 <= count <= 100:
+        raise ValidationError("За один раз можно создать от 1 до 100 пользователей")
 
     hashes = normalize_hashes(str(payload.get("vk_hash") or "")).split(",")
     hash_mode = str(payload.get("hash_mode") or "shared")
@@ -809,7 +819,7 @@ def create_users_bulk(payload: dict[str, Any]) -> dict[str, Any]:
 
     def apply(data: dict[str, Any]) -> dict[str, Any]:
         purge_expired(data)
-        available = MAX_USERS - len(data["passwords"])
+        available = user_limit() - len(data["passwords"])
         if count > available:
             raise ValidationError(f"Доступно мест: {available}; запрошено пользователей: {count}")
 
@@ -1938,6 +1948,34 @@ def cleanup_package_cache(apply: bool) -> dict[str, Any]:
     }
 
 
+def journal_retention(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload:
+        try:
+            keep_days = int(payload.get("keep_days", 14))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("Срок хранения должен быть числом дней") from exc
+        if not 1 <= keep_days <= 365:
+            raise ValidationError("Срок хранения journal: от 1 до 365 дней")
+        previous = JOURNAL_RETENTION_FILE.read_text(encoding="utf-8") if JOURNAL_RETENTION_FILE.is_file() else None
+        write_systemd_unit(JOURNAL_RETENTION_FILE, f"[Journal]\nMaxRetentionSec={keep_days}day\n")
+        if not SKIP_SYSTEMD:
+            result = run(["systemctl", "restart", "systemd-journald.service"], timeout=45)
+            if result.returncode != 0:
+                if previous is None:
+                    JOURNAL_RETENTION_FILE.unlink(missing_ok=True)
+                else:
+                    write_systemd_unit(JOURNAL_RETENTION_FILE, previous)
+                raise AdminError("Не удалось применить срок хранения systemd journal")
+    else:
+        keep_days = 14
+        if JOURNAL_RETENTION_FILE.is_file():
+            content = JOURNAL_RETENTION_FILE.read_text(encoding="utf-8")
+            match = re.search(r"^MaxRetentionSec=(\d+)day$", content, re.MULTILINE)
+            if match:
+                keep_days = int(match[1])
+    return {"keep_days": keep_days, "saved": JOURNAL_RETENTION_FILE.is_file(), "scope": "system"}
+
+
 def cleanup_journal(apply: bool, keep_days: int) -> dict[str, Any]:
     if SKIP_SYSTEMD or not shutil.which("journalctl"):
         return {"target": "journal", "before_bytes": 0, "freed_bytes": 0, "remaining_bytes": 0, "available": False, "detail": "systemd journal недоступен"}
@@ -2432,8 +2470,8 @@ def geofile_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raw = base64.b64decode(content, validate=True)
     except ValueError as exc:
         raise ValidationError("GeoFile передан в неверном формате") from exc
-    if not raw or len(raw) > 64 * 1024 * 1024:
-        raise ValidationError("GeoFile пустой или превышает 64 МБ")
+    if not raw or len(raw) > GEOFILE_MAX_BYTES:
+        raise ValidationError("GeoFile пустой или превышает 128 МБ")
     GEOFILES_DIR.mkdir(parents=True, exist_ok=True)
     source = GEOFILES_DIR / filename
     source.write_bytes(raw)
@@ -2493,11 +2531,11 @@ def refresh_geofile(payload: dict[str, Any]) -> dict[str, Any]:
     request = urllib.request.Request(str(item["url"]), headers={"User-Agent": "wdtt-control-panel"})
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
-            raw = response.read(64 * 1024 * 1024 + 1)
+            raw = response.read(GEOFILE_MAX_BYTES + 1)
     except (OSError, urllib.error.URLError) as exc:
         raise AdminError(f"Не удалось загрузить GeoFile: {exc}") from exc
-    if len(raw) > 64 * 1024 * 1024:
-        raise ValidationError("Удаленный GeoFile превышает 64 МБ")
+    if len(raw) > GEOFILE_MAX_BYTES:
+        raise ValidationError("Удаленный GeoFile превышает 128 МБ")
     updated = geofile_from_payload(
         {
             **item,
@@ -2539,6 +2577,33 @@ def refresh_auto_geofiles(payload: dict[str, Any]) -> dict[str, Any]:
     return {"refreshed": refreshed, "errors": errors}
 
 
+def wdtt_source_network() -> str:
+    if not SKIP_SYSTEMD and shutil.which("ip"):
+        probe = run(["ip", "-j", "-4", "address", "show", "dev", "wdtt0"], timeout=10)
+        try:
+            for interface in json.loads(probe.stdout or "[]"):
+                for address in interface.get("addr_info", []):
+                    network = ipaddress.ip_network(f"{address['local']}/{address['prefixlen']}", strict=False)
+                    if network.version == 4 and network.is_private and 8 <= network.prefixlen <= 30:
+                        return str(network)
+        except (ValueError, TypeError, KeyError):
+            pass
+    # Current WDTT allocates clients anywhere within this /16, not just .66.*.
+    return "10.66.0.0/16"
+
+
+def routing_source_network(value: Any) -> str:
+    if not value or value == "10.66.66.0/24":
+        return wdtt_source_network()
+    try:
+        network = ipaddress.ip_network(str(value), strict=False)
+        if network.version == 4 and network.prefixlen <= 30:
+            return str(network)
+    except ValueError:
+        pass
+    return wdtt_source_network()
+
+
 def default_xray_settings() -> dict[str, Any]:
     return {
         "enabled": False,
@@ -2546,7 +2611,7 @@ def default_xray_settings() -> dict[str, Any]:
         "log_level": "warning",
         "access_log": False,
         "gateway_enabled": False,
-        "gateway_source_cidr": "10.66.66.0/24",
+        "gateway_source_cidr": wdtt_source_network(),
         "gateway_inbound_port": 12346,
         "inbounds": [],
         "outbounds": [],
@@ -2599,11 +2664,7 @@ def load_xray_settings() -> dict[str, Any]:
     settings["log_level"] = str(settings.get("log_level") or "warning")
     settings["access_log"] = bool(settings.get("access_log", False))
     settings["gateway_enabled"] = bool(settings.get("gateway_enabled", False))
-    try:
-        gateway_network = ipaddress.ip_network(str(settings.get("gateway_source_cidr") or ""), strict=False)
-        settings["gateway_source_cidr"] = str(gateway_network) if gateway_network.version == 4 and gateway_network.prefixlen <= 30 else "10.66.66.0/24"
-    except ValueError:
-        settings["gateway_source_cidr"] = "10.66.66.0/24"
+    settings["gateway_source_cidr"] = routing_source_network(settings.get("gateway_source_cidr"))
     try:
         gateway_port = int(settings.get("gateway_inbound_port") or 12346)
         settings["gateway_inbound_port"] = gateway_port if 1024 <= gateway_port <= 65535 else 12346
@@ -2913,7 +2974,7 @@ def build_xray_config(settings: dict[str, Any], extra_outbound_tags: set[str] | 
 def default_xray_cascade_settings() -> dict[str, Any]:
     return {
         "enabled": False,
-        "source_cidr": "10.66.66.0/24",
+        "source_cidr": wdtt_source_network(),
         "inbound_port": 12345,
         "eu_vless_uri": "",
         "geosite_category": "ru-blocked",
@@ -2932,6 +2993,7 @@ def load_xray_cascade_settings() -> dict[str, Any]:
                 settings.update(saved)
         except (OSError, json.JSONDecodeError):
             pass
+    settings["source_cidr"] = routing_source_network(settings.get("source_cidr"))
     return settings
 
 
@@ -3148,6 +3210,135 @@ def xray_status(payload: dict[str, Any]) -> dict[str, Any]:
         "geofiles": files,
         "gateway": xray_gateway_status({}),
     }
+
+
+def vless_profiles(payload: dict[str, Any]) -> dict[str, Any]:
+    host = str(payload.get("public_host") or "")
+    profiles = []
+    for inbound in load_xray_settings()["inbounds"]:
+        if inbound.get("tag") != "panel-vless-in":
+            continue
+        for client in inbound.get("settings", {}).get("clients", []):
+            label = str(client.get("email") or "VLESS")
+            query = urlencode({"encryption": "none", "security": "tls", "type": "tcp", "sni": host, "fp": "chrome"})
+            profiles.append({"id": client["id"], "label": label, "port": inbound["port"], "uri": f"vless://{client['id']}@{host}:{inbound['port']}?{query}#{quote(label, safe='')}"})
+    return {"profiles": profiles}
+
+
+def vless_firewall(port: int, remove: bool = False) -> None:
+    if SKIP_SYSTEMD:
+        return
+    if not 1024 <= port <= 65535:
+        raise ValidationError("Некорректный порт firewall VLESS")
+    ownership = read_private_json(VLESS_FIREWALL_STATE) or {}
+    if shutil.which("ufw"):
+        if remove and not VLESS_UFW_PROFILE.is_file():
+            return
+        if not remove:
+            write_systemd_unit(VLESS_UFW_PROFILE, f"[WDTTPanelVLESS]\ntitle=WDTT Panel VLESS\ndescription=Managed VLESS TLS inbound\nports={port}/tcp\n")
+        command = ["ufw", "--force", "delete", "allow", "WDTTPanelVLESS"] if remove else ["ufw", "allow", "WDTTPanelVLESS"]
+        result = run(command, timeout=45)
+        if result.returncode != 0:
+            raise AdminError("Не удалось изменить правило UFW для VLESS")
+    elif shutil.which("firewall-cmd") and run(["systemctl", "is-active", "--quiet", "firewalld"]).returncode == 0:
+        if remove and (ownership.get("port") != port or not ownership.get("firewalld_added")):
+            return
+        if not remove and ownership.get("port") != port:
+            permanent = run(["firewall-cmd", "--permanent", f"--query-port={port}/tcp"])
+            runtime = run(["firewall-cmd", f"--query-port={port}/tcp"])
+            # Preserve administrator-owned firewall rules when the last profile is removed.
+            ownership = {"port": port, "firewalld_added": permanent.returncode != 0 and runtime.returncode != 0}
+        for permanent in ([], ["--permanent"]):
+            result = run(["firewall-cmd", *permanent, f"--{'remove' if remove else 'add'}-port={port}/tcp"], timeout=45)
+            if result.returncode != 0:
+                raise AdminError("Не удалось изменить правило firewalld для VLESS")
+    elif iptables_available():
+        rule = ["INPUT", "-p", "tcp", "--dport", str(port), "-m", "comment", "--comment", "WDTT_PANEL_VLESS", "-j", "ACCEPT"]
+        exists = cascade_iptables(["-C", *rule], "filter").returncode == 0
+        if (remove and exists) or (not remove and not exists):
+            changed = cascade_iptables(["-D" if remove else "-I", *rule], "filter")
+            if changed.returncode != 0:
+                raise AdminError("Не удалось изменить правило iptables для VLESS")
+    if remove:
+        VLESS_FIREWALL_STATE.unlink(missing_ok=True)
+    else:
+        save_private_json(VLESS_FIREWALL_STATE, {**ownership, "port": port})
+
+
+def apply_vless_firewall() -> None:
+    for inbound in load_xray_settings()["inbounds"]:
+        if inbound.get("tag") == "panel-vless-in" and inbound.get("protocol") == "vless":
+            vless_firewall(int(inbound.get("port") or 0))
+
+
+def persist_vless_configuration(previous: dict[str, Any], settings: dict[str, Any], port: int, remove: bool = False) -> None:
+    try:
+        persist_xray_configuration(settings, build_effective_xray_config(settings, load_xray_cascade_settings()))
+        vless_firewall(port, remove=remove)
+    except (AdminError, ValidationError, OSError, subprocess.TimeoutExpired):
+        persist_xray_configuration(previous, build_effective_xray_config(previous, load_xray_cascade_settings()))
+        was_enabled = any(item.get("tag") == "panel-vless-in" for item in previous["inbounds"])
+        vless_firewall(port, remove=not was_enabled)
+        raise
+
+
+def create_vless_profile(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = load_xray_settings()
+    previous = json.loads(json.dumps(settings))
+    if settings["mode"] != "managed":
+        raise ValidationError("Создание VLESS-профилей доступно в Managed-режиме Xray")
+    if not SKIP_SYSTEMD and not shutil.which("xray"):
+        raise ValidationError("Сначала установите Xray")
+    label = normalize_user_label(str(payload.get("label") or ""))
+    if not label:
+        raise ValidationError("Укажите имя VLESS-профиля")
+    try:
+        port = int(payload.get("port") or 8444)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Некорректный порт VLESS") from exc
+    if not 1024 <= port <= 65535 or port in {int(payload.get("https_port") or 8443), 8787, 56000, 56001, 9000}:
+        raise ValidationError("Выберите свободный TCP-порт от 1024 до 65535, отличный от портов панели и WDTT")
+    certificate_path = str(payload.get("certificate_path") or "")
+    if payload.get("tls_mode") != "letsencrypt" or not certificate_path:
+        raise ValidationError("Для VLESS + TLS сначала получите доверенный сертификат панели")
+    certificate = Path(certificate_path)
+    private_key = certificate.with_name("privkey.pem")
+    if not certificate.is_file() or not private_key.is_file():
+        raise ValidationError("Для VLESS + TLS сначала получите доверенный сертификат панели")
+    inbound = next((item for item in settings["inbounds"] if item.get("tag") == "panel-vless-in"), None)
+    if inbound is None:
+        if any(int(item.get("port") or 0) == port for item in settings["inbounds"]):
+            raise ValidationError("Этот порт уже используется другим входящим Xray")
+        if not SKIP_SYSTEMD and "LISTEN" in run(["ss", "-ltn", f"sport = :{port}"]).stdout:
+            raise ValidationError("TCP-порт VLESS уже занят")
+        inbound = {"tag": "panel-vless-in", "listen": "0.0.0.0", "port": port, "protocol": "vless", "settings": {"clients": [], "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "tls", "tlsSettings": {"certificates": [{"certificateFile": str(certificate), "keyFile": str(private_key)}]}}}
+        settings["inbounds"].append(inbound)
+    elif int(inbound["port"]) != port:
+        raise ValidationError(f"VLESS уже использует порт {inbound['port']}; выберите его для нового профиля")
+    clients = inbound["settings"]["clients"]
+    if any(client.get("email") == label for client in clients):
+        raise ValidationError("VLESS-профиль с таким именем уже существует")
+    clients.append({"id": str(uuid.uuid4()), "email": label, "encryption": "none"})
+    settings["enabled"] = True
+    persist_vless_configuration(previous, settings, port)
+    return vless_profiles(payload)
+
+
+def delete_vless_profile(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = load_xray_settings()
+    previous = json.loads(json.dumps(settings))
+    if settings["mode"] != "managed":
+        raise ValidationError("Удаление VLESS-профилей доступно в Managed-режиме Xray")
+    inbound = next((item for item in settings["inbounds"] if item.get("tag") == "panel-vless-in"), None)
+    profile_id = str(payload.get("id") or "")
+    if not inbound or not any(client.get("id") == profile_id for client in inbound["settings"]["clients"]):
+        raise ValidationError("VLESS-профиль не найден")
+    inbound["settings"]["clients"] = [client for client in inbound["settings"]["clients"] if client.get("id") != profile_id]
+    empty = not inbound["settings"]["clients"]
+    if empty:
+        settings["inbounds"].remove(inbound)
+    persist_vless_configuration(previous, settings, int(inbound["port"]), remove=empty)
+    return vless_profiles(payload)
 
 
 def xray_save(payload: dict[str, Any]) -> dict[str, Any]:
@@ -3444,23 +3635,26 @@ def xray_download_geofile(item: dict[str, Any]) -> dict[str, Any]:
     if not url:
         raise ValidationError(f"Для GeoFile {item.get('tag', '')} не задан URL")
     request = urllib.request.Request(url, headers={"User-Agent": "wdtt-control-panel"})
-    try:
-        with urllib.request.urlopen(request, timeout=45) as response:
-            raw = response.read(64 * 1024 * 1024 + 1)
-    except (OSError, urllib.error.URLError) as exc:
-        raise AdminError(f"Не удалось загрузить GeoFile {item.get('tag', '')}: {exc}") from exc
-    if not raw or len(raw) > 64 * 1024 * 1024:
-        raise ValidationError(f"GeoFile {item.get('tag', '')} пустой или превышает 64 МБ")
     XRAY_ASSETS.mkdir(parents=True, exist_ok=True)
     destination = XRAY_ASSETS / str(item["filename"])
     fd, name = tempfile.mkstemp(prefix=f"{destination.name}.", suffix=".tmp", dir=XRAY_ASSETS)
     try:
         with os.fdopen(fd, "wb") as handle:
-            handle.write(raw)
+            with urllib.request.urlopen(request, timeout=45) as response:
+                size = 0
+                while chunk := response.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > GEOFILE_MAX_BYTES:
+                        raise ValidationError(f"GeoFile {item.get('tag', '')} превышает 128 МБ")
+                    handle.write(chunk)
+                if not size:
+                    raise ValidationError(f"GeoFile {item.get('tag', '')} пустой")
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(name, 0o600)
         os.replace(name, destination)
+    except (OSError, urllib.error.URLError) as exc:
+        raise AdminError(f"Не удалось загрузить GeoFile {item.get('tag', '')}: {exc}") from exc
     finally:
         if os.path.exists(name):
             os.unlink(name)
@@ -3825,6 +4019,7 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "logs": journal_logs,
     "cleanup.preview": lambda payload: cleanup_system(payload, False),
     "cleanup.apply": lambda payload: cleanup_system(payload, True),
+    "cleanup.settings": journal_retention,
     "backups.list": lambda payload: list_backups(),
     "backups.create": create_manual_backup,
     "backups.delete": delete_backup,
@@ -3841,6 +4036,9 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "telegram.test": telegram_test,
     "xray.status": xray_status,
     "xray.save": xray_save,
+    "xray.vless.list": vless_profiles,
+    "xray.vless.create": create_vless_profile,
+    "xray.vless.delete": delete_vless_profile,
     "xray.install": schedule_xray_runtime,
     "xray.geofiles.refresh": xray_refresh_geofile,
     "xray.geofiles.refresh_auto": xray_refresh_auto_geofiles,
@@ -3872,6 +4070,16 @@ def dispatch(request: dict[str, Any]) -> Any:
 
 
 def main() -> int:
+    # Boot-time firewall restoration must not acquire the request lock: Xray
+    # may be starting while a request that holds it waits for systemd.
+    if sys.argv[1:] == ["--vless-firewall"]:
+        apply_vless_firewall()
+        return 0
+    if sys.argv[1:] == ["--clear-vless-firewall"]:
+        state = read_private_json(VLESS_FIREWALL_STATE) or {}
+        if state.get("port"):
+            vless_firewall(int(state["port"]), remove=True)
+        return 0
     raw = sys.stdin.buffer.read(MAX_INPUT + 1)
     if len(raw) > MAX_INPUT:
         print(json.dumps({"ok": False, "error": "Запрос слишком большой"}))

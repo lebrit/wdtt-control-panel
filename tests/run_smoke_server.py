@@ -1,6 +1,7 @@
 """Run the panel locally with a fake privileged helper for browser QA."""
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -12,6 +13,7 @@ from wdtt_panel.security import hash_password
 
 
 root = Path(tempfile.mkdtemp(prefix="wdtt-panel-smoke-"))
+os.environ["FAKE_ADMIN_STATE"] = str(root / "fake-admin-state.json")
 config = root / "config.json"
 config.write_text(
     json.dumps(

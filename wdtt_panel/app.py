@@ -5,6 +5,7 @@ import json
 import mimetypes
 import os
 import secrets
+import socket
 import sqlite3
 import subprocess
 import threading
@@ -25,8 +26,9 @@ from .security import create_session, read_session, verify_csrf, verify_password
 PACKAGE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = Path(os.environ.get("WDTT_PANEL_CONFIG", "/etc/wdtt-panel/config.json"))
 STATE_DB = Path(os.environ.get("WDTT_PANEL_STATE", "/var/lib/wdtt-panel/panel.db"))
-ADMIN_COMMAND = os.environ.get("WDTT_PANEL_ADMIN", "/usr/bin/sudo -n /usr/local/sbin/wdtt-panel-admin").split()
-MAX_BODY = 90 * 1024 * 1024
+ADMIN_COMMAND = os.environ.get("WDTT_PANEL_ADMIN", "").split()
+ADMIN_SOCKET = os.environ.get("WDTT_PANEL_ADMIN_SOCKET", "/run/wdtt-panel-admin.sock")
+MAX_BODY = 180 * 1024 * 1024
 
 
 class ThreadingServer(ThreadingMixIn, WSGIServer):
@@ -363,6 +365,7 @@ class Panel:
             "logs": "logs",
             "cleanup/preview": "cleanup.preview",
             "cleanup/apply": "cleanup.apply",
+            "cleanup/settings": "cleanup.settings",
             "backups": "backups.list",
             "backups/create": "backups.create",
             "backups/delete": "backups.delete",
@@ -379,6 +382,9 @@ class Panel:
             "telegram/test": "telegram.test",
             "xray": "xray.status",
             "xray/save": "xray.save",
+            "xray/vless": "xray.vless.list",
+            "xray/vless/create": "xray.vless.create",
+            "xray/vless/delete": "xray.vless.delete",
             "xray/install": "xray.install",
             "xray/geofiles/refresh": "xray.geofiles.refresh",
             "xray/geofiles/refresh-all": "xray.geofiles.refresh_auto",
@@ -399,7 +405,7 @@ class Panel:
         action = mapping.get(route)
         if action is None:
             return self.json_response(start_response, 404, {"error": "API endpoint не найден"})
-        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "backups.export", "backups.schedule", "panel.version", "certificate.export", "telegram.status", "xray.status", "warp.status", "cascade.status"}:
+        if method == "GET" and action not in {"overview", "users.list", "logs", "cleanup.settings", "backups.list", "backups.export", "backups.schedule", "panel.version", "certificate.export", "telegram.status", "xray.status", "xray.vless.list", "warp.status", "cascade.status"}:
             return self.json_response(start_response, 405, {"error": "Требуется POST"})
         if method == "POST" and action in {"overview", "users.list", "backups.list"}:
             return self.json_response(start_response, 405, {"error": "Требуется GET"})
@@ -419,6 +425,9 @@ class Panel:
             payload["name"] = query.get("name", [""])[0]
         if action == "certificate.export":
             payload["certificate_path"] = str(self.config.get("certificate_path") or "")
+        if action.startswith("xray.vless."):
+            for key in ("public_host", "certificate_path", "tls_mode", "https_port"):
+                payload[key] = self.config.get(key)
         if route == "xray/geofiles/refresh-all":
             payload["force"] = True
         result = self.admin(action, payload)
@@ -469,23 +478,35 @@ class Panel:
     @staticmethod
     def admin(action: str, payload: dict[str, Any]) -> dict[str, Any]:
         request = json.dumps({"action": action, "payload": payload}, ensure_ascii=False)
+        timeout = 240 if action.startswith(("xray.", "warp.", "cascade.", "cleanup.")) else 60
         try:
-            completed = subprocess.run(
-                ADMIN_COMMAND,
-                input=request,
-                text=True,
-                capture_output=True,
-                timeout=240 if action.startswith(("xray.", "warp.", "cascade.")) else 60,
-            )
+            if ADMIN_COMMAND:
+                completed = subprocess.run(ADMIN_COMMAND, input=request, text=True, capture_output=True, timeout=timeout)
+                output, error = completed.stdout, completed.stderr.strip()
+            else:
+                # A systemd socket starts the helper outside the web process's sandbox.
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                    connection.settimeout(timeout)
+                    connection.connect(ADMIN_SOCKET)
+                    connection.sendall(request.encode("utf-8"))
+                    connection.shutdown(socket.SHUT_WR)
+                    chunks = []
+                    size = 0
+                    while chunk := connection.recv(64 * 1024):
+                        size += len(chunk)
+                        if size > MAX_BODY:
+                            raise OSError("Root-helper вернул слишком большой ответ")
+                        chunks.append(chunk)
+                    output, error = b"".join(chunks).decode("utf-8"), ""
         except (OSError, subprocess.TimeoutExpired) as exc:
             return {"ok": False, "error": f"Root-helper недоступен: {exc}"}
         try:
-            response = json.loads(completed.stdout)
+            response = json.loads(output)
             if isinstance(response, dict):
                 return response
         except json.JSONDecodeError:
             pass
-        error = completed.stderr.strip() or completed.stdout.strip() or "Root-helper вернул неверный ответ"
+        error = error or output.strip() or "Root-helper вернул неверный ответ"
         return {"ok": False, "error": error}
 
     def record_metrics(self, overview: dict[str, Any]) -> None:

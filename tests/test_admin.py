@@ -1,4 +1,5 @@
 import json
+import io
 import base64
 import errno
 import subprocess
@@ -57,6 +58,7 @@ class AdminDatabaseTests(unittest.TestCase):
             mock.patch.object(admin, "WDTT_UNIT_FILE", root / "wdtt.service"),
             mock.patch.object(admin, "WDTT_BOT_TOKEN_FILE", root / "etc" / "bot.token"),
             mock.patch.object(admin, "SKIP_SYSTEMD", True),
+            mock.patch.object(admin, "JOURNAL_RETENTION_FILE", root / "journald.conf.d" / "wdtt-panel.conf"),
         ]
         for patcher in self.patchers:
             patcher.start()
@@ -109,6 +111,90 @@ class AdminDatabaseTests(unittest.TestCase):
         admin.delete_user({"password": "RenamedUser123"})
         self.assertEqual(admin.load_database()["passwords"], {})
         self.assertTrue(list(self.backups.glob("passwords-*.json")))
+
+    def test_extended_user_limit_requires_matching_server_extension(self):
+        self.assertEqual(admin.user_limit(), 10)
+        self.extension_state.write_text(json.dumps({"marker": admin.WDTT_EXTENSION_MARKER}), encoding="utf-8")
+        result = admin.create_users_bulk({"count": 12, "days": 30, "vk_hash": "hash_one"})
+        self.assertEqual(result["count"], 12)
+        self.assertEqual(admin.list_users()["limit"], 65023)
+        with self.assertRaises(admin.ValidationError):
+            admin.create_users_bulk({"count": 101, "days": 30, "vk_hash": "hash_one"})
+
+    def test_journal_retention_persists_without_cleaning_any_logs(self):
+        self.install_log.write_text("keep this log", encoding="utf-8")
+        result = admin.journal_retention({"keep_days": 7})
+        self.assertTrue(result["saved"])
+        self.assertEqual(admin.journal_retention({})["keep_days"], 7)
+        self.assertIn("MaxRetentionSec=7day", admin.JOURNAL_RETENTION_FILE.read_text())
+        self.assertEqual(self.install_log.read_text(), "keep this log")
+        with self.assertRaises(admin.ValidationError):
+            admin.journal_retention({"keep_days": 0})
+
+    def test_journal_retention_rolls_back_on_service_failure(self):
+        admin.journal_retention({"keep_days": 14})
+        failed = subprocess.CompletedProcess([], 1, "", "failed")
+        with mock.patch.object(admin, "SKIP_SYSTEMD", False), mock.patch.object(admin, "run", return_value=failed):
+            with self.assertRaises(admin.AdminError):
+                admin.journal_retention({"keep_days": 3})
+        self.assertEqual(admin.journal_retention({})["keep_days"], 14)
+
+    def test_routing_uses_interface_prefix_and_migrates_old_default(self):
+        probe = subprocess.CompletedProcess([], 0, '[{"addr_info":[{"local":"10.66.66.1","prefixlen":16}]}]', "")
+        self.xray_settings.write_text(json.dumps({"gateway_source_cidr": "10.66.66.0/24"}), encoding="utf-8")
+        self.xray_cascade_settings.write_text(json.dumps({"source_cidr": "10.66.66.0/24"}), encoding="utf-8")
+        with mock.patch.object(admin, "SKIP_SYSTEMD", False), mock.patch.object(admin.shutil, "which", return_value="ip"), mock.patch.object(admin, "run", return_value=probe):
+            self.assertEqual(admin.load_xray_settings()["gateway_source_cidr"], "10.66.0.0/16")
+            self.assertEqual(admin.load_xray_cascade_settings()["source_cidr"], "10.66.0.0/16")
+        self.assertEqual(admin.routing_source_network("192.168.22.0/24"), "192.168.22.0/24")
+
+    def test_geofile_above_64_mib_downloads_atomically_and_checks_limit(self):
+        item = {"tag": "geosite", "filename": "geosite.dat", "url": "https://example.com/geosite.dat"}
+        chunk = b"x" * (1024 * 1024)
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.side_effect = [chunk] * 74 + [b""]
+        with mock.patch.object(admin.urllib.request, "urlopen", return_value=response):
+            admin.xray_download_geofile(item)
+        path = self.xray_assets / "geosite.dat"
+        self.assertEqual(path.stat().st_size, 74 * 1024 * 1024)
+        response.read.side_effect = [chunk] * 129 + [b""]
+        with mock.patch.object(admin.urllib.request, "urlopen", return_value=response):
+            with self.assertRaisesRegex(admin.ValidationError, "128"):
+                admin.xray_download_geofile(item)
+        self.assertEqual(path.stat().st_size, 74 * 1024 * 1024)
+        self.assertEqual(list(self.xray_assets.glob("*.tmp")), [])
+
+    def test_vless_create_export_and_delete_preserves_other_inbounds(self):
+        certificate = Path(self.temp.name) / "fullchain.pem"
+        certificate.write_text("test certificate")
+        certificate.with_name("privkey.pem").write_text("test key")
+        admin.save_private_json(self.xray_settings, {"inbounds": [{"tag": "local-socks", "protocol": "socks", "listen": "127.0.0.1", "port": 1080}]})
+        payload = {"label": "Phone", "port": 8444, "public_host": "panel.example.com", "certificate_path": str(certificate), "tls_mode": "letsencrypt"}
+        result = admin.create_vless_profile(payload)
+        profile = result["profiles"][0]
+        outbound = admin.parse_xray_vless_uri(profile["uri"])
+        self.assertEqual(outbound["streamSettings"]["security"], "tls")
+        self.assertEqual(outbound["settings"]["vnext"][0]["port"], 8444)
+        result = admin.delete_vless_profile({**payload, "id": profile["id"]})
+        self.assertEqual(result["profiles"], [])
+        self.assertEqual(admin.load_xray_settings()["inbounds"][0]["tag"], "local-socks")
+        with self.assertRaises(admin.ValidationError):
+            admin.create_vless_profile({**payload, "tls_mode": "self-signed"})
+
+    def test_vless_missing_certificate_reports_validation_error(self):
+        with self.assertRaisesRegex(admin.ValidationError, "сертификат"):
+            admin.create_vless_profile({"label": "Phone", "tls_mode": "letsencrypt"})
+
+    def test_vless_firewall_failure_restores_previous_configuration(self):
+        previous = admin.default_xray_settings()
+        settings = {**previous, "enabled": True}
+        with mock.patch.object(admin, "persist_xray_configuration") as persist, mock.patch.object(admin, "vless_firewall", side_effect=[admin.AdminError("firewall failed"), None]) as firewall:
+            with self.assertRaisesRegex(admin.AdminError, "firewall failed"):
+                admin.persist_vless_configuration(previous, settings, 8444)
+        self.assertEqual(persist.call_count, 2)
+        self.assertEqual(persist.call_args.args[0], previous)
+        self.assertEqual(firewall.call_args_list, [mock.call(8444, remove=False), mock.call(8444, remove=True)])
 
     def test_default_quota_renewal_and_extra_traffic_are_idempotent(self):
         created = admin.create_user(

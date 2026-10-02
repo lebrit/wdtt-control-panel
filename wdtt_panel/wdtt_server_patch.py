@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 
-EXTENSION_MARKER = "wdtt-panel-extension-v9"
+EXTENSION_MARKER = "wdtt-panel-extension-v10"
 SUPPORTED_LAYOUT = "SpaceNeuroX qWDTT v1.4.3"
 
 
@@ -56,6 +56,7 @@ def patch_spaceneurox_tree(root: Path) -> None:
     )
 
     database = sources["database_bot.go"]
+    database = _replace_once(database, "maxGeneratedPasswords = 10", "maxGeneratedPasswords = 65023", "WDTT address-pool user limit")
     database = _replace_once(
         database,
         '\tIsDeactivated bool     `json:"is_deactivated,omitempty"`\n}',

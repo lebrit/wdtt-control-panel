@@ -49,7 +49,7 @@
     }
     if (name === "logs") loadLogs();
     if (name === "xray") Promise.all([loadXray(), loadWarp(), loadCascadeRouting()]);
-    if (name === "system") { loadBackups(); loadBackupSchedule(); loadAudit(); loadPanelVersion(); loadTelegramSettings(); }
+    if (name === "system") { loadBackups(); loadBackupSchedule(); loadAudit(); loadPanelVersion(); loadTelegramSettings(); loadCleanupSettings(); }
   }
 
   function restoreActiveTab() {
@@ -382,7 +382,8 @@
     state.users = [...(result.admins || []), ...(result.users || [])];
     const available = new Set((result.users || []).map((user) => user.password));
     state.selectedUsers.forEach((password) => { if (!available.has(password)) state.selectedUsers.delete(password); });
-    $("#user-limit").textContent = `${(result.users || []).length} / ${result.limit || 10}`;
+    state.userLimit = result.limit || 10;
+    $("#user-limit").textContent = `${(result.users || []).length} / ${state.userLimit}`;
     renderUsers();
   }
 
@@ -670,8 +671,8 @@
   }
 
   function openAutoUserDialog() {
-    const remaining = Math.max(0, 10 - state.users.filter((user) => user.role !== "admin").length);
-    if (!remaining) { toast("Достигнут лимит 10 пользователей", true); return; }
+    const remaining = Math.max(0, (state.userLimit || 10) - state.users.filter((user) => user.role !== "admin").length);
+    if (!remaining) { toast(`Достигнут лимит ${state.userLimit || 10} пользователей`, true); return; }
     $("#auto-label").value = "";
     $("#auto-user-dialog").showModal();
     $("#auto-label").focus();
@@ -696,9 +697,9 @@
   }
 
   function openBulkUserDialog() {
-    const remaining = Math.max(0, 10 - state.users.filter((user) => user.role !== "admin").length);
-    if (!remaining) { toast("Достигнут лимит 10 пользователей", true); return; }
-    $("#bulk-count").max = remaining;
+    const remaining = Math.max(0, (state.userLimit || 10) - state.users.filter((user) => user.role !== "admin").length);
+    if (!remaining) { toast(`Достигнут лимит ${state.userLimit || 10} пользователей`, true); return; }
+    $("#bulk-count").max = Math.min(100, remaining);
     $("#bulk-count").value = Math.min(2, remaining);
     $("#bulk-traffic-unlimited").checked = false;
     $("#bulk-traffic").disabled = false;
@@ -809,6 +810,27 @@
     if (!state.logs.length) { toast("Сначала загрузите журнал", true); return; }
     const header = [`# ${meta.title || "WDTT diagnostics"}`, `# Exported: ${new Date().toISOString()}`, ""].join("\n");
     downloadText(`wdtt-diagnostics-${meta.source || "logs"}.log`, `${header}${state.logs.join("\n")}\n`, "text/plain;charset=utf-8");
+  }
+
+  async function loadCleanupSettings() {
+    try {
+      const result = await api("cleanup/settings");
+      $("#cleanup-keep-days").value = result.keep_days || 14;
+      $("#cleanup-retention-status").textContent = result.saved ? `Автоматическое хранение systemd journal: ${result.keep_days} дней. Действует для всех служб сервера.` : "Срок автоматического хранения journal ещё не задан.";
+    } catch (error) { $("#cleanup-retention-status").textContent = error.message; }
+  }
+
+  async function saveCleanupSettings() {
+    const button = $("#save-cleanup-settings");
+    const keepDays = Number($("#cleanup-keep-days").value);
+    if (!Number.isInteger(keepDays) || keepDays < 1 || keepDays > 365) { toast("Укажите от 1 до 365 дней", true); return; }
+    setBusy(button, true);
+    try {
+      await api("cleanup/settings", { method: "POST", body: { keep_days: keepDays } });
+      await loadCleanupSettings();
+      toast("Срок хранения journal сохранён");
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
   }
 
   function cleanupPayload() {
@@ -1257,6 +1279,29 @@
     ["#xray-gateway-enabled", "#xray-gateway-source-cidr", "#xray-gateway-inbound-port"].forEach((selector) => { $(selector).disabled = raw; });
   }
 
+  function renderVlessProfiles(result) {
+    state.vlessProfiles = result.profiles || [];
+    $("#vless-profiles").innerHTML = state.vlessProfiles.map((profile, index) => `<div class="backup-row"><span><strong>${escapeHtml(profile.label)}</strong><br><small>VLESS + TLS · TCP ${profile.port}</small></span><div class="row-actions"><button data-copy-vless="${index}" class="secondary">Копировать ссылку</button><button data-delete-vless="${index}" class="danger" aria-label="Удалить профиль ${escapeHtml(profile.label)}">Удалить</button></div></div>`).join("") || `<p class="muted">Нет VLESS-профилей.</p>`;
+  }
+
+  async function loadVlessProfiles() {
+    try { renderVlessProfiles(await api("xray/vless")); }
+    catch (error) { $("#vless-profiles").textContent = error.message; }
+  }
+
+  async function saveVlessProfile(event) {
+    event.preventDefault();
+    if (event.submitter?.value === "cancel") { $("#vless-dialog").close(); return; }
+    const button = $("#save-vless-profile"); setBusy(button, true);
+    try {
+      renderVlessProfiles(await api("xray/vless/create", { method: "POST", body: { label: $("#vless-label").value.trim(), port: Number($("#vless-port").value) } }));
+      $("#vless-dialog").close();
+      toast("VLESS-профиль создан");
+      await loadXray();
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
   async function loadXray() {
     try {
       const result = await api("xray");
@@ -1267,7 +1312,7 @@
       $("#xray-log-level").value = state.xray.log_level || "warning";
       $("#xray-access-log").checked = Boolean(state.xray.access_log);
       $("#xray-gateway-enabled").checked = Boolean(state.xray.gateway_enabled);
-      $("#xray-gateway-source-cidr").value = state.xray.gateway_source_cidr || "10.66.66.0/24";
+      $("#xray-gateway-source-cidr").value = state.xray.gateway_source_cidr || "10.66.0.0/16";
       $("#xray-gateway-inbound-port").value = state.xray.gateway_inbound_port || 12346;
       state.xrayGateway = result.gateway || null;
       $("#xray-raw-config").value = state.xray.raw_config || "";
@@ -1279,6 +1324,7 @@
       const gateway = state.xrayGateway || {};
       $("#xray-gateway-info").textContent = !state.xray.gateway_enabled ? "Шлюз выключен: правила WARP не получают трафик WDTT." : (gateway.rules_active ? `Шлюз активен: трафик ${gateway.source_cidr || state.xray.gateway_source_cidr} попадает в Xray; правила и журнал работают.` : "Шлюз включён, но правила TPROXY ещё не активны. Нажмите «Сохранить и применить».");
       renderXrayMode(); renderCompactFriendlyRoutes(); renderCompactFriendlyRules(); renderXrayItems(); renderXrayGeofiles();
+      await loadVlessProfiles();
     } catch (error) { toast(error.message, true); }
   }
 
@@ -1337,7 +1383,7 @@
     state.cascade = result;
     const settings = result.settings || {};
     $("#cascade-enabled").checked = Boolean(settings.enabled);
-    $("#cascade-source-cidr").value = settings.source_cidr || "10.66.66.0/24";
+    $("#cascade-source-cidr").value = settings.source_cidr || "10.66.0.0/16";
     $("#cascade-inbound-port").value = settings.inbound_port || 12345;
     $("#cascade-geosite-category").value = settings.geosite_category || "ru-blocked";
     $("#cascade-geoip-category").value = settings.geoip_category || "ru-blocked";
@@ -1509,6 +1555,31 @@
     $("#download-logs").addEventListener("click", downloadLogs);
     $("#cleanup-preview").addEventListener("click", (event) => cleanupSystem(false, event.currentTarget));
     $("#cleanup-apply").addEventListener("click", (event) => cleanupSystem(true, event.currentTarget));
+    $("#save-cleanup-settings").addEventListener("click", saveCleanupSettings);
+    $("#create-vless-profile").addEventListener("click", () => {
+      $("#vless-label").value = "";
+      $("#vless-port").value = state.vlessProfiles?.[0]?.port || 8444;
+      $("#vless-dialog").showModal();
+      $("#vless-label").focus();
+    });
+    $("#vless-form").addEventListener("submit", saveVlessProfile);
+    $("#vless-profiles").addEventListener("click", async (event) => {
+      const copy = event.target.closest("[data-copy-vless]");
+      const remove = event.target.closest("[data-delete-vless]");
+      const profile = state.vlessProfiles?.[Number(copy?.dataset.copyVless ?? remove?.dataset.deleteVless)];
+      if (!profile) return;
+      if (copy) {
+        try { await navigator.clipboard.writeText(profile.uri); toast("VLESS-ссылка скопирована"); }
+        catch (_) { $("#bulk-result-links").value = profile.uri; $("#bulk-result-dialog").showModal(); }
+        return;
+      }
+      if (remove && confirm(`Удалить VLESS-профиль «${profile.label}»?`)) {
+        setBusy(remove, true);
+        try { renderVlessProfiles(await api("xray/vless/delete", { method: "POST", body: { id: profile.id } })); await loadXray(); toast("VLESS-профиль удалён"); }
+        catch (error) { toast(error.message, true); }
+        finally { setBusy(remove, false); }
+      }
+    });
     $("#log-source").addEventListener("change", loadLogs);
     $("#log-limit").addEventListener("change", loadLogs);
     $("#log-filter").addEventListener("change", renderLogs);

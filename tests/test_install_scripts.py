@@ -1,4 +1,6 @@
 import json
+import shutil
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -14,9 +16,29 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="0.12.3"', installer)
-        self.assertIn('__version__ = "0.12.3"', package)
-        self.assertIn("Текущая версия: 0.12.3", readme)
+        self.assertIn('PANEL_VERSION="0.13.0"', installer)
+        self.assertIn('__version__ = "0.13.0"', package)
+        self.assertIn("Текущая версия: 0.13.0", readme)
+
+    def test_disk_preflight_rejects_low_space_and_low_inodes(self):
+        bash = shutil.which("bash")
+        if not bash and Path("C:/Program Files/Git/bin/bash.exe").is_file():
+            bash = "C:/Program Files/Git/bin/bash.exe"
+        if not bash:
+            self.skipTest("bash unavailable")
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        function = script[script.index("check_disk_space() {"):].split("\n}\n", 1)[0] + "\n}\n"
+        for available, inodes, expected in ((1024, 100000, False), (1000000, 3, False), (1000000, 100000, True)):
+            harness = "die() { printf '%s\\n' \"$*\" >&2; exit 1; }\n"
+            harness += f"df() {{ if [ \"$1\" = -Pi ]; then value={inodes}; else value={available}; fi; printf 'header\\nfs 100 0 %s 0 mount\\n' \"$value\"; }}\n"
+            result = subprocess.run([bash, "-c", harness + function + "check_disk_space 524288 10000"], capture_output=True, text=True)
+            self.assertEqual(result.returncode == 0, expected, result.stderr)
+
+    def test_http_unknown_paths_do_not_disclose_secret_panel_path(self):
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        block = script[script.index('HTTP_BLOCK="server {'):script.index('cat > "$NGINX_FILE"', script.index('HTTP_BLOCK="server {'))]
+        self.assertIn("location / { return 404; }", block)
+        self.assertNotIn("location / { return 302", block)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -56,7 +78,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("WDTT_EXTENSION_MARKER", script)
         self.assertIn('WDTT_REPOSITORY="${WDTT_REPOSITORY:-SpaceNeuroX/proxy-turn-vk-android}"', script)
         self.assertIn('WDTT_REF="${WDTT_REF:-v1.4.3}"', script)
-        self.assertIn('WDTT_EXTENSION_MARKER="wdtt-panel-extension-v9"', script)
+        self.assertIn('WDTT_EXTENSION_MARKER="wdtt-panel-extension-v10"', script)
         self.assertIn("download_wdtt_archive", script)
         self.assertIn("https://github.com/${WDTT_REPOSITORY}/archive", script)
         self.assertIn("refs/${kind}/${WDTT_REF}.zip", script)
@@ -109,7 +131,7 @@ class InstallScriptTests(unittest.TestCase):
         )
 
         patcher = (ROOT / "wdtt_panel" / "wdtt_server_patch.py").read_text(encoding="utf-8")
-        self.assertIn('EXTENSION_MARKER = "wdtt-panel-extension-v9"', patcher)
+        self.assertIn('EXTENSION_MARKER = "wdtt-panel-extension-v10"', patcher)
         self.assertIn('json:"traffic_primary_bytes,omitempty"', patcher)
         self.assertIn("trafficQuotaExhausted", patcher)
         self.assertIn('json:"main_down_bytes,omitempty"', patcher)
@@ -356,7 +378,7 @@ class InstallScriptTests(unittest.TestCase):
 
     def test_dialog_cancel_buttons_skip_required_field_validation(self):
         html = (ROOT / "wdtt_panel" / "templates" / "index.html").read_text(encoding="utf-8")
-        self.assertEqual(html.count('value="cancel" formnovalidate'), 8)
+        self.assertEqual(html.count('value="cancel" formnovalidate'), 10)
 
 
 if __name__ == "__main__":

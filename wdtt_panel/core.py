@@ -10,7 +10,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-MAX_USERS = 10
+# Address pool used by the WDTT allocator, excluding its own address.
+MAX_USERS = 256 * 254 - 1
 PASSWORD_RE = re.compile(r"^[A-Za-z0-9._~-]{8,64}$")
 HASH_RE = re.compile(r"^[A-Za-z0-9_-]{3,256}$")
 MAX_USER_LABEL_LENGTH = 64

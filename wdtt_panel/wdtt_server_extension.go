@@ -8,7 +8,7 @@ import (
 	"golang.zx2c4.com/wireguard/device"
 )
 
-const wdttPanelExtensionMarker = "wdtt-panel-extension-v9"
+const wdttPanelExtensionMarker = "wdtt-panel-extension-v10"
 
 func normalizeUserLabel(value string) (string, error) {
 	label := strings.TrimSpace(value)

@@ -320,6 +320,12 @@ run_action() {
   export WDTT_TELEGRAM_ADMIN_ID="${WDTT_TELEGRAM_ADMIN_ID:-}"
 
   cleanup
+  local available_kb
+  available_kb="$(df -Pk /tmp | awk 'NR == 2 {print $4}')"
+  if [[ ! "$available_kb" =~ ^[0-9]+$ ]] || [ "$available_kb" -lt 65536 ]; then
+    echo "Недостаточно места в /tmp для загрузки панели: требуется не менее 64 МиБ" >&2
+    return 1
+  fi
   WORK_DIR="$(mktemp -d)"
   local archive_url install_action source_ref
   if [ "$ACTION" = "rollback" ]; then
