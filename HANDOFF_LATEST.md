@@ -9,10 +9,10 @@
 
 ## Verification
 
-- Windows: 96 Python tests passed, 3 Linux-specific tests skipped; official source patch regression included.
+- Windows: the 96-test Python suite passed, 3 Linux-specific tests skipped; official source patch regression included.
 - Bash syntax checked for all four scripts; JavaScript syntax and git diff checks passed.
 - Desktop/mobile browser regression covered retention persistence and VLESS create/copy/delete, without page errors or horizontal overflow.
-- Linux workflow additionally checks the real systemd socket from a readonly web namespace and compiles/tests the patched Go server.
+- Ubuntu CI passed Python regressions, the real systemd socket test from a readonly web namespace, and compilation/tests of the patched Go server: https://github.com/lebrit/wdtt-control-panel/actions/runs/36998180696
 - No production server was modified. Android is unchanged.
 
 ## Deployment
